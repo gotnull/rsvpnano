@@ -39,7 +39,7 @@ UsbMassStorageManager::UsbMassStorageManager() {
 }
 
 bool UsbMassStorageManager::begin(bool writeEnabled) {
-#if CONFIG_TINYUSB_MSC_ENABLED && !ARDUINO_USB_MODE
+#if RSVP_USB_TRANSFER_ENABLED && CONFIG_TINYUSB_MSC_ENABLED && !ARDUINO_USB_MODE
   if (active_) {
     return true;
   }
@@ -68,14 +68,14 @@ bool UsbMassStorageManager::begin(bool writeEnabled) {
   return true;
 #else
   (void)writeEnabled;
-  statusMessage_ = "TinyUSB MSC unsupported";
-  Serial.println("[usb-msc] unsupported: build requires TinyUSB device mode");
+  statusMessage_ = "USB transfer disabled";
+  Serial.println("[usb-msc] unsupported: build waveshare_esp32s3_usb_msc to enable it");
   return false;
 #endif
 }
 
 void UsbMassStorageManager::end() {
-#if CONFIG_TINYUSB_MSC_ENABLED && !ARDUINO_USB_MODE
+#if RSVP_USB_TRANSFER_ENABLED && CONFIG_TINYUSB_MSC_ENABLED && !ARDUINO_USB_MODE
   msc_.mediaPresent(false);
   msc_.end();
 #endif
@@ -99,7 +99,7 @@ uint64_t UsbMassStorageManager::cardSizeBytes() const {
 const char *UsbMassStorageManager::statusMessage() const { return statusMessage_; }
 
 bool UsbMassStorageManager::configureMsc() {
-#if CONFIG_TINYUSB_MSC_ENABLED && !ARDUINO_USB_MODE
+#if RSVP_USB_TRANSFER_ENABLED && CONFIG_TINYUSB_MSC_ENABLED && !ARDUINO_USB_MODE
   msc_.vendorID("RSVPNANO");
   msc_.productID("SD Transfer");
   msc_.productRevision("0.1");
@@ -301,7 +301,7 @@ bool UsbMassStorageManager::handleStartStop(uint8_t powerCondition, bool start, 
   if (loadEject && !start) {
     ejected_ = true;
     statusMessage_ = "Ejected";
-#if CONFIG_TINYUSB_MSC_ENABLED && !ARDUINO_USB_MODE
+#if RSVP_USB_TRANSFER_ENABLED && CONFIG_TINYUSB_MSC_ENABLED && !ARDUINO_USB_MODE
     msc_.mediaPresent(false);
 #endif
   }

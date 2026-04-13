@@ -8,6 +8,10 @@
 
 #include "board/BoardConfig.h"
 
+#ifndef RSVP_USB_TRANSFER_ENABLED
+#define RSVP_USB_TRANSFER_ENABLED 0
+#endif
+
 static const char *kAppTag = "app";
 constexpr uint32_t kBootSplashMs = 750;
 constexpr uint32_t kReleaseBufferMs = 200;
@@ -30,7 +34,9 @@ enum MenuItem : size_t {
   MenuChapters,
   MenuRestart,
   MenuChangeBook,
+#if RSVP_USB_TRANSFER_ENABLED
   MenuUsbTransfer,
+#endif
   MenuSleep,
   MenuItemCount,
 };
@@ -40,7 +46,9 @@ constexpr const char *kMenuItems[] = {
     "Chapters",
     "Restart",
     "Change book",
+#if RSVP_USB_TRANSFER_ENABLED
     "USB transfer",
+#endif
     "Sleep",
 };
 
@@ -540,9 +548,11 @@ void App::selectMenuItem(uint32_t nowMs) {
     case MenuSleep:
       enterSleep(nowMs);
       return;
+#if RSVP_USB_TRANSFER_ENABLED
     case MenuUsbTransfer:
       enterUsbTransfer(nowMs);
       return;
+#endif
     case MenuChapters:
       openChapterPicker();
       return;

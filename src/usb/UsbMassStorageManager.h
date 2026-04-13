@@ -3,7 +3,11 @@
 #include <Arduino.h>
 #include <sdkconfig.h>
 
-#if CONFIG_TINYUSB_MSC_ENABLED && !ARDUINO_USB_MODE
+#ifndef RSVP_USB_TRANSFER_ENABLED
+#define RSVP_USB_TRANSFER_ENABLED 0
+#endif
+
+#if RSVP_USB_TRANSFER_ENABLED && CONFIG_TINYUSB_MSC_ENABLED && !ARDUINO_USB_MODE
 #include <USBMSC.h>
 #endif
 
@@ -35,7 +39,7 @@ class UsbMassStorageManager {
 
   static UsbMassStorageManager *instance_;
 
-#if CONFIG_TINYUSB_MSC_ENABLED && !ARDUINO_USB_MODE
+#if RSVP_USB_TRANSFER_ENABLED && CONFIG_TINYUSB_MSC_ENABLED && !ARDUINO_USB_MODE
   USBMSC msc_;
 #endif
 
