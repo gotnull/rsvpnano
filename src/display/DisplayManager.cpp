@@ -62,9 +62,9 @@ constexpr int kContextParagraphIndent = 22;
 constexpr int kContextSpaceWidth = 8;
 constexpr int kContextSerifDivisor = 3;
 constexpr size_t kContextTargetLines = 6;
-constexpr int kPhantomGapLarge = 12;
-constexpr int kPhantomGapMedium = 10;
-constexpr int kPhantomGapSmall = 8;
+constexpr int kPhantomCurrentGapLarge = 30;
+constexpr int kPhantomCurrentGapMedium = 24;
+constexpr int kPhantomCurrentGapSmall = 20;
 constexpr uint8_t kPhantomAlphaLarge = 54;
 constexpr uint8_t kPhantomAlphaMedium = 62;
 constexpr uint8_t kPhantomAlphaSmall = 72;
@@ -132,7 +132,7 @@ int currentGuideGap() {
 
 struct ReaderTextStyle {
   uint8_t scalePercent;
-  int gap;
+  int currentGap;
   uint8_t alpha;
 };
 
@@ -420,9 +420,9 @@ int scaledWordWidthPercent(const String &word, uint8_t scalePercent) {
 
 ReaderTextStyle readerTextStyle(uint8_t fontSizeLevel) {
   static constexpr ReaderTextStyle kStyles[] = {
-      {100, kPhantomGapLarge, kPhantomAlphaLarge},
-      {70, kPhantomGapMedium, kPhantomAlphaMedium},
-      {50, kPhantomGapSmall, kPhantomAlphaSmall},
+      {100, kPhantomCurrentGapLarge, kPhantomAlphaLarge},
+      {70, kPhantomCurrentGapMedium, kPhantomAlphaMedium},
+      {50, kPhantomCurrentGapSmall, kPhantomAlphaSmall},
   };
 
   const size_t styleCount = sizeof(kStyles) / sizeof(kStyles[0]);
@@ -1365,13 +1365,15 @@ void DisplayManager::renderPhantomRsvpWord(const String &beforeText, const Strin
     drawRsvpAnchorGuide(anchorX, textY, kEmbeddedSerif70Height);
     if (!beforeText.isEmpty()) {
       const TextLayoutMetrics beforeLayout = serif70WordLayout(beforeText, -1);
-      const int beforeX = currentX + currentLayout.minX - kPhantomGapMedium - beforeLayout.maxX;
+      const int beforeX =
+          currentX + currentLayout.minX - kPhantomCurrentGapMedium - beforeLayout.maxX;
       drawSerif70TextAt(beforeText, beforeX, textY, phantomColor);
     }
     drawRsvp70WordAt(word, currentX, textY, focusIndex);
     if (!afterText.isEmpty()) {
       const TextLayoutMetrics afterLayout = serif70WordLayout(afterText, -1);
-      const int afterX = currentX + currentLayout.maxX + kPhantomGapMedium - afterLayout.minX;
+      const int afterX =
+          currentX + currentLayout.maxX + kPhantomCurrentGapMedium - afterLayout.minX;
       drawSerif70TextAt(afterText, afterX, textY, phantomColor);
     }
     if (showFooter) {
@@ -1401,14 +1403,14 @@ void DisplayManager::renderPhantomRsvpWord(const String &beforeText, const Strin
   if (!beforeText.isEmpty()) {
     const TextLayoutMetrics beforeLayout =
         serifWordLayoutScaledPercent(beforeText, -1, style.scalePercent);
-    const int beforeX = currentX + currentLayout.minX - style.gap - beforeLayout.maxX;
+    const int beforeX = currentX + currentLayout.minX - style.currentGap - beforeLayout.maxX;
     drawSerifTextScaledAt(beforeText, beforeX, textY, phantomColor, style.scalePercent);
   }
   drawRsvpWordScaledPercentAt(word, currentX, textY, focusIndex, style.scalePercent);
   if (!afterText.isEmpty()) {
     const TextLayoutMetrics afterLayout =
         serifWordLayoutScaledPercent(afterText, -1, style.scalePercent);
-    const int afterX = currentX + currentLayout.maxX + style.gap - afterLayout.minX;
+    const int afterX = currentX + currentLayout.maxX + style.currentGap - afterLayout.minX;
     drawSerifTextScaledAt(afterText, afterX, textY, phantomColor, style.scalePercent);
   }
   if (showFooter) {
@@ -1465,13 +1467,15 @@ void DisplayManager::renderTypographyPreview(const String &beforeText, const Str
     drawRsvpAnchorGuide(anchorX, textY, textHeight);
     if (!beforeText.isEmpty()) {
       const TextLayoutMetrics beforeLayout = serif70WordLayout(beforeText, -1);
-      const int beforeX = currentX + currentLayout.minX - kPhantomGapMedium - beforeLayout.maxX;
+      const int beforeX =
+          currentX + currentLayout.minX - kPhantomCurrentGapMedium - beforeLayout.maxX;
       drawSerif70TextAt(beforeText, beforeX, textY, phantomColor);
     }
     drawRsvp70WordAt(word, currentX, textY, focusIndex);
     if (!afterText.isEmpty()) {
       const TextLayoutMetrics afterLayout = serif70WordLayout(afterText, -1);
-      const int afterX = currentX + currentLayout.maxX + kPhantomGapMedium - afterLayout.minX;
+      const int afterX =
+          currentX + currentLayout.maxX + kPhantomCurrentGapMedium - afterLayout.minX;
       drawSerif70TextAt(afterText, afterX, textY, phantomColor);
     }
   } else {
@@ -1491,14 +1495,14 @@ void DisplayManager::renderTypographyPreview(const String &beforeText, const Str
     if (!beforeText.isEmpty()) {
       const TextLayoutMetrics beforeLayout =
           serifWordLayoutScaledPercent(beforeText, -1, style.scalePercent);
-      const int beforeX = currentX + currentLayout.minX - style.gap - beforeLayout.maxX;
+      const int beforeX = currentX + currentLayout.minX - style.currentGap - beforeLayout.maxX;
       drawSerifTextScaledAt(beforeText, beforeX, textY, phantomColor, style.scalePercent);
     }
     drawRsvpWordScaledPercentAt(word, currentX, textY, focusIndex, style.scalePercent);
     if (!afterText.isEmpty()) {
       const TextLayoutMetrics afterLayout =
           serifWordLayoutScaledPercent(afterText, -1, style.scalePercent);
-      const int afterX = currentX + currentLayout.maxX + style.gap - afterLayout.minX;
+      const int afterX = currentX + currentLayout.maxX + style.currentGap - afterLayout.minX;
       drawSerifTextScaledAt(afterText, afterX, textY, phantomColor, style.scalePercent);
     }
   }
@@ -1548,13 +1552,15 @@ void DisplayManager::renderPhantomRsvpWordWithWpm(const String &beforeText, cons
     drawRsvpAnchorGuide(anchorX, textY, kEmbeddedSerif70Height);
     if (!beforeText.isEmpty()) {
       const TextLayoutMetrics beforeLayout = serif70WordLayout(beforeText, -1);
-      const int beforeX = currentX + currentLayout.minX - kPhantomGapMedium - beforeLayout.maxX;
+      const int beforeX =
+          currentX + currentLayout.minX - kPhantomCurrentGapMedium - beforeLayout.maxX;
       drawSerif70TextAt(beforeText, beforeX, textY, phantomColor);
     }
     drawRsvp70WordAt(word, currentX, textY, focusIndex);
     if (!afterText.isEmpty()) {
       const TextLayoutMetrics afterLayout = serif70WordLayout(afterText, -1);
-      const int afterX = currentX + currentLayout.maxX + kPhantomGapMedium - afterLayout.minX;
+      const int afterX =
+          currentX + currentLayout.maxX + kPhantomCurrentGapMedium - afterLayout.minX;
       drawSerif70TextAt(afterText, afterX, textY, phantomColor);
     }
     drawTinyTextCentered(wpmText, wpmY, focusColor(), kTinyScale);
@@ -1587,14 +1593,14 @@ void DisplayManager::renderPhantomRsvpWordWithWpm(const String &beforeText, cons
   if (!beforeText.isEmpty()) {
     const TextLayoutMetrics beforeLayout =
         serifWordLayoutScaledPercent(beforeText, -1, style.scalePercent);
-    const int beforeX = currentX + currentLayout.minX - style.gap - beforeLayout.maxX;
+    const int beforeX = currentX + currentLayout.minX - style.currentGap - beforeLayout.maxX;
     drawSerifTextScaledAt(beforeText, beforeX, textY, phantomColor, style.scalePercent);
   }
   drawRsvpWordScaledPercentAt(word, currentX, textY, focusIndex, style.scalePercent);
   if (!afterText.isEmpty()) {
     const TextLayoutMetrics afterLayout =
         serifWordLayoutScaledPercent(afterText, -1, style.scalePercent);
-    const int afterX = currentX + currentLayout.maxX + style.gap - afterLayout.minX;
+    const int afterX = currentX + currentLayout.maxX + style.currentGap - afterLayout.minX;
     drawSerifTextScaledAt(afterText, afterX, textY, phantomColor, style.scalePercent);
   }
   drawTinyTextCentered(wpmText, wpmY, focusColor(), kTinyScale);
