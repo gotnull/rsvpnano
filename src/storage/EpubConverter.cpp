@@ -27,7 +27,7 @@ constexpr size_t kMaxTagChars = 512;
 constexpr size_t kMaxEntityChars = 16;
 constexpr size_t kOutputWrapWidth = 96;
 constexpr size_t kBufferedTextFlushThreshold = 220;
-constexpr const char *kConverterFailureVersion = "stream-v5";
+constexpr const char *kConverterVersion = "stream-v6";
 
 enum class ContentExtractStatus {
   Complete,
@@ -1866,6 +1866,8 @@ bool convertEpubToRsvp(const String &epubPath, const String &tempPath, const Str
   const String author = parseBookAuthor(opfXml);
 
   output.println("@rsvp 1");
+  output.print("@converter ");
+  output.println(kConverterVersion);
   output.print("@title ");
   output.println(title);
   if (!author.isEmpty()) {
@@ -1942,7 +1944,7 @@ void writeFailureMarker(const String &markerPath, const char *message) {
 
   marker.println(message == nullptr ? "Conversion failed" : message);
   marker.print("converter=");
-  marker.println(kConverterFailureVersion);
+  marker.println(kConverterVersion);
   marker.close();
 }
 
@@ -1952,20 +1954,75 @@ bool markerWasWrittenByCurrentConverter(File &marker) {
     content += static_cast<char>(marker.read());
   }
 
-  const String expected = String("converter=") + kConverterFailureVersion;
+  const String expected = String("converter=") + kConverterVersion;
   return content.indexOf(expected) >= 0;
 }
 
+bool rsvpWasWrittenByCurrentConverter(File &file) {
+  if (!file || file.isDirectory()) {
+    return false;
+  }
+
+  file.seek(0);
+  String line;
+  size_t scannedLines = 0;
+  while (file.available() && scannedLines < 12) {
+    const char c = static_cast<char>(file.read());
+    if (c == '\r') {
+      continue;
+    }
+    if (c == '\n') {
+      line.trim();
+      if (line.startsWith("@converter")) {
+        const String expected = String("@converter ") + kConverterVersion;
+        return line == expected;
+      }
+      if (!line.isEmpty() && !line.startsWith("@")) {
+        break;
+      }
+      line = "";
+      ++scannedLines;
+      continue;
+    }
+    if (line.length() < 128) {
+      line += c;
+    }
+  }
+
+  line.trim();
+  if (line.startsWith("@converter")) {
+    const String expected = String("@converter ") + kConverterVersion;
+    return line == expected;
+  }
+
+  return false;
+}
+
 }  // namespace
+
+bool EpubConverter::isCurrentCache(const String &rsvpPath) {
+  File existing = SD_MMC.open(rsvpPath);
+  const bool current = rsvpWasWrittenByCurrentConverter(existing);
+  if (existing) {
+    existing.close();
+  }
+  return current;
+}
 
 bool EpubConverter::convertIfNeeded(const String &epubPath, const String &rsvpPath,
                                     const Options &options) {
   File existing = SD_MMC.open(rsvpPath);
   if (existing && !existing.isDirectory() && existing.size() > 0) {
+    const bool currentCache = rsvpWasWrittenByCurrentConverter(existing);
     existing.close();
-    return true;
-  }
-  if (existing) {
+    if (currentCache) {
+      return true;
+    }
+
+    Serial.printf("[epub] Rebuilding stale RSVP cache after converter update: %s\n",
+                  rsvpPath.c_str());
+    SD_MMC.remove(rsvpPath);
+  } else if (existing) {
     existing.close();
   }
 

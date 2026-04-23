@@ -96,6 +96,16 @@ bool hasRsvpSibling(const String &path) {
   return exists;
 }
 
+String epubSiblingPathForRsvp(const String &rsvpPath) {
+  String epubPath = rsvpPath;
+  const int dot = epubPath.lastIndexOf('.');
+  if (dot > 0) {
+    epubPath = epubPath.substring(0, dot);
+  }
+  epubPath += ".epub";
+  return epubPath;
+}
+
 String normalizeBookPath(const String &path) {
   if (path.startsWith("/")) {
     return path;
@@ -175,6 +185,11 @@ bool fileExistsAndHasBytes(const String &path) {
   return exists;
 }
 
+bool hasCurrentEpubCache(const String &epubPath) {
+  const String rsvpPath = rsvpCachePathForEpub(epubPath);
+  return fileExistsAndHasBytes(rsvpPath) && EpubConverter::isCurrentCache(rsvpPath);
+}
+
 bool markerExists(const String &path) {
   File file = SD_MMC.open(path);
   const bool exists = file && !file.isDirectory();
@@ -228,10 +243,13 @@ std::vector<String> collectBookPaths() {
   while (entry) {
     if (!entry.isDirectory()) {
       const String path = normalizeBookPath(String(entry.name()));
+      const bool staleGeneratedRsvp =
+          hasRsvpExtension(path) && fileExistsAndHasBytes(epubSiblingPathForRsvp(path)) &&
+          !EpubConverter::isCurrentCache(path);
       const bool readableText = hasTextExtension(path) && !hasRsvpSibling(path);
       const bool pendingEpub =
-          RSVP_ON_DEVICE_EPUB_CONVERSION && hasEpubExtension(path) && !hasRsvpSibling(path);
-      if (hasRsvpExtension(path) || readableText || pendingEpub) {
+          RSVP_ON_DEVICE_EPUB_CONVERSION && hasEpubExtension(path) && !hasCurrentEpubCache(path);
+      if ((!staleGeneratedRsvp && hasRsvpExtension(path)) || readableText || pendingEpub) {
         bookPaths.push_back(path);
       }
     }
@@ -1138,9 +1156,13 @@ bool StorageManager::ensureEpubConverted(const String &epubPath, String &rsvpPat
     return false;
   }
 
-  if (fileExistsAndHasBytes(rsvpPath)) {
+  if (fileExistsAndHasBytes(rsvpPath) && EpubConverter::isCurrentCache(rsvpPath)) {
     Serial.printf("[storage] EPUB cache hit: %s -> %s\n", epubPath.c_str(), rsvpPath.c_str());
     return true;
+  }
+
+  if (fileExistsAndHasBytes(rsvpPath)) {
+    Serial.printf("[storage] EPUB cache stale after converter update: %s\n", rsvpPath.c_str());
   }
 
   File epubFile = SD_MMC.open(epubPath);
