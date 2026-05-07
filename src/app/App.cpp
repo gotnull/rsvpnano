@@ -152,7 +152,6 @@ namespace
   constexpr size_t kSettingsHomeNotificationsIndex = 4;
   constexpr size_t kSettingsHomeToneIndex = 5;
   constexpr size_t kSettingsHomeVolumeIndex = 6;
-  constexpr size_t kSettingsHomeTestSoundIndex = 7;
   constexpr size_t kSettingsDisplayThemeIndex = 1;
   constexpr size_t kSettingsDisplayBrightnessIndex = 2;
   constexpr size_t kSettingsDisplayPhantomWordsIndex = 3;
@@ -187,7 +186,7 @@ namespace
   constexpr uint32_t kNotificationPollIntervalMs = 5UL * 60UL * 1000UL;
   constexpr uint32_t kNotificationBannerVisibleMs = 6000;
   constexpr uint32_t kNotificationFirstPollDelayMs = 30UL * 1000UL;
-  constexpr uint8_t kNotificationVolumeStep = 20;
+  constexpr uint8_t kNotificationVolumeStep = 5;
   constexpr const char *kBuiltinNokiaRtttl =
       "Nokia:d=4,o=5,b=180:8e6,8d6,f#,g#,8c#6,8b,d,e,8b,8a,c#,e,2a";
   constexpr const char *kPrefNightMode = "night";
@@ -1658,16 +1657,6 @@ void App::selectSettingsItem(uint32_t nowMs)
     case kSettingsHomeVolumeIndex:
       cycleNotificationVolume(nowMs);
       return;
-    case kSettingsHomeTestSoundIndex:
-    {
-      // Force-set a known-good volume + bypass all notification gating; this
-      // proves whether the codec is producing audio at all, independent of any
-      // app-level state (volume, notification toggle, tone selection).
-      Serial.printf("[audio test] forcing vol=80%%, calling playUiClick\n");
-      audio_.setVolumePercent(80);
-      audio_.playUiClick();
-      return;
-    }
     default:
       return;
     }
@@ -1847,7 +1836,6 @@ void App::rebuildSettingsMenuItems()
                                  (notificationsEnabled_ ? "On" : "Off"));
     settingsMenuItems_.push_back(String("Tone (") + currentNotificationToneLabel() + ")");
     settingsMenuItems_.push_back(String("Volume: ") + String(notificationVolume_) + "%");
-    settingsMenuItems_.push_back("Test sound");
   }
   else if (menuScreen_ == MenuScreen::SettingsDisplay)
   {
@@ -2628,10 +2616,7 @@ void App::cycleNotificationVolume(uint32_t nowMs)
   renderSettings();
   if (notificationVolume_ > 0)
   {
-    // A short fixed click is more useful as volume feedback than a multi-note
-    // RTTTL/WAV preview, and only blocks the main loop for ~80 ms so a rapid
-    // volume cycle followed by a swipe doesn't drop the swipe.
-    audio_.playUiClick();
+    playNotificationTone();
   }
 }
 

@@ -223,24 +223,6 @@ float frequencyForNote(int noteIdx, int octave) {
 
 }  // namespace
 
-void AudioManager::playUiClick() {
-  Serial.printf("[audio] playUiClick: initialized=%d s_i2sInstalled=%d vol=%u\n",
-                initialized_ ? 1 : 0, s_i2sInstalled ? 1 : 0,
-                static_cast<unsigned>(volumePercent_));
-  // Force re-init every time. We've seen the codec stop responding after the
-  // first playback (likely an ES8311 power-state quirk after DMA goes silent).
-  // Cost is only ~30 ms of codec register writes and only on explicit user
-  // taps, so it's not a hot path.
-  initialized_ = false;
-  if (!begin()) {
-    Serial.println("[audio] playUiClick: begin() failed, no sound");
-    return;
-  }
-  constexpr uint16_t kClickFrequencyHz = 800;
-  constexpr uint16_t kClickDurationMs = 80;
-  playToneSamples(kClickFrequencyHz, kClickDurationMs);
-}
-
 bool AudioManager::playRtttl(const String &melodyIn, uint32_t maxDurationMs) {
   if (!initialized_ && !begin()) return false;
   const String melody = normalizeRtttl(melodyIn);

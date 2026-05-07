@@ -14,9 +14,6 @@ class AudioManager {
   // Volume 0..100 (linear). Persists across calls; only affects subsequent playback.
   void setVolumePercent(uint8_t percent);
   uint8_t volumePercent() const { return volumePercent_; }
-  // Short fixed sine — used for volume cycling so the main loop is only blocked
-  // for ~80 ms per tap instead of the full RTTTL/WAV duration.
-  void playUiClick();
 
  private:
   bool writeCodecRegister(uint8_t reg, uint8_t value);
