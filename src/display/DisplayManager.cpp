@@ -1907,8 +1907,16 @@ void DisplayManager::renderContextView(const std::vector<ContextWord> &words,
     y += kContextLineHeight;
   }
 
-  drawFooter(chapterLabel, progressPercent);
-  drawBatteryBadge();
+  (void)progressPercent;
+  const int textY = kDisplayHeight - kTinyGlyphHeight * kTinyScale - kFooterMarginBottom;
+  const String chapter = fitTinyText(chapterLabel.isEmpty() ? "START" : chapterLabel,
+                                     virtualWidth - 2 * kFooterMarginX, kTinyScale);
+  drawTinyTextAt(chapter, kFooterMarginX, textY, footerColor(), kTinyScale);
+  if (!batteryLabel_.isEmpty()) {
+    const int batteryWidth = measureTinyTextWidth(batteryLabel_, kTinyScale);
+    const int batteryX = std::max(kFooterMarginX, virtualWidth - kFooterMarginX - batteryWidth);
+    drawTinyTextAt(batteryLabel_, batteryX, textY, footerColor(), kTinyScale);
+  }
   flushScaledFrame(scale, virtualWidth, virtualHeight);
 }
 
