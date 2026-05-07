@@ -1,5 +1,6 @@
 #include "audio/AudioManager.h"
 
+#include <SD_MMC.h>
 #include <Wire.h>
 #include <driver/i2s.h>
 #include <math.h>
@@ -315,5 +316,142 @@ bool AudioManager::playRtttl(const String &melodyIn) {
       if (restMs > 0) playSilence(restMs);
     }
   }
+  return true;
+}
+
+namespace {
+
+constexpr uint32_t kWavMaxSampleRateHz = 48000;
+constexpr uint32_t kWavMinSampleRateHz = 4000;
+
+uint16_t readLE16(const uint8_t *p) {
+  return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8);
+}
+
+uint32_t readLE32(const uint8_t *p) {
+  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+         (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+}
+
+// Walks the chunks after the initial "RIFF<size>WAVE" header until it finds
+// "fmt " and "data". Returns true on success.
+bool parseWavHeader(File &file, uint16_t &channels, uint32_t &sampleRate,
+                    uint16_t &bitsPerSample, uint32_t &dataBytes) {
+  uint8_t header[12];
+  if (file.read(header, sizeof(header)) != sizeof(header)) return false;
+  if (memcmp(header, "RIFF", 4) != 0 || memcmp(header + 8, "WAVE", 4) != 0) {
+    return false;
+  }
+  bool fmtSeen = false;
+  while (file.available()) {
+    uint8_t chunk[8];
+    if (file.read(chunk, sizeof(chunk)) != sizeof(chunk)) return false;
+    const uint32_t chunkSize = readLE32(chunk + 4);
+    if (memcmp(chunk, "fmt ", 4) == 0) {
+      uint8_t fmtBuf[16];
+      if (chunkSize < sizeof(fmtBuf)) return false;
+      if (file.read(fmtBuf, sizeof(fmtBuf)) != sizeof(fmtBuf)) return false;
+      const uint16_t audioFormat = readLE16(fmtBuf);
+      if (audioFormat != 1) return false;  // PCM only
+      channels = readLE16(fmtBuf + 2);
+      sampleRate = readLE32(fmtBuf + 4);
+      bitsPerSample = readLE16(fmtBuf + 14);
+      // Skip any extra fmt bytes
+      if (chunkSize > sizeof(fmtBuf)) {
+        file.seek(file.position() + chunkSize - sizeof(fmtBuf));
+      }
+      fmtSeen = true;
+    } else if (memcmp(chunk, "data", 4) == 0) {
+      if (!fmtSeen) return false;
+      dataBytes = chunkSize;
+      return true;
+    } else {
+      // Unknown chunk — skip past it.
+      file.seek(file.position() + chunkSize);
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+bool AudioManager::playWavFromSd(const String &path) {
+  if (!initialized_ && !begin()) return false;
+
+  File f = SD_MMC.open(path);
+  if (!f || f.isDirectory()) {
+    if (f) f.close();
+    Serial.printf("[audio] WAV open failed: %s\n", path.c_str());
+    return false;
+  }
+
+  uint16_t channels = 0;
+  uint32_t sampleRate = 0;
+  uint16_t bitsPerSample = 0;
+  uint32_t dataBytes = 0;
+  if (!parseWavHeader(f, channels, sampleRate, bitsPerSample, dataBytes)) {
+    Serial.printf("[audio] WAV header invalid: %s\n", path.c_str());
+    f.close();
+    return false;
+  }
+  if (sampleRate < kWavMinSampleRateHz || sampleRate > kWavMaxSampleRateHz ||
+      (bitsPerSample != 8 && bitsPerSample != 16) ||
+      (channels != 1 && channels != 2)) {
+    Serial.printf("[audio] WAV format unsupported: %u Hz, %u-bit, %u ch\n",
+                  static_cast<unsigned int>(sampleRate),
+                  static_cast<unsigned int>(bitsPerSample),
+                  static_cast<unsigned int>(channels));
+    f.close();
+    return false;
+  }
+  if (dataBytes == 0) {
+    f.close();
+    return false;
+  }
+
+  if (i2s_set_clk(kI2sPort, sampleRate, I2S_BITS_PER_SAMPLE_16BIT,
+                  channels == 2 ? I2S_CHANNEL_STEREO : I2S_CHANNEL_MONO) != ESP_OK) {
+    Serial.println("[audio] i2s_set_clk failed for WAV");
+    f.close();
+    return false;
+  }
+
+  const float volumeScale = static_cast<float>(volumePercent_) / 100.0f;
+  constexpr size_t kWavReadBytes = 1024;
+  uint8_t readBuf[kWavReadBytes];
+  int16_t writeBuf[kWavReadBytes];  // worst case: every input byte → one int16
+  uint32_t remaining = dataBytes;
+
+  while (remaining > 0 && f.available()) {
+    const size_t toRead = std::min<size_t>(kWavReadBytes, remaining);
+    const int got = f.read(readBuf, toRead);
+    if (got <= 0) break;
+    remaining -= static_cast<uint32_t>(got);
+
+    size_t outSamples = 0;
+    if (bitsPerSample == 16) {
+      const size_t inSamples = static_cast<size_t>(got) / 2;
+      for (size_t i = 0; i < inSamples; ++i) {
+        const int16_t raw = static_cast<int16_t>(
+            readLE16(readBuf + i * 2));
+        writeBuf[outSamples++] = static_cast<int16_t>(raw * volumeScale);
+      }
+    } else {  // 8-bit unsigned PCM
+      for (int i = 0; i < got; ++i) {
+        const int16_t centered =
+            (static_cast<int16_t>(readBuf[i]) - 128) << 8;
+        writeBuf[outSamples++] = static_cast<int16_t>(centered * volumeScale);
+      }
+    }
+
+    size_t written = 0;
+    i2s_write(kI2sPort, writeBuf, outSamples * sizeof(int16_t), &written,
+              pdMS_TO_TICKS(500));
+    yield();
+  }
+  f.close();
+
+  // Restore the default sample rate so the next RTTTL playback uses our 16 kHz config.
+  i2s_set_clk(kI2sPort, kSampleRateHz, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_MONO);
   return true;
 }

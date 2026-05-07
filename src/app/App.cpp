@@ -42,236 +42,258 @@ constexpr uint8_t kBrightnessLevels[] = {40, 55, 70, 85, 100};
 constexpr uint8_t kNightBrightnessLevels[] = {35, 40, 45, 50, 55};
 constexpr size_t kBrightnessLevelCount = sizeof(kBrightnessLevels) / sizeof(kBrightnessLevels[0]);
 
-namespace {
+namespace
+{
 
-void computeLetterAnchors(const std::vector<DisplayManager::LibraryItem> &items,
-                          size_t firstSelectableIndex,
-                          std::vector<char> &letters,
-                          std::vector<size_t> &targets) {
-  letters.clear();
-  targets.clear();
-  char lastLetter = 0;
-  for (size_t i = firstSelectableIndex; i < items.size(); ++i) {
-    const String &t = items[i].title;
-    if (t.isEmpty()) continue;
-    char c = t[0];
-    if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
-    if (!(c >= 'A' && c <= 'Z')) {
-      c = '#';
+  void computeLetterAnchors(const std::vector<DisplayManager::LibraryItem> &items,
+                            size_t firstSelectableIndex,
+                            std::vector<char> &letters,
+                            std::vector<size_t> &targets)
+  {
+    letters.clear();
+    targets.clear();
+    char lastLetter = 0;
+    for (size_t i = firstSelectableIndex; i < items.size(); ++i)
+    {
+      const String &t = items[i].title;
+      if (t.isEmpty())
+        continue;
+      char c = t[0];
+      if (c >= 'a' && c <= 'z')
+        c = static_cast<char>(c - 'a' + 'A');
+      if (!(c >= 'A' && c <= 'Z'))
+      {
+        c = '#';
+      }
+      if (c == lastLetter)
+        continue;
+      letters.push_back(c);
+      targets.push_back(i);
+      lastLetter = c;
     }
-    if (c == lastLetter) continue;
-    letters.push_back(c);
-    targets.push_back(i);
-    lastLetter = c;
   }
-}
 
-enum MenuItem : size_t {
-  MenuResume,
-  MenuResumeFrom,
-  MenuChapters,
-  MenuChangeBook,
-  MenuSettings,
-  MenuRestart,
+  enum MenuItem : size_t
+  {
+    MenuResume,
+    MenuResumeFrom,
+    MenuChapters,
+    MenuChangeBook,
+    MenuSettings,
+    MenuRestart,
 #if RSVP_USB_TRANSFER_ENABLED
-  MenuUsbTransfer,
+    MenuUsbTransfer,
 #endif
-  MenuOtaUpdate,
-  MenuPowerOff,
-  MenuItemCount,
-};
+    MenuOtaUpdate,
+    MenuPowerOff,
+    MenuItemCount,
+  };
 
-constexpr const char *kMenuItems[] = {
-    "Resume",
-    "Resume from",
-    "Chapters",
-    "Library",
-    "Settings",
-    "Restart",
+  constexpr const char *kMenuItems[] = {
+      "Resume",
+      "Resume from",
+      "Chapters",
+      "Library",
+      "Settings",
+      "Restart",
 #if RSVP_USB_TRANSFER_ENABLED
-    "USB transfer",
+      "USB transfer",
 #endif
-    "OTA update",
-    "Power off",
-};
+      "OTA update",
+      "Power off",
+  };
 
-enum SettingsItem : size_t {
-  SettingsBack,
-  SettingsDisplay,
-  SettingsTypography,
-  SettingsWordPacing,
-  SettingsBrightness,
-  SettingsTheme,
-  SettingsPhantomWords,
-  SettingsFontSize,
-  SettingsLongWords,
-  SettingsComplexWords,
-  SettingsPunctuation,
-  SettingsReset,
-  SettingsItemCount,
-};
+  enum SettingsItem : size_t
+  {
+    SettingsBack,
+    SettingsDisplay,
+    SettingsTypography,
+    SettingsWordPacing,
+    SettingsBrightness,
+    SettingsTheme,
+    SettingsPhantomWords,
+    SettingsFontSize,
+    SettingsLongWords,
+    SettingsComplexWords,
+    SettingsPunctuation,
+    SettingsReset,
+    SettingsItemCount,
+  };
 
-enum TypographyTuningItem : size_t {
-  TypographyTuningBack,
-  TypographyTuningTracking,
-  TypographyTuningAnchor,
-  TypographyTuningGuideWidth,
-  TypographyTuningGuideGap,
-  TypographyTuningReset,
-  TypographyTuningItemCount,
-};
+  enum TypographyTuningItem : size_t
+  {
+    TypographyTuningBack,
+    TypographyTuningTracking,
+    TypographyTuningAnchor,
+    TypographyTuningGuideWidth,
+    TypographyTuningGuideGap,
+    TypographyTuningReset,
+    TypographyTuningItemCount,
+  };
 
-enum RestartConfirmItem : size_t {
-  RestartConfirmNo,
-  RestartConfirmYes,
-  RestartConfirmItemCount,
-};
+  enum RestartConfirmItem : size_t
+  {
+    RestartConfirmNo,
+    RestartConfirmYes,
+    RestartConfirmItemCount,
+  };
 
-constexpr const char *kRestartConfirmItems[] = {
-    "Are you sure?",
-    "No, keep place",
-    "Yes, restart",
-};
+  constexpr const char *kRestartConfirmItems[] = {
+      "Are you sure?",
+      "No, keep place",
+      "Yes, restart",
+  };
 
-constexpr size_t kRestartConfirmHeaderRows = 1;
-constexpr size_t kSettingsBackIndex = 0;
-constexpr size_t kSettingsHomeDisplayIndex = 1;
-constexpr size_t kSettingsHomeTypographyIndex = 2;
-constexpr size_t kSettingsHomePacingIndex = 3;
-constexpr size_t kSettingsHomeNotificationsIndex = 4;
-constexpr size_t kSettingsHomeToneIndex = 5;
-constexpr size_t kSettingsHomeVolumeIndex = 6;
-constexpr size_t kSettingsDisplayThemeIndex = 1;
-constexpr size_t kSettingsDisplayBrightnessIndex = 2;
-constexpr size_t kSettingsDisplayPhantomWordsIndex = 3;
-constexpr size_t kSettingsDisplayFontSizeIndex = 4;
-constexpr size_t kSettingsDisplayTypographyIndex = 5;
-constexpr size_t kSettingsDisplayFlipIndex = 6;
-constexpr size_t kSettingsPacingLongWordsIndex = 1;
-constexpr size_t kSettingsPacingComplexityIndex = 2;
-constexpr size_t kSettingsPacingPunctuationIndex = 3;
-constexpr size_t kSettingsPacingResetIndex = 4;
+  constexpr size_t kRestartConfirmHeaderRows = 1;
+  constexpr size_t kSettingsBackIndex = 0;
+  constexpr size_t kSettingsHomeDisplayIndex = 1;
+  constexpr size_t kSettingsHomeTypographyIndex = 2;
+  constexpr size_t kSettingsHomePacingIndex = 3;
+  constexpr size_t kSettingsHomeNotificationsIndex = 4;
+  constexpr size_t kSettingsHomeToneIndex = 5;
+  constexpr size_t kSettingsHomeVolumeIndex = 6;
+  constexpr size_t kSettingsDisplayThemeIndex = 1;
+  constexpr size_t kSettingsDisplayBrightnessIndex = 2;
+  constexpr size_t kSettingsDisplayPhantomWordsIndex = 3;
+  constexpr size_t kSettingsDisplayFontSizeIndex = 4;
+  constexpr size_t kSettingsDisplayTypographyIndex = 5;
+  constexpr size_t kSettingsDisplayFlipIndex = 6;
+  constexpr size_t kSettingsPacingLongWordsIndex = 1;
+  constexpr size_t kSettingsPacingComplexityIndex = 2;
+  constexpr size_t kSettingsPacingPunctuationIndex = 3;
+  constexpr size_t kSettingsPacingResetIndex = 4;
 
-constexpr size_t kBookPickerBackIndex = 0;
-constexpr size_t kChapterPickerBackIndex = 0;
-constexpr size_t kChapterPickerFallbackIndex = 1;
-constexpr size_t kAuthorPickerBackIndex = 0;
-constexpr size_t kAuthorPickerAllBooksIndex = 1;
-constexpr size_t kAuthorPickerFirstAuthorIndex = 2;
-constexpr const char *kAuthorAllBooksLabel = "All books";
-constexpr const char *kAuthorUnknownLabel = "Unknown";
-constexpr const char *kPrefsNamespace = "rsvp";
-constexpr const char *kPrefBookPath = "book";
-constexpr const char *kPrefAppState = "appst";
-constexpr const char *kPrefLegacyWordIndex = "word";
-constexpr const char *kPrefWpm = "wpm";
-constexpr const char *kPrefBrightness = "bright";
-constexpr const char *kPrefDarkMode = "dark";
-constexpr const char *kPrefDisplayFlip = "flip";
-constexpr const char *kPrefNotifications = "notif";
-constexpr const char *kPrefNotifTone = "ntone";
-constexpr const char *kPrefNotifVolume = "nvol";
-constexpr uint32_t kNotificationPollIntervalMs = 5UL * 60UL * 1000UL;
-constexpr uint32_t kNotificationBannerVisibleMs = 6000;
-constexpr uint32_t kNotificationFirstPollDelayMs = 30UL * 1000UL;
-constexpr uint8_t kNotificationVolumeStep = 20;
-constexpr const char *kBuiltinNokiaRtttl =
-    "Nokia:d=4,o=5,b=180:8e6,8d6,f#,g#,8c#6,8b,d,e,8b,8a,c#,e,2a";
-constexpr const char *kPrefNightMode = "night";
-constexpr const char *kPrefPhantomWords = "phantom_on";
-constexpr const char *kPrefReaderFontSize = "font_size";
-constexpr const char *kPrefPacingLong = "pace_len";
-constexpr const char *kPrefPacingComplex = "pace_cpx";
-constexpr const char *kPrefPacingPunctuation = "pace_pnc";
-constexpr const char *kPrefTypographyTracking = "type_trk";
-constexpr const char *kPrefTypographyAnchor = "type_anc";
-constexpr const char *kPrefTypographyGuideWidth = "type_wid";
-constexpr const char *kPrefTypographyGuideGap = "type_gap";
-constexpr const char *kPrefRecentSeq = "seq";
-constexpr const char *kReaderFontSizeLabels[] = {"Large", "Medium", "Small"};
-constexpr size_t kReaderFontSizeCount =
-    sizeof(kReaderFontSizeLabels) / sizeof(kReaderFontSizeLabels[0]);
-constexpr size_t kPhantomBeforeCharTargets[] = {64, 96, 144};
-constexpr size_t kPhantomAfterCharTargets[] = {96, 144, 208};
-constexpr uint32_t kNoSavedWordIndex = 0xFFFFFFFFUL;
-constexpr uint8_t kPacingScalePercents[] = {60, 80, 100, 125, 150};
-constexpr const char *kPacingScaleLabels[] = {"VLow", "Low", "Bal", "High", "Max"};
-constexpr size_t kPacingLevelCount = sizeof(kPacingScalePercents) / sizeof(kPacingScalePercents[0]);
-constexpr uint8_t kDefaultPacingLevelIndex = 2;
-constexpr int8_t kTypographyTrackingMin = -2;
-constexpr int8_t kTypographyTrackingMax = 3;
-constexpr uint8_t kTypographyAnchorMin = 30;
-constexpr uint8_t kTypographyAnchorMax = 40;
-constexpr uint8_t kTypographyGuideWidthMin = 12;
-constexpr uint8_t kTypographyGuideWidthMax = 30;
-constexpr uint8_t kTypographyGuideWidthStep = 2;
-constexpr uint8_t kTypographyGuideGapMin = 2;
-constexpr uint8_t kTypographyGuideGapMax = 8;
-constexpr const char *kTypographyPreviewWords[] = {
-    "minimum",
-    "encyclopaedia",
-    "state-of-the-art",
-    "HTTP/2",
-    "well-known",
-    "rhythms",
-    "illumination",
-    "WAVEFORM",
-    "I",
-};
-constexpr size_t kTypographyPreviewWordCount =
-    sizeof(kTypographyPreviewWords) / sizeof(kTypographyPreviewWords[0]);
+  constexpr size_t kBookPickerBackIndex = 0;
+  constexpr size_t kChapterPickerBackIndex = 0;
+  constexpr size_t kChapterPickerFallbackIndex = 1;
+  constexpr size_t kAuthorPickerBackIndex = 0;
+  constexpr size_t kAuthorPickerAllBooksIndex = 1;
+  constexpr size_t kAuthorPickerFirstAuthorIndex = 2;
+  constexpr const char *kAuthorAllBooksLabel = "All books";
+  constexpr const char *kAuthorUnknownLabel = "Unknown";
+  constexpr const char *kPrefsNamespace = "rsvp";
+  constexpr const char *kPrefBookPath = "book";
+  constexpr const char *kPrefAppState = "appst";
+  constexpr const char *kPrefLegacyWordIndex = "word";
+  constexpr const char *kPrefWpm = "wpm";
+  constexpr const char *kPrefBrightness = "bright";
+  constexpr const char *kPrefDarkMode = "dark";
+  constexpr const char *kPrefDisplayFlip = "flip";
+  constexpr const char *kPrefNotifications = "notif";
+  constexpr const char *kPrefNotifTone = "ntone";
+  constexpr const char *kPrefNotifVolume = "nvol";
+  constexpr uint32_t kNotificationPollIntervalMs = 5UL * 60UL * 1000UL;
+  constexpr uint32_t kNotificationBannerVisibleMs = 6000;
+  constexpr uint32_t kNotificationFirstPollDelayMs = 30UL * 1000UL;
+  constexpr uint8_t kNotificationVolumeStep = 20;
+  constexpr const char *kBuiltinNokiaRtttl =
+      "Nokia:d=4,o=5,b=180:8e6,8d6,f#,g#,8c#6,8b,d,e,8b,8a,c#,e,2a";
+  constexpr const char *kPrefNightMode = "night";
+  constexpr const char *kPrefPhantomWords = "phantom_on";
+  constexpr const char *kPrefReaderFontSize = "font_size";
+  constexpr const char *kPrefPacingLong = "pace_len";
+  constexpr const char *kPrefPacingComplex = "pace_cpx";
+  constexpr const char *kPrefPacingPunctuation = "pace_pnc";
+  constexpr const char *kPrefTypographyTracking = "type_trk";
+  constexpr const char *kPrefTypographyAnchor = "type_anc";
+  constexpr const char *kPrefTypographyGuideWidth = "type_wid";
+  constexpr const char *kPrefTypographyGuideGap = "type_gap";
+  constexpr const char *kPrefRecentSeq = "seq";
+  constexpr const char *kReaderFontSizeLabels[] = {"Large", "Medium", "Small"};
+  constexpr size_t kReaderFontSizeCount =
+      sizeof(kReaderFontSizeLabels) / sizeof(kReaderFontSizeLabels[0]);
+  constexpr size_t kPhantomBeforeCharTargets[] = {64, 96, 144};
+  constexpr size_t kPhantomAfterCharTargets[] = {96, 144, 208};
+  constexpr uint32_t kNoSavedWordIndex = 0xFFFFFFFFUL;
+  constexpr uint8_t kPacingScalePercents[] = {60, 80, 100, 125, 150};
+  constexpr const char *kPacingScaleLabels[] = {"VLow", "Low", "Bal", "High", "Max"};
+  constexpr size_t kPacingLevelCount = sizeof(kPacingScalePercents) / sizeof(kPacingScalePercents[0]);
+  constexpr uint8_t kDefaultPacingLevelIndex = 2;
+  constexpr int8_t kTypographyTrackingMin = -2;
+  constexpr int8_t kTypographyTrackingMax = 3;
+  constexpr uint8_t kTypographyAnchorMin = 30;
+  constexpr uint8_t kTypographyAnchorMax = 40;
+  constexpr uint8_t kTypographyGuideWidthMin = 12;
+  constexpr uint8_t kTypographyGuideWidthMax = 30;
+  constexpr uint8_t kTypographyGuideWidthStep = 2;
+  constexpr uint8_t kTypographyGuideGapMin = 2;
+  constexpr uint8_t kTypographyGuideGapMax = 8;
+  constexpr const char *kTypographyPreviewWords[] = {
+      "minimum",
+      "encyclopaedia",
+      "state-of-the-art",
+      "HTTP/2",
+      "well-known",
+      "rhythms",
+      "illumination",
+      "WAVEFORM",
+      "I",
+  };
+  constexpr size_t kTypographyPreviewWordCount =
+      sizeof(kTypographyPreviewWords) / sizeof(kTypographyPreviewWords[0]);
 
-void logApp(const char *message) {
-  ESP_LOGI(kAppTag, "%s", message);
-  Serial.printf("[app] %s\n", message);
-}
-
-String displayNameForPath(const String &path) {
-  const int separator = path.lastIndexOf('/');
-  String name = separator >= 0 ? path.substring(separator + 1) : path;
-  String lowered = name;
-  lowered.toLowerCase();
-  if (lowered.endsWith(".txt")) {
-    name.remove(name.length() - 4);
+  void logApp(const char *message)
+  {
+    ESP_LOGI(kAppTag, "%s", message);
+    Serial.printf("[app] %s\n", message);
   }
-  if (lowered.endsWith(".rsvp")) {
-    name.remove(name.length() - 5);
+
+  String displayNameForPath(const String &path)
+  {
+    const int separator = path.lastIndexOf('/');
+    String name = separator >= 0 ? path.substring(separator + 1) : path;
+    String lowered = name;
+    lowered.toLowerCase();
+    if (lowered.endsWith(".txt"))
+    {
+      name.remove(name.length() - 4);
+    }
+    if (lowered.endsWith(".rsvp"))
+    {
+      name.remove(name.length() - 5);
+    }
+    return name;
   }
-  return name;
-}
 
-uint32_t hashBookPath(const String &path) {
-  uint32_t hash = 2166136261UL;
-  for (size_t i = 0; i < path.length(); ++i) {
-    hash ^= static_cast<uint8_t>(path[i]);
-    hash *= 16777619UL;
+  uint32_t hashBookPath(const String &path)
+  {
+    uint32_t hash = 2166136261UL;
+    for (size_t i = 0; i < path.length(); ++i)
+    {
+      hash ^= static_cast<uint8_t>(path[i]);
+      hash *= 16777619UL;
+    }
+    return hash;
   }
-  return hash;
-}
 
-int clampIntSetting(int value, int minValue, int maxValue) {
-  return std::max(minValue, std::min(maxValue, value));
-}
-
-int nextCyclicSetting(int value, int minValue, int maxValue, int step = 1) {
-  step = std::max(1, step);
-  const int normalized = clampIntSetting(value, minValue, maxValue);
-  int next = normalized + step;
-  if (next > maxValue) {
-    next = minValue;
+  int clampIntSetting(int value, int minValue, int maxValue)
+  {
+    return std::max(minValue, std::min(maxValue, value));
   }
-  return next;
-}
 
-DisplayManager::TypographyConfig defaultTypographyConfig() {
-  return DisplayManager::TypographyConfig();
-}
+  int nextCyclicSetting(int value, int minValue, int maxValue, int step = 1)
+  {
+    step = std::max(1, step);
+    const int normalized = clampIntSetting(value, minValue, maxValue);
+    int next = normalized + step;
+    if (next > maxValue)
+    {
+      next = minValue;
+    }
+    return next;
+  }
 
-}  // namespace
+  DisplayManager::TypographyConfig defaultTypographyConfig()
+  {
+    return DisplayManager::TypographyConfig();
+  }
+
+} // namespace
 
 App::App() : button_(BoardConfig::PIN_BOOT_BUTTON), powerButton_(BoardConfig::PIN_PWR_BUTTON) {}
 
-void App::begin() {
+void App::begin()
+{
   BoardConfig::begin();
   button_.begin();
   powerButton_.begin();
@@ -284,27 +306,32 @@ void App::begin() {
   notifications_.setStatusCallback(&App::handleStorageStatus, this);
   preferences_.begin(kPrefsNamespace, false);
   brightnessLevelIndex_ = preferences_.getUChar(kPrefBrightness, brightnessLevelIndex_);
-  if (brightnessLevelIndex_ >= kBrightnessLevelCount) {
+  if (brightnessLevelIndex_ >= kBrightnessLevelCount)
+  {
     brightnessLevelIndex_ = kBrightnessLevelCount - 1;
   }
   phantomWordsEnabled_ = preferences_.getBool(kPrefPhantomWords, phantomWordsEnabled_);
   readerFontSizeIndex_ = preferences_.getUChar(kPrefReaderFontSize, readerFontSizeIndex_);
-  if (readerFontSizeIndex_ >= kReaderFontSizeCount) {
+  if (readerFontSizeIndex_ >= kReaderFontSizeCount)
+  {
     readerFontSizeIndex_ = 0;
   }
   pacingLongWordLevelIndex_ =
       preferences_.getUChar(kPrefPacingLong, pacingLongWordLevelIndex_);
-  if (pacingLongWordLevelIndex_ >= kPacingLevelCount) {
+  if (pacingLongWordLevelIndex_ >= kPacingLevelCount)
+  {
     pacingLongWordLevelIndex_ = kDefaultPacingLevelIndex;
   }
   pacingComplexWordLevelIndex_ =
       preferences_.getUChar(kPrefPacingComplex, pacingComplexWordLevelIndex_);
-  if (pacingComplexWordLevelIndex_ >= kPacingLevelCount) {
+  if (pacingComplexWordLevelIndex_ >= kPacingLevelCount)
+  {
     pacingComplexWordLevelIndex_ = kDefaultPacingLevelIndex;
   }
   pacingPunctuationLevelIndex_ =
       preferences_.getUChar(kPrefPacingPunctuation, pacingPunctuationLevelIndex_);
-  if (pacingPunctuationLevelIndex_ >= kPacingLevelCount) {
+  if (pacingPunctuationLevelIndex_ >= kPacingLevelCount)
+  {
     pacingPunctuationLevelIndex_ = kDefaultPacingLevelIndex;
   }
   typographyConfig_ = defaultTypographyConfig();
@@ -328,7 +355,8 @@ void App::begin() {
   notificationsEnabled_ = preferences_.getBool(kPrefNotifications, true);
   notifications_.setEnabled(notificationsEnabled_);
   notificationVolume_ = preferences_.getUChar(kPrefNotifVolume, notificationVolume_);
-  if (notificationVolume_ > 100) notificationVolume_ = 100;
+  if (notificationVolume_ > 100)
+    notificationVolume_ = 100;
   audio_.setVolumePercent(notificationVolume_);
   notificationTone_ = preferences_.getString(kPrefNotifTone, "");
   applyDisplayPreferences(0, false);
@@ -341,10 +369,13 @@ void App::begin() {
   const bool displayReady = display_.begin();
   updateBatteryStatus(bootStartedMs_, true);
 
-  if (displayReady) {
+  if (displayReady)
+  {
     display_.renderCenteredWord("READY");
     logApp("Display init ok");
-  } else {
+  }
+  else
+  {
     ESP_LOGE(kAppTag, "Display init failed");
     Serial.println("[app] Display init failed");
   }
@@ -362,12 +393,14 @@ void App::begin() {
   const bool storageReady = storage_.begin();
   storage_.listBooks();
 
-  if (storageReady && ota_.loadConfigFromSd()) {
+  if (storageReady && ota_.loadConfigFromSd())
+  {
     const auto &cfg = ota_.config();
     notifications_.configure(cfg.ssid, cfg.password, cfg.notificationsUrl,
                              cfg.notificationsToken);
   }
-  if (storageReady) {
+  if (storageReady)
+  {
     ringtoneNames_ = storage_.listRingtoneNames();
   }
   nextNotificationPollMs_ = millis() + kNotificationFirstPollDelayMs;
@@ -381,18 +414,25 @@ void App::begin() {
       (savedAppState == static_cast<uint8_t>(AppState::Menu));
 
   bool haveBook = false;
-  if (storageReady) {
-    if (deferContentLoad) {
+  if (storageReady)
+  {
+    if (deferContentLoad)
+    {
       haveBook = prepareSavedBookMeta();
-    } else {
+    }
+    else
+    {
       haveBook = restoreSavedBook(bootStartedMs_);
     }
   }
 
-  if (haveBook && !deferContentLoad) {
+  if (haveBook && !deferContentLoad)
+  {
     usingStorageBook_ = true;
     bookMetaOnly_ = false;
-  } else if (!haveBook) {
+  }
+  else if (!haveBook)
+  {
     usingStorageBook_ = false;
     bookMetaOnly_ = false;
     chapterMarkers_.clear();
@@ -400,10 +440,13 @@ void App::begin() {
     currentBookPath_ = "";
     currentBookTitle_ = storageReady && storage_.bookCount() > 0 ? "Pick a book" : "Demo";
     reader_.begin(bootStartedMs_);
-    if (storageReady && storage_.bookCount() > 0) {
+    if (storageReady && storage_.bookCount() > 0)
+    {
       Serial.printf("[app] %u books available; awaiting selection\n",
                     static_cast<unsigned int>(storage_.bookCount()));
-    } else {
+    }
+    else
+    {
       Serial.println("[app] using built-in demo text");
     }
   }
@@ -415,10 +458,12 @@ void App::begin() {
   Serial.println("[app] READY splash active");
 
   const esp_partition_t *running = esp_ota_get_running_partition();
-  if (running != nullptr) {
+  if (running != nullptr)
+  {
     esp_ota_img_states_t imgState;
     if (esp_ota_get_state_partition(running, &imgState) == ESP_OK &&
-        imgState == ESP_OTA_IMG_PENDING_VERIFY) {
+        imgState == ESP_OTA_IMG_PENDING_VERIFY)
+    {
       firmwarePendingVerify_ = true;
       firmwareValidateAtMs_ = bootStartedMs_ + 60000;
       Serial.println("[ota] firmware pending verify; will mark valid in 60s if stable");
@@ -426,20 +471,26 @@ void App::begin() {
   }
 }
 
-void App::update(uint32_t nowMs) {
+void App::update(uint32_t nowMs)
+{
   button_.update(nowMs);
   powerButton_.update(nowMs);
   handleBootButton(nowMs);
   handlePowerButton(nowMs);
-  if (powerOffStarted_) {
+  if (powerOffStarted_)
+  {
     return;
   }
 
-  if (firmwarePendingVerify_ && nowMs >= firmwareValidateAtMs_) {
+  if (firmwarePendingVerify_ && nowMs >= firmwareValidateAtMs_)
+  {
     firmwarePendingVerify_ = false;
-    if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) {
+    if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK)
+    {
       Serial.println("[ota] firmware marked valid (rollback cancelled)");
-    } else {
+    }
+    else
+    {
       Serial.println("[ota] failed to mark firmware valid");
     }
   }
@@ -447,19 +498,22 @@ void App::update(uint32_t nowMs) {
   const bool bannerActive = notificationBannerUntilMs_ != 0;
 
   if (!bannerActive && state_ == AppState::Menu && menuScreen_ == MenuScreen::Main &&
-      (nowMs - lastMenuRefreshMs_) >= 33) {
+      (nowMs - lastMenuRefreshMs_) >= 33)
+  {
     renderMainMenu();
     lastMenuRefreshMs_ = nowMs;
   }
 
   if (!bannerActive && state_ == AppState::Paused &&
-      (nowMs - lastReaderRefreshMs_) >= 33) {
+      (nowMs - lastReaderRefreshMs_) >= 33)
+  {
     renderReaderWord();
     lastReaderRefreshMs_ = nowMs;
   }
 
   if (notificationsEnabled_ && nowMs >= nextNotificationPollMs_ &&
-      (state_ == AppState::Paused || state_ == AppState::Menu)) {
+      (state_ == AppState::Paused || state_ == AppState::Menu))
+  {
     pollNotifications(nowMs);
     nextNotificationPollMs_ = nowMs + kNotificationPollIntervalMs;
   }
@@ -473,19 +527,28 @@ void App::update(uint32_t nowMs) {
   updateWpmFeedback(nowMs);
   maybeSaveReadingPosition(nowMs);
 
-  if (batteryChanged && (state_ == AppState::Paused || state_ == AppState::Playing)) {
-    if (contextViewVisible_) {
+  if (batteryChanged && (state_ == AppState::Paused || state_ == AppState::Playing))
+  {
+    if (contextViewVisible_)
+    {
       renderContextPreview();
-    } else if (wpmFeedbackVisible_) {
+    }
+    else if (wpmFeedbackVisible_)
+    {
       renderWpmFeedback(nowMs);
-    } else {
+    }
+    else
+    {
       renderReaderWord();
     }
-  } else if (batteryChanged && state_ == AppState::Menu) {
+  }
+  else if (batteryChanged && state_ == AppState::Menu)
+  {
     renderMenu();
   }
 
-  if (nowMs - lastStateLogMs_ > 1500) {
+  if (nowMs - lastStateLogMs_ > 1500)
+  {
     lastStateLogMs_ = nowMs;
     ESP_LOGI(kAppTag, "state=%s", stateName(state_));
     Serial.printf("[app] state=%s ms=%lu\n", stateName(state_),
@@ -493,83 +556,94 @@ void App::update(uint32_t nowMs) {
   }
 }
 
-const char *App::stateName(AppState state) const {
-  switch (state) {
-    case AppState::Booting:
-      return "Booting";
-    case AppState::Paused:
-      return "Paused";
-    case AppState::Playing:
-      return "Playing";
-    case AppState::Menu:
-      return "Menu";
-    case AppState::UsbTransfer:
-      return "UsbTransfer";
-    case AppState::Sleeping:
-      return "Sleeping";
+const char *App::stateName(AppState state) const
+{
+  switch (state)
+  {
+  case AppState::Booting:
+    return "Booting";
+  case AppState::Paused:
+    return "Paused";
+  case AppState::Playing:
+    return "Playing";
+  case AppState::Menu:
+    return "Menu";
+  case AppState::UsbTransfer:
+    return "UsbTransfer";
+  case AppState::Sleeping:
+    return "Sleeping";
   }
   return "Unknown";
 }
 
-const char *App::touchPhaseName(TouchPhase phase) const {
-  switch (phase) {
-    case TouchPhase::Start:
-      return "Start";
-    case TouchPhase::Move:
-      return "Move";
-    case TouchPhase::End:
-      return "End";
+const char *App::touchPhaseName(TouchPhase phase) const
+{
+  switch (phase)
+  {
+  case TouchPhase::Start:
+    return "Start";
+  case TouchPhase::Move:
+    return "Move";
+  case TouchPhase::End:
+    return "End";
   }
   return "Unknown";
 }
 
-void App::setState(AppState nextState, uint32_t nowMs) {
-  if (nextState == state_) {
+void App::setState(AppState nextState, uint32_t nowMs)
+{
+  if (nextState == state_)
+  {
     return;
   }
 
   const AppState previousState = state_;
 
-  if (nextState != AppState::Paused) {
+  if (nextState != AppState::Paused)
+  {
     pausedTouch_.active = false;
     pausedTouchIntent_ = TouchIntent::None;
     contextViewVisible_ = false;
     invalidateContextPreviewWindow();
     wpmFeedbackVisible_ = false;
   }
-  if (nextState != AppState::Playing) {
+  if (nextState != AppState::Playing)
+  {
     touchPlayHeld_ = false;
   }
 
   state_ = nextState;
 
-  if (state_ == AppState::Paused || state_ == AppState::Menu) {
+  if (state_ == AppState::Paused || state_ == AppState::Menu)
+  {
     preferences_.putUChar(kPrefAppState, static_cast<uint8_t>(state_));
   }
 
-  switch (state_) {
-    case AppState::Paused:
-      renderReaderWord();
-      break;
-    case AppState::Playing:
-      reader_.start(nowMs);
-      renderReaderWord();
-      break;
-    case AppState::Menu:
-      renderMenu();
-      break;
-    case AppState::UsbTransfer:
-      display_.renderStatus("USB", "Preparing SD", "Eject when done");
-      break;
-    case AppState::Sleeping:
-      display_.renderCenteredWord("SLEEP");
-      break;
-    case AppState::Booting:
-      display_.renderCenteredWord("READY");
-      break;
+  switch (state_)
+  {
+  case AppState::Paused:
+    renderReaderWord();
+    break;
+  case AppState::Playing:
+    reader_.start(nowMs);
+    renderReaderWord();
+    break;
+  case AppState::Menu:
+    renderMenu();
+    break;
+  case AppState::UsbTransfer:
+    display_.renderStatus("USB", "Preparing SD", "Eject when done");
+    break;
+  case AppState::Sleeping:
+    display_.renderCenteredWord("SLEEP");
+    break;
+  case AppState::Booting:
+    display_.renderCenteredWord("READY");
+    break;
   }
 
-  if (state_ == AppState::Paused && previousState == AppState::Playing) {
+  if (state_ == AppState::Paused && previousState == AppState::Playing)
+  {
     saveReadingPosition(true);
   }
 
@@ -578,39 +652,49 @@ void App::setState(AppState nextState, uint32_t nowMs) {
                 static_cast<unsigned long>(nowMs));
 }
 
-void App::updateState(uint32_t nowMs) {
-  if (state_ == AppState::Booting) {
-    if (nowMs - bootStartedMs_ < kBootSplashMs) {
+void App::updateState(uint32_t nowMs)
+{
+  if (state_ == AppState::Booting)
+  {
+    if (nowMs - bootStartedMs_ < kBootSplashMs)
+    {
       return;
     }
 
-    if (touchPlayHeld_) {
+    if (touchPlayHeld_)
+    {
       setState(AppState::Playing, nowMs);
       return;
     }
     const uint8_t savedState = preferences_.getUChar(kPrefAppState,
                                                      static_cast<uint8_t>(AppState::Paused));
-    if (savedState == static_cast<uint8_t>(AppState::Menu)) {
+    if (savedState == static_cast<uint8_t>(AppState::Menu))
+    {
       menuScreen_ = MenuScreen::Main;
       menuSelectedIndex_ = MenuResume;
       setState(AppState::Menu, nowMs);
-    } else {
+    }
+    else
+    {
       setState(AppState::Paused, nowMs);
     }
     return;
   }
 
-  if (state_ == AppState::UsbTransfer) {
+  if (state_ == AppState::UsbTransfer)
+  {
     updateUsbTransfer(nowMs);
     return;
   }
 
-  if (state_ == AppState::Menu || state_ == AppState::Sleeping) {
+  if (state_ == AppState::Menu || state_ == AppState::Sleeping)
+  {
     // Menu and sleeping state changes are driven by direct input and power events.
     return;
   }
 
-  if (touchPlayHeld_) {
+  if (touchPlayHeld_)
+  {
     setState(AppState::Playing, nowMs);
     return;
   }
@@ -618,24 +702,30 @@ void App::updateState(uint32_t nowMs) {
   setState(AppState::Paused, nowMs);
 }
 
-void App::updateReader(uint32_t nowMs) {
-  if (state_ != AppState::Playing) {
+void App::updateReader(uint32_t nowMs)
+{
+  if (state_ != AppState::Playing)
+  {
     return;
   }
 
-  if (!reader_.update(nowMs)) {
+  if (!reader_.update(nowMs))
+  {
     return;
   }
 
   renderReaderWord();
 }
 
-void App::maybeSaveReadingPosition(uint32_t nowMs) {
-  if (!usingStorageBook_ || currentBookPath_.isEmpty() || state_ != AppState::Playing) {
+void App::maybeSaveReadingPosition(uint32_t nowMs)
+{
+  if (!usingStorageBook_ || currentBookPath_.isEmpty() || state_ != AppState::Playing)
+  {
     return;
   }
 
-  if (nowMs - lastProgressSaveMs_ < kProgressSaveIntervalMs) {
+  if (nowMs - lastProgressSaveMs_ < kProgressSaveIntervalMs)
+  {
     return;
   }
 
@@ -643,62 +733,77 @@ void App::maybeSaveReadingPosition(uint32_t nowMs) {
   saveReadingPosition(false);
 }
 
-void App::handleBootButton(uint32_t nowMs) {
-  if (state_ == AppState::UsbTransfer || state_ == AppState::Sleeping || powerOffStarted_) {
+void App::handleBootButton(uint32_t nowMs)
+{
+  if (state_ == AppState::UsbTransfer || state_ == AppState::Sleeping || powerOffStarted_)
+  {
     return;
   }
 
-  if (!bootButtonReleasedSinceBoot_) {
-    if (!button_.isHeld()) {
+  if (!bootButtonReleasedSinceBoot_)
+  {
+    if (!button_.isHeld())
+    {
       bootButtonReleasedSinceBoot_ = true;
     }
     return;
   }
 
   if (button_.isHeld() && !bootButtonLongPressHandled_ &&
-      button_.heldDurationMs(nowMs) >= kThemeToggleHoldMs) {
+      button_.heldDurationMs(nowMs) >= kThemeToggleHoldMs)
+  {
     bootButtonLongPressHandled_ = true;
     cycleThemeMode(nowMs);
     return;
   }
 
-  if (!button_.wasReleasedEvent()) {
+  if (!button_.wasReleasedEvent())
+  {
     return;
   }
 
-  if (bootButtonLongPressHandled_) {
+  if (bootButtonLongPressHandled_)
+  {
     bootButtonLongPressHandled_ = false;
     return;
   }
 
-  if (button_.lastHoldDurationMs() < kThemeToggleHoldMs) {
+  if (button_.lastHoldDurationMs() < kThemeToggleHoldMs)
+  {
     cycleBrightness();
   }
 }
 
-void App::handlePowerButton(uint32_t nowMs) {
-  if (!powerButtonReleasedSinceBoot_) {
-    if (!powerButton_.isHeld()) {
+void App::handlePowerButton(uint32_t nowMs)
+{
+  if (!powerButtonReleasedSinceBoot_)
+  {
+    if (!powerButton_.isHeld())
+    {
       powerButtonReleasedSinceBoot_ = true;
     }
     return;
   }
 
-  if (state_ == AppState::UsbTransfer || powerOffStarted_) {
+  if (state_ == AppState::UsbTransfer || powerOffStarted_)
+  {
     return;
   }
 
-  if (powerButton_.isHeld() && nowMs - powerButton_.lastEdgeMs() >= kPowerOffHoldMs) {
+  if (powerButton_.isHeld() && nowMs - powerButton_.lastEdgeMs() >= kPowerOffHoldMs)
+  {
     powerButtonLongPressHandled_ = true;
     enterPowerOff(nowMs);
     return;
   }
 
-  if (!powerButton_.wasReleasedEvent()) {
+  if (!powerButton_.wasReleasedEvent())
+  {
     return;
   }
 
-  if (powerButtonLongPressHandled_) {
+  if (powerButtonLongPressHandled_)
+  {
     powerButtonLongPressHandled_ = false;
     return;
   }
@@ -706,16 +811,22 @@ void App::handlePowerButton(uint32_t nowMs) {
   toggleMenuFromPowerButton(nowMs);
 }
 
-void App::toggleMenuFromPowerButton(uint32_t nowMs) {
+void App::toggleMenuFromPowerButton(uint32_t nowMs)
+{
   if (state_ == AppState::Booting || state_ == AppState::UsbTransfer ||
-      state_ == AppState::Sleeping) {
+      state_ == AppState::Sleeping)
+  {
     return;
   }
 
-  if (state_ == AppState::Menu) {
-    if (menuScreen_ == MenuScreen::Main) {
+  if (state_ == AppState::Menu)
+  {
+    if (menuScreen_ == MenuScreen::Main)
+    {
       setState(AppState::Paused, nowMs);
-    } else {
+    }
+    else
+    {
       menuScreen_ = MenuScreen::Main;
       renderMainMenu();
     }
@@ -725,7 +836,8 @@ void App::toggleMenuFromPowerButton(uint32_t nowMs) {
   openMainMenu(nowMs);
 }
 
-void App::openMainMenu(uint32_t nowMs) {
+void App::openMainMenu(uint32_t nowMs)
+{
   pausedTouch_.active = false;
   pausedTouchIntent_ = TouchIntent::None;
   touchPlayHeld_ = false;
@@ -733,29 +845,35 @@ void App::openMainMenu(uint32_t nowMs) {
   menuSelectedIndex_ = MenuResume;
   wpmFeedbackVisible_ = false;
   contextViewVisible_ = false;
-  if (state_ == AppState::Playing) {
+  if (state_ == AppState::Playing)
+  {
     saveReadingPosition(true);
   }
   setState(AppState::Menu, nowMs);
 }
 
-uint8_t App::currentBrightnessPercent() const {
+uint8_t App::currentBrightnessPercent() const
+{
   return nightMode_ ? kNightBrightnessLevels[brightnessLevelIndex_]
                     : kBrightnessLevels[brightnessLevelIndex_];
 }
 
-void App::applyDisplayPreferences(uint32_t nowMs, bool rerender) {
+void App::applyDisplayPreferences(uint32_t nowMs, bool rerender)
+{
   display_.setDarkMode(darkMode_);
   display_.setNightMode(nightMode_);
   display_.setBrightnessPercent(currentBrightnessPercent());
 
-  if (!rerender) {
+  if (!rerender)
+  {
     return;
   }
 
-  if (state_ == AppState::Menu) {
+  if (state_ == AppState::Menu)
+  {
     if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
-        menuScreen_ == MenuScreen::SettingsPacing) {
+        menuScreen_ == MenuScreen::SettingsPacing)
+    {
       rebuildSettingsMenuItems();
       renderSettings();
       return;
@@ -764,23 +882,31 @@ void App::applyDisplayPreferences(uint32_t nowMs, bool rerender) {
     return;
   }
 
-  if (state_ == AppState::Paused || state_ == AppState::Playing) {
-    if (contextViewVisible_) {
+  if (state_ == AppState::Paused || state_ == AppState::Playing)
+  {
+    if (contextViewVisible_)
+    {
       renderContextPreview();
-    } else if (wpmFeedbackVisible_) {
+    }
+    else if (wpmFeedbackVisible_)
+    {
       renderWpmFeedback(nowMs);
-    } else {
+    }
+    else
+    {
       renderReaderWord();
     }
     return;
   }
 
-  if (state_ == AppState::Booting) {
+  if (state_ == AppState::Booting)
+  {
     display_.renderCenteredWord("READY");
   }
 }
 
-void App::applyTypographySettings(uint32_t nowMs, bool rerender) {
+void App::applyTypographySettings(uint32_t nowMs, bool rerender)
+{
   display_.setTypographyConfig(typographyConfig_);
 
   Serial.printf("[typography] track=%d anchor=%u guideWidth=%u guideGap=%u\n",
@@ -789,27 +915,36 @@ void App::applyTypographySettings(uint32_t nowMs, bool rerender) {
                 static_cast<unsigned int>(typographyConfig_.guideHalfWidth),
                 static_cast<unsigned int>(typographyConfig_.guideGap));
 
-  if (!rerender) {
+  if (!rerender)
+  {
     return;
   }
 
-  if (state_ == AppState::Menu) {
+  if (state_ == AppState::Menu)
+  {
     renderMenu();
     return;
   }
 
-  if (state_ == AppState::Paused || state_ == AppState::Playing) {
-    if (contextViewVisible_) {
+  if (state_ == AppState::Paused || state_ == AppState::Playing)
+  {
+    if (contextViewVisible_)
+    {
       renderContextPreview();
-    } else if (wpmFeedbackVisible_) {
+    }
+    else if (wpmFeedbackVisible_)
+    {
       renderWpmFeedback(nowMs);
-    } else {
+    }
+    else
+    {
       renderReaderWord();
     }
   }
 }
 
-void App::cycleBrightness() {
+void App::cycleBrightness()
+{
   brightnessLevelIndex_ = static_cast<uint8_t>((brightnessLevelIndex_ + 1) % kBrightnessLevelCount);
   preferences_.putUChar(kPrefBrightness, brightnessLevelIndex_);
   const uint8_t percent = currentBrightnessPercent();
@@ -820,13 +955,19 @@ void App::cycleBrightness() {
   applyDisplayPreferences(millis());
 }
 
-void App::cycleThemeMode(uint32_t nowMs) {
-  if (nightMode_) {
+void App::cycleThemeMode(uint32_t nowMs)
+{
+  if (nightMode_)
+  {
     nightMode_ = false;
     darkMode_ = true;
-  } else if (darkMode_) {
+  }
+  else if (darkMode_)
+  {
     darkMode_ = false;
-  } else {
+  }
+  else
+  {
     darkMode_ = true;
     nightMode_ = true;
   }
@@ -837,7 +978,8 @@ void App::cycleThemeMode(uint32_t nowMs) {
   applyDisplayPreferences(nowMs);
 }
 
-void App::toggleDisplayFlip(uint32_t nowMs) {
+void App::toggleDisplayFlip(uint32_t nowMs)
+{
   (void)nowMs;
   displayFlipped_ = !displayFlipped_;
   preferences_.putBool(kPrefDisplayFlip, displayFlipped_);
@@ -848,27 +990,32 @@ void App::toggleDisplayFlip(uint32_t nowMs) {
   Serial.printf("[display] flipped=%d\n", displayFlipped_ ? 1 : 0);
 }
 
-void App::togglePhantomWords(uint32_t nowMs) {
+void App::togglePhantomWords(uint32_t nowMs)
+{
   phantomWordsEnabled_ = !phantomWordsEnabled_;
   preferences_.putBool(kPrefPhantomWords, phantomWordsEnabled_);
   Serial.printf("[display] phantom words=%s\n", phantomWordsLabel().c_str());
   applyDisplayPreferences(nowMs);
 }
 
-void App::cycleReaderFontSize(uint32_t nowMs) {
+void App::cycleReaderFontSize(uint32_t nowMs)
+{
   readerFontSizeIndex_ = static_cast<uint8_t>((readerFontSizeIndex_ + 1) % kReaderFontSizeCount);
   preferences_.putUChar(kPrefReaderFontSize, readerFontSizeIndex_);
   Serial.printf("[display] font size=%s\n", readerFontSizeLabel().c_str());
   applyDisplayPreferences(nowMs);
 }
 
-bool App::updateBatteryStatus(uint32_t nowMs, bool force) {
+bool App::updateBatteryStatus(uint32_t nowMs, bool force)
+{
   // Battery sampling toggles shared board hardware; avoid doing that during active reading.
-  if (!force && state_ == AppState::Playing) {
+  if (!force && state_ == AppState::Playing)
+  {
     return false;
   }
 
-  if (!force && nowMs - lastBatterySampleMs_ < kBatterySampleIntervalMs) {
+  if (!force && nowMs - lastBatterySampleMs_ < kBatterySampleIntervalMs)
+  {
     return false;
   }
 
@@ -876,33 +1023,43 @@ bool App::updateBatteryStatus(uint32_t nowMs, bool force) {
 
   BoardConfig::BatteryStatus status;
   String nextLabel;
-  if (BoardConfig::readBatteryStatus(status)) {
+  if (BoardConfig::readBatteryStatus(status))
+  {
     nextLabel = String(status.percent) + "%";
-  } else {
+  }
+  else
+  {
     nextLabel = "";
   }
 
-  if (nextLabel == batteryLabel_) {
+  if (nextLabel == batteryLabel_)
+  {
     return false;
   }
 
   batteryLabel_ = nextLabel;
   display_.setBatteryLabel(batteryLabel_);
-  if (!batteryLabel_.isEmpty()) {
+  if (!batteryLabel_.isEmpty())
+  {
     Serial.printf("[power] battery %.2f V (%u%%)\n", status.voltage,
                   static_cast<unsigned int>(status.percent));
-  } else {
+  }
+  else
+  {
     Serial.println("[power] battery not detected");
   }
   return true;
 }
 
-void App::updateWpmFeedback(uint32_t nowMs) {
-  if (!wpmFeedbackVisible_ || state_ != AppState::Paused) {
+void App::updateWpmFeedback(uint32_t nowMs)
+{
+  if (!wpmFeedbackVisible_ || state_ != AppState::Paused)
+  {
     return;
   }
 
-  if (nowMs < wpmFeedbackUntilMs_) {
+  if (nowMs < wpmFeedbackUntilMs_)
+  {
     return;
   }
 
@@ -910,13 +1067,16 @@ void App::updateWpmFeedback(uint32_t nowMs) {
   renderReaderWord();
 }
 
-void App::handleTouch(uint32_t nowMs) {
-  if (!touchInitialized_) {
+void App::handleTouch(uint32_t nowMs)
+{
+  if (!touchInitialized_)
+  {
     return;
   }
 
   if (state_ == AppState::Booting || state_ == AppState::UsbTransfer ||
-      state_ == AppState::Sleeping) {
+      state_ == AppState::Sleeping)
+  {
     touch_.cancel();
     pausedTouch_.active = false;
     pausedTouchIntent_ = TouchIntent::None;
@@ -925,7 +1085,8 @@ void App::handleTouch(uint32_t nowMs) {
   }
 
   TouchEvent ev;
-  if (!touch_.poll(ev)) {
+  if (!touch_.poll(ev))
+  {
     return;
   }
 
@@ -936,31 +1097,41 @@ void App::handleTouch(uint32_t nowMs) {
   // Notification banner consumes any tap. The first End event dismisses it and
   // we don't pass the gesture to the underlying state, so the user doesn't
   // accidentally trigger the menu/reader behind it.
-  if (notificationBannerUntilMs_ != 0) {
-    if (ev.phase == TouchPhase::End) {
+  if (notificationBannerUntilMs_ != 0)
+  {
+    if (ev.phase == TouchPhase::End)
+    {
       notificationBannerUntilMs_ = 0;
       notificationBannerTitle_ = "";
       notificationBannerBody_ = "";
       pausedTouch_.active = false;
       pausedTouchIntent_ = TouchIntent::None;
-      if (state_ == AppState::Menu) {
+      if (state_ == AppState::Menu)
+      {
         renderMenu();
-      } else {
+      }
+      else
+      {
         renderReaderWord();
       }
     }
     return;
   }
 
-  if (state_ == AppState::Menu) {
+  if (state_ == AppState::Menu)
+  {
     applyMenuTouchGesture(ev, nowMs);
-  } else {
+  }
+  else
+  {
     applyPausedTouchGesture(ev, nowMs);
   }
 }
 
-void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs) {
-  if (event.phase == TouchPhase::End && touchPlayHeld_) {
+void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs)
+{
+  if (event.phase == TouchPhase::End && touchPlayHeld_)
+  {
     touchPlayHeld_ = false;
     pausedTouch_.active = false;
     pausedTouchIntent_ = TouchIntent::None;
@@ -968,11 +1139,13 @@ void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs) {
     return;
   }
 
-  if (state_ == AppState::Playing) {
+  if (state_ == AppState::Playing)
+  {
     return;
   }
 
-  if (event.phase == TouchPhase::Start) {
+  if (event.phase == TouchPhase::Start)
+  {
     pausedTouch_.active = true;
     pausedTouchIntent_ = TouchIntent::None;
     invalidateContextPreviewWindow();
@@ -987,7 +1160,8 @@ void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs) {
     return;
   }
 
-  if (!pausedTouch_.active) {
+  if (!pausedTouch_.active)
+  {
     return;
   }
 
@@ -1005,7 +1179,8 @@ void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs) {
                        absDeltaY <= static_cast<int>(kTapSlopPx);
 
   if (!ended && pausedTouchIntent_ == TouchIntent::None &&
-      pressDurationMs >= kTouchPlayHoldMs && tapLike) {
+      pressDurationMs >= kTouchPlayHoldMs && tapLike)
+  {
     touchPlayHeld_ = true;
     pausedTouchIntent_ = TouchIntent::PlayHold;
     wpmFeedbackVisible_ = false;
@@ -1013,19 +1188,25 @@ void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs) {
     return;
   }
 
-  if (pausedTouchIntent_ == TouchIntent::None) {
+  if (pausedTouchIntent_ == TouchIntent::None)
+  {
     if (absDeltaX >= static_cast<int>(kSwipeThresholdPx) &&
-        absDeltaX > absDeltaY + static_cast<int>(kAxisBiasPx)) {
+        absDeltaX > absDeltaY + static_cast<int>(kAxisBiasPx))
+    {
       pausedTouchIntent_ = TouchIntent::Scrub;
-    } else if (absDeltaY >= static_cast<int>(kSwipeThresholdPx) &&
-               absDeltaY > absDeltaX + static_cast<int>(kAxisBiasPx)) {
+    }
+    else if (absDeltaY >= static_cast<int>(kSwipeThresholdPx) &&
+             absDeltaY > absDeltaX + static_cast<int>(kAxisBiasPx))
+    {
       pausedTouchIntent_ = TouchIntent::Wpm;
     }
   }
 
-  if (pausedTouchIntent_ == TouchIntent::Scrub) {
+  if (pausedTouchIntent_ == TouchIntent::Scrub)
+  {
     applyScrubTarget(scrubStepsForDrag(deltaX));
-    if (ended) {
+    if (ended)
+    {
       pausedTouch_.active = false;
       pausedTouchIntent_ = TouchIntent::None;
       saveReadingPosition(true);
@@ -1033,8 +1214,10 @@ void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs) {
     return;
   }
 
-  if (pausedTouchIntent_ == TouchIntent::Wpm) {
-    if (!ended) {
+  if (pausedTouchIntent_ == TouchIntent::Wpm)
+  {
+    if (!ended)
+    {
       return;
     }
 
@@ -1050,7 +1233,8 @@ void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs) {
     return;
   }
 
-  if (ended) {
+  if (ended)
+  {
     pausedTouch_.active = false;
     pausedTouchIntent_ = TouchIntent::None;
   }
@@ -1058,9 +1242,11 @@ void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs) {
   // Paused taps are intentionally ignored unless they become part of the UX.
 }
 
-int App::scrubStepsForDrag(int deltaX) const {
+int App::scrubStepsForDrag(int deltaX) const
+{
   const int absDeltaX = abs(deltaX);
-  if (absDeltaX < static_cast<int>(kSwipeThresholdPx)) {
+  if (absDeltaX < static_cast<int>(kSwipeThresholdPx))
+  {
     return 0;
   }
 
@@ -1071,8 +1257,10 @@ int App::scrubStepsForDrag(int deltaX) const {
   return (deltaX > 0) ? steps : -steps;
 }
 
-void App::applyScrubTarget(int targetSteps) {
-  if (targetSteps == pausedTouch_.scrubStepsApplied) {
+void App::applyScrubTarget(int targetSteps)
+{
+  if (targetSteps == pausedTouch_.scrubStepsApplied)
+  {
     return;
   }
 
@@ -1083,8 +1271,10 @@ void App::applyScrubTarget(int targetSteps) {
   Serial.printf("[app] scrub target=%d word=%s\n", targetSteps, reader_.currentWord().c_str());
 }
 
-void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs) {
-  if (event.phase == TouchPhase::Start) {
+void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs)
+{
+  if (event.phase == TouchPhase::Start)
+  {
     pausedTouch_.active = true;
     pausedTouchIntent_ = TouchIntent::None;
     pausedTouch_.startX = event.x;
@@ -1096,7 +1286,8 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs) {
     return;
   }
 
-  if (!pausedTouch_.active) {
+  if (!pausedTouch_.active)
+  {
     return;
   }
 
@@ -1106,20 +1297,24 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs) {
 
   const bool inPicker =
       menuScreen_ == MenuScreen::AuthorPicker || menuScreen_ == MenuScreen::BookPicker;
-  if (inPicker) {
+  if (inPicker)
+  {
     const int stripStartX = BoardConfig::DISPLAY_WIDTH - DisplayManager::kLibraryLetterStripWidth;
     const bool startInStrip = pausedTouch_.startX >= stripStartX;
     if (startInStrip && !letterScrubActive_ &&
-        (nowMs - pausedTouch_.startMs) >= 350) {
+        (nowMs - pausedTouch_.startMs) >= 350)
+    {
       letterScrubActive_ = true;
       const std::vector<char> &lettersInit =
           (menuScreen_ == MenuScreen::AuthorPicker) ? authorPickerLetterAnchors_
                                                     : bookPickerLetterAnchors_;
       letterScrubFocusIdx_ =
           DisplayManager::libraryLetterAtY(lettersInit, pausedTouch_.startY);
-      if (letterScrubFocusIdx_ < 0) letterScrubFocusIdx_ = 0;
+      if (letterScrubFocusIdx_ < 0)
+        letterScrubFocusIdx_ = 0;
     }
-    if (letterScrubActive_) {
+    if (letterScrubActive_)
+    {
       const std::vector<char> &letters =
           (menuScreen_ == MenuScreen::AuthorPicker) ? authorPickerLetterAnchors_
                                                     : bookPickerLetterAnchors_;
@@ -1130,17 +1325,22 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs) {
           letterScrubFocusIdx_ >= 0 ? letterScrubFocusIdx_ : 0;
       const int idx =
           DisplayManager::libraryScrubLetterAtY(letters, event.y, currentFocus);
-      if (idx >= 0 && static_cast<size_t>(idx) < targets.size()) {
+      if (idx >= 0 && static_cast<size_t>(idx) < targets.size())
+      {
         letterScrubFocusIdx_ = idx;
-        if (menuScreen_ == MenuScreen::AuthorPicker) {
+        if (menuScreen_ == MenuScreen::AuthorPicker)
+        {
           authorPickerSelectedIndex_ = targets[idx];
           renderAuthorPicker();
-        } else {
+        }
+        else
+        {
           bookPickerSelectedIndex_ = targets[idx];
           renderBookPicker();
         }
       }
-      if (event.phase == TouchPhase::End) {
+      if (event.phase == TouchPhase::End)
+      {
         letterScrubActive_ = false;
         letterScrubFocusIdx_ = -1;
         pausedTouch_.active = false;
@@ -1150,7 +1350,8 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs) {
     }
   }
 
-  if (event.phase != TouchPhase::End) {
+  if (event.phase != TouchPhase::End)
+  {
     return;
   }
 
@@ -1163,34 +1364,43 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs) {
 
   if (menuScreen_ == MenuScreen::TypographyTuning &&
       absDeltaX >= static_cast<int>(kSwipeThresholdPx) &&
-      absDeltaX > absDeltaY + static_cast<int>(kAxisBiasPx)) {
+      absDeltaX > absDeltaY + static_cast<int>(kAxisBiasPx))
+  {
     cycleTypographyPreviewSample(deltaX < 0 ? 1 : -1);
     return;
   }
 
   if (absDeltaY >= static_cast<int>(kSwipeThresholdPx) &&
-      absDeltaY > absDeltaX + static_cast<int>(kAxisBiasPx)) {
+      absDeltaY > absDeltaX + static_cast<int>(kAxisBiasPx))
+  {
     moveMenuSelection(deltaY < 0 ? -1 : 1);
     return;
   }
 
-  if (absDeltaX <= static_cast<int>(kTapSlopPx) && absDeltaY <= static_cast<int>(kTapSlopPx)) {
+  if (absDeltaX <= static_cast<int>(kTapSlopPx) && absDeltaY <= static_cast<int>(kTapSlopPx))
+  {
     const int stripX = BoardConfig::DISPLAY_WIDTH - DisplayManager::kLibraryLetterStripWidth;
-    if (pausedTouch_.startX >= stripX) {
-      if (menuScreen_ == MenuScreen::AuthorPicker && !authorPickerLetterAnchors_.empty()) {
+    if (pausedTouch_.startX >= stripX)
+    {
+      if (menuScreen_ == MenuScreen::AuthorPicker && !authorPickerLetterAnchors_.empty())
+      {
         const int letterIdx = DisplayManager::libraryLetterAtY(authorPickerLetterAnchors_,
                                                                pausedTouch_.startY);
         if (letterIdx >= 0 &&
-            static_cast<size_t>(letterIdx) < authorPickerLetterTargets_.size()) {
+            static_cast<size_t>(letterIdx) < authorPickerLetterTargets_.size())
+        {
           authorPickerSelectedIndex_ = authorPickerLetterTargets_[letterIdx];
           renderAuthorPicker();
           return;
         }
-      } else if (menuScreen_ == MenuScreen::BookPicker && !bookPickerLetterAnchors_.empty()) {
+      }
+      else if (menuScreen_ == MenuScreen::BookPicker && !bookPickerLetterAnchors_.empty())
+      {
         const int letterIdx = DisplayManager::libraryLetterAtY(bookPickerLetterAnchors_,
                                                                pausedTouch_.startY);
         if (letterIdx >= 0 &&
-            static_cast<size_t>(letterIdx) < bookPickerLetterTargets_.size()) {
+            static_cast<size_t>(letterIdx) < bookPickerLetterTargets_.size())
+        {
           bookPickerSelectedIndex_ = bookPickerLetterTargets_[letterIdx];
           renderBookPicker();
           return;
@@ -1201,254 +1411,314 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs) {
   }
 }
 
-void App::moveMenuSelection(int direction) {
-  if (direction == 0) {
+void App::moveMenuSelection(int direction)
+{
+  if (direction == 0)
+  {
     return;
   }
 
   size_t *selectedIndex = &menuSelectedIndex_;
   size_t itemCount = MenuItemCount;
   if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
-      menuScreen_ == MenuScreen::SettingsPacing) {
+      menuScreen_ == MenuScreen::SettingsPacing)
+  {
     selectedIndex = &settingsSelectedIndex_;
     itemCount = settingsMenuItems_.size();
-  } else if (menuScreen_ == MenuScreen::TypographyTuning) {
+  }
+  else if (menuScreen_ == MenuScreen::TypographyTuning)
+  {
     selectedIndex = &typographyTuningSelectedIndex_;
     itemCount = TypographyTuningItemCount;
-  } else if (menuScreen_ == MenuScreen::BookPicker) {
+  }
+  else if (menuScreen_ == MenuScreen::BookPicker)
+  {
     selectedIndex = &bookPickerSelectedIndex_;
     itemCount = bookMenuItems_.size();
-  } else if (menuScreen_ == MenuScreen::AuthorPicker) {
+  }
+  else if (menuScreen_ == MenuScreen::AuthorPicker)
+  {
     selectedIndex = &authorPickerSelectedIndex_;
     itemCount = authorMenuItems_.size();
-  } else if (menuScreen_ == MenuScreen::ChapterPicker) {
+  }
+  else if (menuScreen_ == MenuScreen::ChapterPicker)
+  {
     selectedIndex = &chapterPickerSelectedIndex_;
     itemCount = chapterMenuItems_.size();
-  } else if (menuScreen_ == MenuScreen::RestartConfirm) {
+  }
+  else if (menuScreen_ == MenuScreen::TonePicker)
+  {
+    selectedIndex = &tonePickerSelectedIndex_;
+    itemCount = toneMenuItems_.size();
+  }
+  else if (menuScreen_ == MenuScreen::RestartConfirm)
+  {
     selectedIndex = &restartConfirmSelectedIndex_;
     itemCount = RestartConfirmItemCount;
   }
 
-  if (itemCount == 0) {
+  if (itemCount == 0)
+  {
     return;
   }
 
   const int next = static_cast<int>(*selectedIndex) + direction;
-  if (next < 0) {
+  if (next < 0)
+  {
     *selectedIndex = itemCount - 1;
-  } else if (next >= static_cast<int>(itemCount)) {
+  }
+  else if (next >= static_cast<int>(itemCount))
+  {
     *selectedIndex = 0;
-  } else {
+  }
+  else
+  {
     *selectedIndex = static_cast<size_t>(next);
   }
 
   renderMenu();
   if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
-      menuScreen_ == MenuScreen::SettingsPacing) {
+      menuScreen_ == MenuScreen::SettingsPacing)
+  {
     Serial.printf("[settings] selected=%s\n", settingsMenuItems_[settingsSelectedIndex_].c_str());
-  } else if (menuScreen_ == MenuScreen::TypographyTuning) {
+  }
+  else if (menuScreen_ == MenuScreen::TypographyTuning)
+  {
     Serial.printf("[typography] selected=%s\n", typographyTuningLabel().c_str());
-  } else if (menuScreen_ == MenuScreen::BookPicker) {
+  }
+  else if (menuScreen_ == MenuScreen::BookPicker)
+  {
     Serial.printf("[book-picker] selected=%s\n",
                   bookMenuItems_[bookPickerSelectedIndex_].title.c_str());
-  } else if (menuScreen_ == MenuScreen::AuthorPicker) {
+  }
+  else if (menuScreen_ == MenuScreen::AuthorPicker)
+  {
     Serial.printf("[author-picker] selected=%s\n",
                   authorMenuItems_[authorPickerSelectedIndex_].title.c_str());
-  } else if (menuScreen_ == MenuScreen::ChapterPicker) {
+  }
+  else if (menuScreen_ == MenuScreen::ChapterPicker)
+  {
     Serial.printf("[chapter-picker] selected=%s\n",
                   chapterMenuItems_[chapterPickerSelectedIndex_].c_str());
-  } else if (menuScreen_ == MenuScreen::RestartConfirm) {
+  }
+  else if (menuScreen_ == MenuScreen::RestartConfirm)
+  {
     Serial.printf("[restart] selected=%s\n",
                   kRestartConfirmItems[restartConfirmSelectedIndex_ + kRestartConfirmHeaderRows]);
-  } else {
+  }
+  else
+  {
     Serial.printf("[menu] selected=%s\n", kMenuItems[menuSelectedIndex_]);
   }
 }
 
-void App::selectMenuItem(uint32_t nowMs) {
+void App::selectMenuItem(uint32_t nowMs)
+{
   if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
-      menuScreen_ == MenuScreen::SettingsPacing) {
+      menuScreen_ == MenuScreen::SettingsPacing)
+  {
     selectSettingsItem(nowMs);
     return;
   }
-  if (menuScreen_ == MenuScreen::TypographyTuning) {
+  if (menuScreen_ == MenuScreen::TypographyTuning)
+  {
     selectTypographyTuningItem(nowMs);
     return;
   }
-  if (menuScreen_ == MenuScreen::AuthorPicker) {
+  if (menuScreen_ == MenuScreen::AuthorPicker)
+  {
     selectAuthorPickerItem(nowMs);
     return;
   }
-  if (menuScreen_ == MenuScreen::BookPicker) {
+  if (menuScreen_ == MenuScreen::BookPicker)
+  {
     selectBookPickerItem(nowMs);
     return;
   }
-  if (menuScreen_ == MenuScreen::ChapterPicker) {
+  if (menuScreen_ == MenuScreen::ChapterPicker)
+  {
     selectChapterPickerItem(nowMs);
     return;
   }
-  if (menuScreen_ == MenuScreen::RestartConfirm) {
+  if (menuScreen_ == MenuScreen::TonePicker)
+  {
+    selectTonePickerItem(nowMs);
+    return;
+  }
+  if (menuScreen_ == MenuScreen::RestartConfirm)
+  {
     selectRestartConfirmItem(nowMs);
     return;
   }
 
-  switch (menuSelectedIndex_) {
-    case MenuResume:
-      if (bookMetaOnly_) {
-        ensureCurrentBookLoaded(nowMs);
-      }
-      setState(AppState::Paused, nowMs);
-      return;
-    case MenuRestart:
-      openRestartConfirm();
-      return;
-    case MenuOtaUpdate:
-      runOtaUpdate(nowMs);
-      return;
-    case MenuPowerOff:
-      enterPowerOff(nowMs);
-      return;
+  switch (menuSelectedIndex_)
+  {
+  case MenuResume:
+    if (bookMetaOnly_)
+    {
+      ensureCurrentBookLoaded(nowMs);
+    }
+    setState(AppState::Paused, nowMs);
+    return;
+  case MenuRestart:
+    openRestartConfirm();
+    return;
+  case MenuOtaUpdate:
+    runOtaUpdate(nowMs);
+    return;
+  case MenuPowerOff:
+    enterPowerOff(nowMs);
+    return;
 #if RSVP_USB_TRANSFER_ENABLED
-    case MenuUsbTransfer:
-      enterUsbTransfer(nowMs);
-      return;
+  case MenuUsbTransfer:
+    enterUsbTransfer(nowMs);
+    return;
 #endif
-    case MenuChapters:
-      openChapterPicker();
-      return;
-    case MenuChangeBook:
-      activeAuthorFilter_ = "";
-      recentOnlyFilter_ = false;
-      openAuthorPicker();
-      return;
-    case MenuResumeFrom:
-      activeAuthorFilter_ = "";
-      recentOnlyFilter_ = true;
-      openBookPicker();
-      return;
-    case MenuSettings:
-      openSettings();
-      return;
-    default:
-      return;
+  case MenuChapters:
+    openChapterPicker();
+    return;
+  case MenuChangeBook:
+    activeAuthorFilter_ = "";
+    recentOnlyFilter_ = false;
+    openAuthorPicker();
+    return;
+  case MenuResumeFrom:
+    activeAuthorFilter_ = "";
+    recentOnlyFilter_ = true;
+    openBookPicker();
+    return;
+  case MenuSettings:
+    openSettings();
+    return;
+  default:
+    return;
   }
 }
 
-void App::openSettings() {
+void App::openSettings()
+{
   settingsSelectedIndex_ = kSettingsHomeDisplayIndex;
   menuScreen_ = MenuScreen::SettingsHome;
   rebuildSettingsMenuItems();
   renderSettings();
 }
 
-void App::selectSettingsItem(uint32_t nowMs) {
-  if (settingsMenuItems_.empty()) {
+void App::selectSettingsItem(uint32_t nowMs)
+{
+  if (settingsMenuItems_.empty())
+  {
     openSettings();
     return;
   }
 
-  if (menuScreen_ == MenuScreen::SettingsHome) {
-    switch (settingsSelectedIndex_) {
-      case kSettingsBackIndex:
-        menuScreen_ = MenuScreen::Main;
-        renderMainMenu();
-        return;
-      case kSettingsHomeDisplayIndex:
-        settingsSelectedIndex_ = kSettingsDisplayThemeIndex;
-        menuScreen_ = MenuScreen::SettingsDisplay;
-        rebuildSettingsMenuItems();
-        renderSettings();
-        return;
-      case kSettingsHomeTypographyIndex:
-        openTypographyTuning();
-        return;
-      case kSettingsHomePacingIndex:
-        settingsSelectedIndex_ = kSettingsPacingLongWordsIndex;
-        menuScreen_ = MenuScreen::SettingsPacing;
-        rebuildSettingsMenuItems();
-        renderSettings();
-        return;
-      case kSettingsHomeNotificationsIndex:
-        toggleNotificationsEnabled(nowMs);
-        return;
-      case kSettingsHomeToneIndex:
-        cycleNotificationTone(nowMs);
-        return;
-      case kSettingsHomeVolumeIndex:
-        cycleNotificationVolume(nowMs);
-        return;
-      default:
-        return;
-    }
-  }
-
-  if (menuScreen_ == MenuScreen::SettingsDisplay) {
-    switch (settingsSelectedIndex_) {
-      case kSettingsBackIndex:
-        settingsSelectedIndex_ = kSettingsHomeDisplayIndex;
-        menuScreen_ = MenuScreen::SettingsHome;
-        rebuildSettingsMenuItems();
-        renderSettings();
-        return;
-      case kSettingsDisplayThemeIndex:
-        cycleThemeMode(nowMs);
-        return;
-      case kSettingsDisplayBrightnessIndex:
-        cycleBrightness();
-        return;
-      case kSettingsDisplayPhantomWordsIndex:
-        togglePhantomWords(nowMs);
-        return;
-      case kSettingsDisplayFontSizeIndex:
-        cycleReaderFontSize(nowMs);
-        return;
-      case kSettingsDisplayTypographyIndex:
-        openTypographyTuning();
-        return;
-      case kSettingsDisplayFlipIndex:
-        toggleDisplayFlip(nowMs);
-        return;
-      default:
-        return;
-    }
-  }
-
-  if (menuScreen_ != MenuScreen::SettingsPacing) {
-    return;
-  }
-
-  switch (settingsSelectedIndex_) {
+  if (menuScreen_ == MenuScreen::SettingsHome)
+  {
+    switch (settingsSelectedIndex_)
+    {
     case kSettingsBackIndex:
-      settingsSelectedIndex_ = kSettingsHomePacingIndex;
+      menuScreen_ = MenuScreen::Main;
+      renderMainMenu();
+      return;
+    case kSettingsHomeDisplayIndex:
+      settingsSelectedIndex_ = kSettingsDisplayThemeIndex;
+      menuScreen_ = MenuScreen::SettingsDisplay;
+      rebuildSettingsMenuItems();
+      renderSettings();
+      return;
+    case kSettingsHomeTypographyIndex:
+      openTypographyTuning();
+      return;
+    case kSettingsHomePacingIndex:
+      settingsSelectedIndex_ = kSettingsPacingLongWordsIndex;
+      menuScreen_ = MenuScreen::SettingsPacing;
+      rebuildSettingsMenuItems();
+      renderSettings();
+      return;
+    case kSettingsHomeNotificationsIndex:
+      toggleNotificationsEnabled(nowMs);
+      return;
+    case kSettingsHomeToneIndex:
+      openTonePicker();
+      return;
+    case kSettingsHomeVolumeIndex:
+      cycleNotificationVolume(nowMs);
+      return;
+    default:
+      return;
+    }
+  }
+
+  if (menuScreen_ == MenuScreen::SettingsDisplay)
+  {
+    switch (settingsSelectedIndex_)
+    {
+    case kSettingsBackIndex:
+      settingsSelectedIndex_ = kSettingsHomeDisplayIndex;
       menuScreen_ = MenuScreen::SettingsHome;
       rebuildSettingsMenuItems();
       renderSettings();
       return;
-    case kSettingsPacingLongWordsIndex:
-      pacingLongWordLevelIndex_ =
-          static_cast<uint8_t>((pacingLongWordLevelIndex_ + 1) % kPacingLevelCount);
-      preferences_.putUChar(kPrefPacingLong, pacingLongWordLevelIndex_);
-      break;
-    case kSettingsPacingComplexityIndex:
-      pacingComplexWordLevelIndex_ =
-          static_cast<uint8_t>((pacingComplexWordLevelIndex_ + 1) % kPacingLevelCount);
-      preferences_.putUChar(kPrefPacingComplex, pacingComplexWordLevelIndex_);
-      break;
-    case kSettingsPacingPunctuationIndex:
-      pacingPunctuationLevelIndex_ =
-          static_cast<uint8_t>((pacingPunctuationLevelIndex_ + 1) % kPacingLevelCount);
-      preferences_.putUChar(kPrefPacingPunctuation, pacingPunctuationLevelIndex_);
-      break;
-    case kSettingsPacingResetIndex:
-      pacingLongWordLevelIndex_ = kDefaultPacingLevelIndex;
-      pacingComplexWordLevelIndex_ = kDefaultPacingLevelIndex;
-      pacingPunctuationLevelIndex_ = kDefaultPacingLevelIndex;
-      preferences_.putUChar(kPrefPacingLong, pacingLongWordLevelIndex_);
-      preferences_.putUChar(kPrefPacingComplex, pacingComplexWordLevelIndex_);
-      preferences_.putUChar(kPrefPacingPunctuation, pacingPunctuationLevelIndex_);
-      break;
+    case kSettingsDisplayThemeIndex:
+      cycleThemeMode(nowMs);
+      return;
+    case kSettingsDisplayBrightnessIndex:
+      cycleBrightness();
+      return;
+    case kSettingsDisplayPhantomWordsIndex:
+      togglePhantomWords(nowMs);
+      return;
+    case kSettingsDisplayFontSizeIndex:
+      cycleReaderFontSize(nowMs);
+      return;
+    case kSettingsDisplayTypographyIndex:
+      openTypographyTuning();
+      return;
+    case kSettingsDisplayFlipIndex:
+      toggleDisplayFlip(nowMs);
+      return;
     default:
       return;
+    }
+  }
+
+  if (menuScreen_ != MenuScreen::SettingsPacing)
+  {
+    return;
+  }
+
+  switch (settingsSelectedIndex_)
+  {
+  case kSettingsBackIndex:
+    settingsSelectedIndex_ = kSettingsHomePacingIndex;
+    menuScreen_ = MenuScreen::SettingsHome;
+    rebuildSettingsMenuItems();
+    renderSettings();
+    return;
+  case kSettingsPacingLongWordsIndex:
+    pacingLongWordLevelIndex_ =
+        static_cast<uint8_t>((pacingLongWordLevelIndex_ + 1) % kPacingLevelCount);
+    preferences_.putUChar(kPrefPacingLong, pacingLongWordLevelIndex_);
+    break;
+  case kSettingsPacingComplexityIndex:
+    pacingComplexWordLevelIndex_ =
+        static_cast<uint8_t>((pacingComplexWordLevelIndex_ + 1) % kPacingLevelCount);
+    preferences_.putUChar(kPrefPacingComplex, pacingComplexWordLevelIndex_);
+    break;
+  case kSettingsPacingPunctuationIndex:
+    pacingPunctuationLevelIndex_ =
+        static_cast<uint8_t>((pacingPunctuationLevelIndex_ + 1) % kPacingLevelCount);
+    preferences_.putUChar(kPrefPacingPunctuation, pacingPunctuationLevelIndex_);
+    break;
+  case kSettingsPacingResetIndex:
+    pacingLongWordLevelIndex_ = kDefaultPacingLevelIndex;
+    pacingComplexWordLevelIndex_ = kDefaultPacingLevelIndex;
+    pacingPunctuationLevelIndex_ = kDefaultPacingLevelIndex;
+    preferences_.putUChar(kPrefPacingLong, pacingLongWordLevelIndex_);
+    preferences_.putUChar(kPrefPacingComplex, pacingComplexWordLevelIndex_);
+    preferences_.putUChar(kPrefPacingPunctuation, pacingPunctuationLevelIndex_);
+    break;
+  default:
+    return;
   }
 
   applyPacingSettings();
@@ -1456,82 +1726,94 @@ void App::selectSettingsItem(uint32_t nowMs) {
   renderSettings();
 }
 
-void App::openTypographyTuning() {
-  if (typographyTuningSelectedIndex_ >= TypographyTuningItemCount) {
+void App::openTypographyTuning()
+{
+  if (typographyTuningSelectedIndex_ >= TypographyTuningItemCount)
+  {
     typographyTuningSelectedIndex_ = TypographyTuningTracking;
   }
-  if (typographyTuningSelectedIndex_ == TypographyTuningBack) {
+  if (typographyTuningSelectedIndex_ == TypographyTuningBack)
+  {
     typographyTuningSelectedIndex_ = TypographyTuningTracking;
   }
   menuScreen_ = MenuScreen::TypographyTuning;
   renderTypographyTuning();
 }
 
-void App::selectTypographyTuningItem(uint32_t nowMs) {
-  switch (typographyTuningSelectedIndex_) {
-    case TypographyTuningBack:
-      settingsSelectedIndex_ = kSettingsHomeTypographyIndex;
-      menuScreen_ = MenuScreen::SettingsHome;
-      rebuildSettingsMenuItems();
-      renderSettings();
-      return;
-    case TypographyTuningTracking:
-      typographyConfig_.trackingPx = static_cast<int8_t>(
-          nextCyclicSetting(typographyConfig_.trackingPx, kTypographyTrackingMin,
-                            kTypographyTrackingMax));
-      preferences_.putChar(kPrefTypographyTracking, typographyConfig_.trackingPx);
-      break;
-    case TypographyTuningAnchor:
-      typographyConfig_.anchorPercent = static_cast<uint8_t>(
-          nextCyclicSetting(typographyConfig_.anchorPercent, kTypographyAnchorMin,
-                            kTypographyAnchorMax));
-      preferences_.putUChar(kPrefTypographyAnchor, typographyConfig_.anchorPercent);
-      break;
-    case TypographyTuningGuideWidth:
-      typographyConfig_.guideHalfWidth = static_cast<uint8_t>(nextCyclicSetting(
-          typographyConfig_.guideHalfWidth, kTypographyGuideWidthMin,
-          kTypographyGuideWidthMax, kTypographyGuideWidthStep));
-      preferences_.putUChar(kPrefTypographyGuideWidth, typographyConfig_.guideHalfWidth);
-      break;
-    case TypographyTuningGuideGap:
-      typographyConfig_.guideGap = static_cast<uint8_t>(nextCyclicSetting(
-          typographyConfig_.guideGap, kTypographyGuideGapMin, kTypographyGuideGapMax));
-      preferences_.putUChar(kPrefTypographyGuideGap, typographyConfig_.guideGap);
-      break;
-    case TypographyTuningReset:
-      typographyConfig_ = defaultTypographyConfig();
-      preferences_.putChar(kPrefTypographyTracking, typographyConfig_.trackingPx);
-      preferences_.putUChar(kPrefTypographyAnchor, typographyConfig_.anchorPercent);
-      preferences_.putUChar(kPrefTypographyGuideWidth, typographyConfig_.guideHalfWidth);
-      preferences_.putUChar(kPrefTypographyGuideGap, typographyConfig_.guideGap);
-      break;
-    default:
-      return;
+void App::selectTypographyTuningItem(uint32_t nowMs)
+{
+  switch (typographyTuningSelectedIndex_)
+  {
+  case TypographyTuningBack:
+    settingsSelectedIndex_ = kSettingsHomeTypographyIndex;
+    menuScreen_ = MenuScreen::SettingsHome;
+    rebuildSettingsMenuItems();
+    renderSettings();
+    return;
+  case TypographyTuningTracking:
+    typographyConfig_.trackingPx = static_cast<int8_t>(
+        nextCyclicSetting(typographyConfig_.trackingPx, kTypographyTrackingMin,
+                          kTypographyTrackingMax));
+    preferences_.putChar(kPrefTypographyTracking, typographyConfig_.trackingPx);
+    break;
+  case TypographyTuningAnchor:
+    typographyConfig_.anchorPercent = static_cast<uint8_t>(
+        nextCyclicSetting(typographyConfig_.anchorPercent, kTypographyAnchorMin,
+                          kTypographyAnchorMax));
+    preferences_.putUChar(kPrefTypographyAnchor, typographyConfig_.anchorPercent);
+    break;
+  case TypographyTuningGuideWidth:
+    typographyConfig_.guideHalfWidth = static_cast<uint8_t>(nextCyclicSetting(
+        typographyConfig_.guideHalfWidth, kTypographyGuideWidthMin,
+        kTypographyGuideWidthMax, kTypographyGuideWidthStep));
+    preferences_.putUChar(kPrefTypographyGuideWidth, typographyConfig_.guideHalfWidth);
+    break;
+  case TypographyTuningGuideGap:
+    typographyConfig_.guideGap = static_cast<uint8_t>(nextCyclicSetting(
+        typographyConfig_.guideGap, kTypographyGuideGapMin, kTypographyGuideGapMax));
+    preferences_.putUChar(kPrefTypographyGuideGap, typographyConfig_.guideGap);
+    break;
+  case TypographyTuningReset:
+    typographyConfig_ = defaultTypographyConfig();
+    preferences_.putChar(kPrefTypographyTracking, typographyConfig_.trackingPx);
+    preferences_.putUChar(kPrefTypographyAnchor, typographyConfig_.anchorPercent);
+    preferences_.putUChar(kPrefTypographyGuideWidth, typographyConfig_.guideHalfWidth);
+    preferences_.putUChar(kPrefTypographyGuideGap, typographyConfig_.guideGap);
+    break;
+  default:
+    return;
   }
 
   applyTypographySettings(nowMs);
 }
 
-void App::cycleTypographyPreviewSample(int direction) {
-  if (kTypographyPreviewWordCount == 0 || direction == 0) {
+void App::cycleTypographyPreviewSample(int direction)
+{
+  if (kTypographyPreviewWordCount == 0 || direction == 0)
+  {
     return;
   }
 
   const int current = static_cast<int>(typographyPreviewSampleIndex_);
   int next = current + direction;
-  if (next < 0) {
+  if (next < 0)
+  {
     next = static_cast<int>(kTypographyPreviewWordCount) - 1;
-  } else if (next >= static_cast<int>(kTypographyPreviewWordCount)) {
+  }
+  else if (next >= static_cast<int>(kTypographyPreviewWordCount))
+  {
     next = 0;
   }
   typographyPreviewSampleIndex_ = static_cast<size_t>(next);
   renderTypographyTuning();
 }
 
-void App::rebuildSettingsMenuItems() {
+void App::rebuildSettingsMenuItems()
+{
   settingsMenuItems_.clear();
   settingsMenuItems_.reserve(SettingsItemCount);
-  if (menuScreen_ == MenuScreen::SettingsHome) {
+  if (menuScreen_ == MenuScreen::SettingsHome)
+  {
     settingsMenuItems_.push_back("Back");
     settingsMenuItems_.push_back("Display");
     settingsMenuItems_.push_back("Typography tune");
@@ -1540,7 +1822,9 @@ void App::rebuildSettingsMenuItems() {
                                  (notificationsEnabled_ ? "On" : "Off"));
     settingsMenuItems_.push_back(String("Tone: ") + currentNotificationToneLabel());
     settingsMenuItems_.push_back(String("Volume: ") + String(notificationVolume_) + "%");
-  } else if (menuScreen_ == MenuScreen::SettingsDisplay) {
+  }
+  else if (menuScreen_ == MenuScreen::SettingsDisplay)
+  {
     settingsMenuItems_.push_back("Back");
     settingsMenuItems_.push_back("Theme: " + themeModeLabel());
     settingsMenuItems_.push_back("Brightness: " + String(currentBrightnessPercent()) + "%");
@@ -1548,7 +1832,9 @@ void App::rebuildSettingsMenuItems() {
     settingsMenuItems_.push_back("Font size: " + readerFontSizeLabel());
     settingsMenuItems_.push_back("Typography tune");
     settingsMenuItems_.push_back(String("Flip display: ") + (displayFlipped_ ? "On" : "Off"));
-  } else if (menuScreen_ == MenuScreen::SettingsPacing) {
+  }
+  else if (menuScreen_ == MenuScreen::SettingsPacing)
+  {
     settingsMenuItems_.push_back("Back");
     settingsMenuItems_.push_back("Long words: " + pacingLevelLabel(pacingLongWordLevelIndex_));
     settingsMenuItems_.push_back("Complexity: " + pacingLevelLabel(pacingComplexWordLevelIndex_));
@@ -1556,12 +1842,14 @@ void App::rebuildSettingsMenuItems() {
     settingsMenuItems_.push_back("Reset pacing");
   }
 
-  if (settingsSelectedIndex_ >= settingsMenuItems_.size()) {
+  if (settingsSelectedIndex_ >= settingsMenuItems_.size())
+  {
     settingsSelectedIndex_ = kSettingsBackIndex;
   }
 }
 
-void App::applyPacingSettings() {
+void App::applyPacingSettings()
+{
   ReadingLoop::PacingConfig pacingConfig;
   pacingConfig.longWordScalePercent = kPacingScalePercents[pacingLongWordLevelIndex_];
   pacingConfig.complexWordScalePercent = kPacingScalePercents[pacingComplexWordLevelIndex_];
@@ -1574,15 +1862,19 @@ void App::applyPacingSettings() {
                 pacingLevelLabel(pacingPunctuationLevelIndex_).c_str());
 }
 
-String App::pacingLevelLabel(uint8_t levelIndex) const {
-  if (levelIndex >= kPacingLevelCount) {
+String App::pacingLevelLabel(uint8_t levelIndex) const
+{
+  if (levelIndex >= kPacingLevelCount)
+  {
     levelIndex = kDefaultPacingLevelIndex;
   }
   return kPacingScaleLabels[levelIndex];
 }
 
-String App::themeModeLabel() const {
-  if (nightMode_) {
+String App::themeModeLabel() const
+{
+  if (nightMode_)
+  {
     return "Night";
   }
   return darkMode_ ? "Dark" : "Light";
@@ -1590,54 +1882,61 @@ String App::themeModeLabel() const {
 
 String App::phantomWordsLabel() const { return phantomWordsEnabled_ ? "On" : "Off"; }
 
-String App::readerFontSizeLabel() const {
+String App::readerFontSizeLabel() const
+{
   uint8_t levelIndex = readerFontSizeIndex_;
-  if (levelIndex >= kReaderFontSizeCount) {
+  if (levelIndex >= kReaderFontSizeCount)
+  {
     levelIndex = 0;
   }
   return kReaderFontSizeLabels[levelIndex];
 }
 
-String App::typographyTuningLabel() const {
-  switch (typographyTuningSelectedIndex_) {
-    case TypographyTuningBack:
-      return "Back";
-    case TypographyTuningTracking:
-      return "Tracking";
-    case TypographyTuningAnchor:
-      return "Anchor";
-    case TypographyTuningGuideWidth:
-      return "Guide width";
-    case TypographyTuningGuideGap:
-      return "Guide gap";
-    case TypographyTuningReset:
-      return "Reset";
-    default:
-      return "Typography";
+String App::typographyTuningLabel() const
+{
+  switch (typographyTuningSelectedIndex_)
+  {
+  case TypographyTuningBack:
+    return "Back";
+  case TypographyTuningTracking:
+    return "Tracking";
+  case TypographyTuningAnchor:
+    return "Anchor";
+  case TypographyTuningGuideWidth:
+    return "Guide width";
+  case TypographyTuningGuideGap:
+    return "Guide gap";
+  case TypographyTuningReset:
+    return "Reset";
+  default:
+    return "Typography";
   }
 }
 
-String App::typographyTuningValueLabel() const {
-  switch (typographyTuningSelectedIndex_) {
-    case TypographyTuningBack:
-      return "tap to exit";
-    case TypographyTuningTracking:
-      return String(typographyConfig_.trackingPx >= 0 ? "+" : "") +
-             String(static_cast<int>(typographyConfig_.trackingPx)) + " px";
-    case TypographyTuningAnchor:
-      return String(static_cast<unsigned int>(typographyConfig_.anchorPercent)) + "%";
-    case TypographyTuningGuideWidth:
-      return String(static_cast<unsigned int>(typographyConfig_.guideHalfWidth)) + " px";
-    case TypographyTuningGuideGap:
-      return String(static_cast<unsigned int>(typographyConfig_.guideGap)) + " px";
-    case TypographyTuningReset:
-      return "tap to reset";
-    default:
-      return "";
+String App::typographyTuningValueLabel() const
+{
+  switch (typographyTuningSelectedIndex_)
+  {
+  case TypographyTuningBack:
+    return "tap to exit";
+  case TypographyTuningTracking:
+    return String(typographyConfig_.trackingPx >= 0 ? "+" : "") +
+           String(static_cast<int>(typographyConfig_.trackingPx)) + " px";
+  case TypographyTuningAnchor:
+    return String(static_cast<unsigned int>(typographyConfig_.anchorPercent)) + "%";
+  case TypographyTuningGuideWidth:
+    return String(static_cast<unsigned int>(typographyConfig_.guideHalfWidth)) + " px";
+  case TypographyTuningGuideGap:
+    return String(static_cast<unsigned int>(typographyConfig_.guideGap)) + " px";
+  case TypographyTuningReset:
+    return "tap to reset";
+  default:
+    return "";
   }
 }
 
-void App::openAuthorPicker() {
+void App::openAuthorPicker()
+{
   authorMenuItems_.clear();
   authorPickerNames_.clear();
 
@@ -1647,24 +1946,30 @@ void App::openAuthorPicker() {
   authors.reserve(count);
   counts.reserve(count);
 
-  for (size_t i = 0; i < count; ++i) {
-    if ((i & 0x07) == 0) {
+  for (size_t i = 0; i < count; ++i)
+  {
+    if ((i & 0x07) == 0)
+    {
       yield();
     }
     String name = storage_.bookAuthorName(i);
     name.trim();
-    if (name.isEmpty()) {
+    if (name.isEmpty())
+    {
       name = kAuthorUnknownLabel;
     }
     bool found = false;
-    for (size_t j = 0; j < authors.size(); ++j) {
-      if (authors[j].equalsIgnoreCase(name)) {
+    for (size_t j = 0; j < authors.size(); ++j)
+    {
+      if (authors[j].equalsIgnoreCase(name))
+      {
         counts[j] += 1;
         found = true;
         break;
       }
     }
-    if (!found) {
+    if (!found)
+    {
       authors.push_back(name);
       counts.push_back(1);
     }
@@ -1672,16 +1977,17 @@ void App::openAuthorPicker() {
 
   std::vector<size_t> order;
   order.reserve(authors.size());
-  for (size_t i = 0; i < authors.size(); ++i) {
+  for (size_t i = 0; i < authors.size(); ++i)
+  {
     order.push_back(i);
   }
-  std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+  std::sort(order.begin(), order.end(), [&](size_t a, size_t b)
+            {
     String left = authors[a];
     String right = authors[b];
     left.toLowerCase();
     right.toLowerCase();
-    return left < right;
-  });
+    return left < right; });
 
   DisplayManager::LibraryItem backItem;
   backItem.title = "Back";
@@ -1695,7 +2001,8 @@ void App::openAuthorPicker() {
   authorMenuItems_.push_back(allBooks);
   authorPickerNames_.push_back("");
 
-  for (size_t idx : order) {
+  for (size_t idx : order)
+  {
     DisplayManager::LibraryItem item;
     item.title = authors[idx];
     item.subtitle = "";
@@ -1706,11 +2013,13 @@ void App::openAuthorPicker() {
   }
 
   menuScreen_ = MenuScreen::AuthorPicker;
-  if (authorPickerSelectedIndex_ >= authorMenuItems_.size()) {
+  if (authorPickerSelectedIndex_ >= authorMenuItems_.size())
+  {
     authorPickerSelectedIndex_ = authorMenuItems_.empty() ? 0 : authorMenuItems_.size() - 1;
   }
   if (authorMenuItems_.size() > kAuthorPickerAllBooksIndex &&
-      authorPickerSelectedIndex_ == kAuthorPickerBackIndex) {
+      authorPickerSelectedIndex_ == kAuthorPickerBackIndex)
+  {
     authorPickerSelectedIndex_ = kAuthorPickerAllBooksIndex;
   }
   computeLetterAnchors(authorMenuItems_, kAuthorPickerFirstAuthorIndex,
@@ -1718,7 +2027,8 @@ void App::openAuthorPicker() {
   renderAuthorPicker();
 }
 
-void App::renderAuthorPicker() {
+void App::renderAuthorPicker()
+{
   const int focus = (letterScrubActive_ && menuScreen_ == MenuScreen::AuthorPicker)
                         ? letterScrubFocusIdx_
                         : -1;
@@ -1726,32 +2036,38 @@ void App::renderAuthorPicker() {
                          authorPickerLetterAnchors_, focus);
 }
 
-void App::selectAuthorPickerItem(uint32_t nowMs) {
+void App::selectAuthorPickerItem(uint32_t nowMs)
+{
   (void)nowMs;
-  if (authorMenuItems_.empty() || authorPickerSelectedIndex_ == kAuthorPickerBackIndex) {
+  if (authorMenuItems_.empty() || authorPickerSelectedIndex_ == kAuthorPickerBackIndex)
+  {
     activeAuthorFilter_ = "";
     menuScreen_ = MenuScreen::Main;
     renderMainMenu();
     return;
   }
-  if (authorPickerSelectedIndex_ == kAuthorPickerAllBooksIndex) {
+  if (authorPickerSelectedIndex_ == kAuthorPickerAllBooksIndex)
+  {
     activeAuthorFilter_ = "";
     openBookPicker();
     return;
   }
-  if (authorPickerSelectedIndex_ >= authorPickerNames_.size()) {
+  if (authorPickerSelectedIndex_ >= authorPickerNames_.size())
+  {
     renderAuthorPicker();
     return;
   }
   openBookPickerForAuthor(authorPickerNames_[authorPickerSelectedIndex_]);
 }
 
-void App::openBookPickerForAuthor(const String &author) {
+void App::openBookPickerForAuthor(const String &author)
+{
   activeAuthorFilter_ = author;
   openBookPicker();
 }
 
-void App::openBookPicker() {
+void App::openBookPicker()
+{
   bookMenuItems_.clear();
   bookPickerBookIndices_.clear();
   DisplayManager::LibraryItem bookBackItem;
@@ -1761,18 +2077,25 @@ void App::openBookPicker() {
   const size_t count = storage_.bookCount();
   std::vector<size_t> sortedBookIndices;
   sortedBookIndices.reserve(count);
-  for (size_t i = 0; i < count; ++i) {
-    if (recentOnlyFilter_) {
-      if (bookRecentSequenceByIndex(i) == 0) {
+  for (size_t i = 0; i < count; ++i)
+  {
+    if (recentOnlyFilter_)
+    {
+      if (bookRecentSequenceByIndex(i) == 0)
+      {
         continue;
       }
-    } else if (!activeAuthorFilter_.isEmpty()) {
+    }
+    else if (!activeAuthorFilter_.isEmpty())
+    {
       String authorName = storage_.bookAuthorName(i);
       authorName.trim();
-      if (authorName.isEmpty()) {
+      if (authorName.isEmpty())
+      {
         authorName = kAuthorUnknownLabel;
       }
-      if (!authorName.equalsIgnoreCase(activeAuthorFilter_)) {
+      if (!authorName.equalsIgnoreCase(activeAuthorFilter_))
+      {
         continue;
       }
     }
@@ -1780,12 +2103,14 @@ void App::openBookPicker() {
   }
 
   std::stable_sort(sortedBookIndices.begin(), sortedBookIndices.end(),
-                   [this](size_t leftIndex, size_t rightIndex) {
+                   [this](size_t leftIndex, size_t rightIndex)
+                   {
                      const bool leftCurrent =
                          usingStorageBook_ && leftIndex == currentBookIndex_;
                      const bool rightCurrent =
                          usingStorageBook_ && rightIndex == currentBookIndex_;
-                     if (leftCurrent != rightCurrent) {
+                     if (leftCurrent != rightCurrent)
+                     {
                        return leftCurrent;
                      }
 
@@ -1793,10 +2118,12 @@ void App::openBookPicker() {
                      const uint32_t rightRecent = bookRecentSequenceByIndex(rightIndex);
                      const bool leftHasRecent = leftRecent > 0;
                      const bool rightHasRecent = rightRecent > 0;
-                     if (leftHasRecent != rightHasRecent) {
+                     if (leftHasRecent != rightHasRecent)
+                     {
                        return leftHasRecent;
                      }
-                     if (leftRecent != rightRecent) {
+                     if (leftRecent != rightRecent)
+                     {
                        return leftRecent > rightRecent;
                      }
 
@@ -1804,23 +2131,29 @@ void App::openBookPicker() {
                    });
 
   size_t pickerYieldCounter = 0;
-  for (size_t bookIndex : sortedBookIndices) {
-    if ((pickerYieldCounter++ & 0x07) == 0) {
+  for (size_t bookIndex : sortedBookIndices)
+  {
+    if ((pickerYieldCounter++ & 0x07) == 0)
+    {
       yield();
     }
     bookPickerBookIndices_.push_back(bookIndex);
     bookMenuItems_.push_back(libraryItemForBook(bookIndex));
   }
 
-  if (count == 0) {
+  if (count == 0)
+  {
     Serial.println("[book-picker] No SD books available");
   }
 
   menuScreen_ = MenuScreen::BookPicker;
   bookPickerSelectedIndex_ = kBookPickerBackIndex;
-  if (usingStorageBook_) {
-    for (size_t row = 0; row < bookPickerBookIndices_.size(); ++row) {
-      if (bookPickerBookIndices_[row] == currentBookIndex_) {
+  if (usingStorageBook_)
+  {
+    for (size_t row = 0; row < bookPickerBookIndices_.size(); ++row)
+    {
+      if (bookPickerBookIndices_[row] == currentBookIndex_)
+      {
         bookPickerSelectedIndex_ = row + 1;
         break;
       }
@@ -1830,14 +2163,18 @@ void App::openBookPicker() {
   renderBookPicker();
 }
 
-void App::selectBookPickerItem(uint32_t nowMs) {
-  if (bookPickerSelectedIndex_ == kBookPickerBackIndex || bookMenuItems_.size() <= 1) {
-    if (!activeAuthorFilter_.isEmpty()) {
+void App::selectBookPickerItem(uint32_t nowMs)
+{
+  if (bookPickerSelectedIndex_ == kBookPickerBackIndex || bookMenuItems_.size() <= 1)
+  {
+    if (!activeAuthorFilter_.isEmpty())
+    {
       activeAuthorFilter_ = "";
       openAuthorPicker();
       return;
     }
-    if (recentOnlyFilter_) {
+    if (recentOnlyFilter_)
+    {
       recentOnlyFilter_ = false;
     }
     menuScreen_ = MenuScreen::Main;
@@ -1846,7 +2183,8 @@ void App::selectBookPickerItem(uint32_t nowMs) {
   }
 
   const size_t rowIndex = bookPickerSelectedIndex_ - 1;
-  if (rowIndex >= bookPickerBookIndices_.size()) {
+  if (rowIndex >= bookPickerBookIndices_.size())
+  {
     renderBookPicker();
     return;
   }
@@ -1855,12 +2193,14 @@ void App::selectBookPickerItem(uint32_t nowMs) {
   saveReadingPosition(true);
 
   String loadingTitle = storage_.bookDisplayName(bookIndex);
-  if (loadingTitle.isEmpty()) {
+  if (loadingTitle.isEmpty())
+  {
     loadingTitle = "Book";
   }
   display_.renderProgress("Loading", loadingTitle.c_str(), "Reading from SD", 0);
 
-  if (!loadBookAtIndex(bookIndex, nowMs)) {
+  if (!loadBookAtIndex(bookIndex, nowMs))
+  {
     Serial.println("[book-picker] Failed to load selected book");
     renderBookPicker();
     return;
@@ -1871,23 +2211,30 @@ void App::selectBookPickerItem(uint32_t nowMs) {
   saveReadingPosition(true);
 }
 
-void App::openChapterPicker() {
+void App::openChapterPicker()
+{
   chapterMenuItems_.clear();
   chapterMenuItems_.push_back("Back");
 
-  if (chapterMarkers_.empty()) {
+  if (chapterMarkers_.empty())
+  {
     chapterMenuItems_.push_back("Start of book");
     chapterPickerSelectedIndex_ = kChapterPickerFallbackIndex;
     Serial.println("[chapter-picker] No chapter markers found; showing start fallback");
-  } else {
-    for (size_t i = 0; i < chapterMarkers_.size(); ++i) {
+  }
+  else
+  {
+    for (size_t i = 0; i < chapterMarkers_.size(); ++i)
+    {
       chapterMenuItems_.push_back(chapterMenuLabel(i));
     }
 
     size_t selectedChapter = 0;
     const size_t currentWordIndex = reader_.currentIndex();
-    for (size_t i = 0; i < chapterMarkers_.size(); ++i) {
-      if (chapterMarkers_[i].wordIndex <= currentWordIndex) {
+    for (size_t i = 0; i < chapterMarkers_.size(); ++i)
+    {
+      if (chapterMarkers_[i].wordIndex <= currentWordIndex)
+      {
         selectedChapter = i;
       }
     }
@@ -1898,14 +2245,17 @@ void App::openChapterPicker() {
   renderChapterPicker();
 }
 
-void App::selectChapterPickerItem(uint32_t nowMs) {
-  if (chapterPickerSelectedIndex_ == kChapterPickerBackIndex || chapterMenuItems_.size() <= 1) {
+void App::selectChapterPickerItem(uint32_t nowMs)
+{
+  if (chapterPickerSelectedIndex_ == kChapterPickerBackIndex || chapterMenuItems_.size() <= 1)
+  {
     menuScreen_ = MenuScreen::Main;
     renderMainMenu();
     return;
   }
 
-  if (chapterMarkers_.empty()) {
+  if (chapterMarkers_.empty())
+  {
     reader_.seekTo(0);
     menuScreen_ = MenuScreen::Main;
     setState(AppState::Paused, nowMs);
@@ -1915,7 +2265,8 @@ void App::selectChapterPickerItem(uint32_t nowMs) {
   }
 
   const size_t chapterIndex = chapterPickerSelectedIndex_ - 1;
-  if (chapterIndex >= chapterMarkers_.size()) {
+  if (chapterIndex >= chapterMarkers_.size())
+  {
     renderChapterPicker();
     return;
   }
@@ -1929,14 +2280,17 @@ void App::selectChapterPickerItem(uint32_t nowMs) {
                 static_cast<unsigned int>(chapterMarkers_[chapterIndex].wordIndex));
 }
 
-void App::openRestartConfirm() {
+void App::openRestartConfirm()
+{
   restartConfirmSelectedIndex_ = RestartConfirmNo;
   menuScreen_ = MenuScreen::RestartConfirm;
   renderRestartConfirm();
 }
 
-void App::selectRestartConfirmItem(uint32_t nowMs) {
-  if (restartConfirmSelectedIndex_ != RestartConfirmYes) {
+void App::selectRestartConfirmItem(uint32_t nowMs)
+{
+  if (restartConfirmSelectedIndex_ != RestartConfirmYes)
+  {
     menuScreen_ = MenuScreen::Main;
     renderMainMenu();
     return;
@@ -1949,7 +2303,8 @@ void App::selectRestartConfirmItem(uint32_t nowMs) {
   Serial.println("[restart] book restarted from beginning");
 }
 
-void App::enterUsbTransfer(uint32_t nowMs) {
+void App::enterUsbTransfer(uint32_t nowMs)
+{
   Serial.println("[app] entering USB transfer mode");
   saveReadingPosition(true);
   pausedTouch_.active = false;
@@ -1958,11 +2313,13 @@ void App::enterUsbTransfer(uint32_t nowMs) {
   setState(AppState::UsbTransfer, nowMs);
 
   storage_.end();
-  if (!usbTransfer_.begin(true)) {
+  if (!usbTransfer_.begin(true))
+  {
     Serial.printf("[app] USB transfer failed: %s\n", usbTransfer_.statusMessage());
     display_.renderStatus("USB", "SD not ready", "Returning");
     const bool storageReady = storage_.begin();
-    if (storageReady) {
+    if (storageReady)
+    {
       storage_.listBooks();
     }
     setState(AppState::Paused, nowMs);
@@ -1975,21 +2332,27 @@ void App::enterUsbTransfer(uint32_t nowMs) {
   display_.renderStatus("USB", "Copy books now", "Eject then hold BOOT");
 }
 
-void App::updateUsbTransfer(uint32_t nowMs) {
-  if (!usbTransfer_.active()) {
+void App::updateUsbTransfer(uint32_t nowMs)
+{
+  if (!usbTransfer_.active())
+  {
     return;
   }
 
   bool serialExitRequested = false;
   static String serialBuffer;
-  while (Serial.available() > 0) {
+  while (Serial.available() > 0)
+  {
     const char c = static_cast<char>(Serial.read());
-    if (c == '\r') {
+    if (c == '\r')
+    {
       continue;
     }
-    if (c == '\n') {
+    if (c == '\n')
+    {
       serialBuffer.trim();
-      if (serialBuffer.equalsIgnoreCase("EXIT-MSC")) {
+      if (serialBuffer.equalsIgnoreCase("EXIT-MSC"))
+      {
         serialExitRequested = true;
         Serial.println("[app] EXIT-MSC received over serial");
       }
@@ -1997,39 +2360,49 @@ void App::updateUsbTransfer(uint32_t nowMs) {
       continue;
     }
     serialBuffer += c;
-    if (serialBuffer.length() > 64) {
+    if (serialBuffer.length() > 64)
+    {
       serialBuffer = "";
     }
   }
 
   const bool bootExitRequested =
       button_.isHeld() && nowMs - button_.lastEdgeMs() >= kUsbTransferExitHoldMs;
-  if (!usbTransfer_.ejected() && !bootExitRequested && !serialExitRequested) {
+  if (!usbTransfer_.ejected() && !bootExitRequested && !serialExitRequested)
+  {
     return;
   }
 
-  if ((bootExitRequested || serialExitRequested) && !usbTransfer_.ejected()) {
+  if ((bootExitRequested || serialExitRequested) && !usbTransfer_.ejected())
+  {
     Serial.println("[app] leaving USB transfer; assuming host writes are flushed");
   }
 
   exitUsbTransfer(nowMs);
 }
 
-void App::exitUsbTransfer(uint32_t nowMs) {
+void App::exitUsbTransfer(uint32_t nowMs)
+{
   Serial.println("[app] USB transfer ejected; remounting SD");
   display_.renderStatus("USB", "Remounting SD", "");
   usbTransfer_.end();
 
   const bool storageReady = storage_.begin();
-  if (storageReady) {
+  if (storageReady)
+  {
     storage_.listBooks();
     const int refreshedBookIndex = findBookIndexByPath(currentBookPath_);
-    if (refreshedBookIndex >= 0) {
+    if (refreshedBookIndex >= 0)
+    {
       currentBookIndex_ = static_cast<size_t>(refreshedBookIndex);
-    } else if (storage_.bookCount() > 0) {
+    }
+    else if (storage_.bookCount() > 0)
+    {
       loadBookAtIndex(0, nowMs);
     }
-  } else {
+  }
+  else
+  {
     Serial.println("[app] SD remount failed after USB transfer");
   }
 
@@ -2037,19 +2410,23 @@ void App::exitUsbTransfer(uint32_t nowMs) {
   setState(AppState::Paused, nowMs);
 }
 
-void App::pollNotifications(uint32_t nowMs) {
-  if (!notifications_.poll()) {
+void App::pollNotifications(uint32_t nowMs)
+{
+  if (!notifications_.poll())
+  {
     return;
   }
   auto pending = notifications_.drainPending();
-  if (pending.empty()) return;
+  if (pending.empty())
+    return;
   // Show only the most recent one as a banner (queue collapses to most-recent so
   // the user always sees the freshest news).
   const auto &latest = pending.back();
   showNotificationBanner(nowMs, latest.title, latest.body);
 }
 
-void App::showNotificationBanner(uint32_t nowMs, const String &title, const String &body) {
+void App::showNotificationBanner(uint32_t nowMs, const String &title, const String &body)
+{
   notificationBannerTitle_ = title;
   notificationBannerBody_ = body;
   // Sentinel: any non-zero value means "banner active". We dismiss explicitly on tap.
@@ -2059,65 +2436,162 @@ void App::showNotificationBanner(uint32_t nowMs, const String &title, const Stri
   playNotificationTone();
 }
 
-void App::playNotificationTone() {
-  if (notificationVolume_ == 0) return;
+void App::playNotificationTone()
+{
+  if (notificationVolume_ == 0)
+    return;
   audio_.setVolumePercent(notificationVolume_);
+  if (notificationTone_.isEmpty())
+  {
+    audio_.playRtttl(kBuiltinNokiaRtttl);
+    return;
+  }
+  String lowered = notificationTone_;
+  lowered.toLowerCase();
+  if (lowered.endsWith(".wav"))
+  {
+    if (!audio_.playWavFromSd(storage_.ringtonePath(notificationTone_)))
+    {
+      audio_.playRtttl(kBuiltinNokiaRtttl); // fallback
+    }
+    return;
+  }
   String rtttl;
-  if (!notificationTone_.isEmpty() && storage_.loadRingtone(notificationTone_, rtttl)) {
+  if (storage_.loadRingtone(notificationTone_, rtttl))
+  {
     audio_.playRtttl(rtttl);
-  } else {
+  }
+  else
+  {
     audio_.playRtttl(kBuiltinNokiaRtttl);
   }
 }
 
-String App::currentNotificationToneLabel() const {
-  if (notificationTone_.isEmpty()) return "Nokia (built-in)";
+String App::currentNotificationToneLabel() const
+{
+  if (notificationTone_.isEmpty())
+    return "Nokia (built-in)";
+  // Strip the extension for the menu label.
+  const int dot = notificationTone_.lastIndexOf('.');
+  if (dot > 0)
+    return notificationTone_.substring(0, dot);
   return notificationTone_;
 }
 
-void App::cycleNotificationTone(uint32_t nowMs) {
-  (void)nowMs;
-  if (ringtoneNames_.empty()) {
-    ringtoneNames_ = storage_.listRingtoneNames();
+namespace
+{
+
+  constexpr size_t kTonePickerBackIndex = 0;
+  constexpr size_t kTonePickerBuiltinIndex = 1;
+  constexpr size_t kTonePickerFirstSdIndex = 2;
+
+  String toneFormatBadgeForFilename(const String &filename)
+  {
+    String lowered = filename;
+    lowered.toLowerCase();
+    if (lowered.endsWith(".wav"))
+      return "WAV";
+    if (lowered.endsWith(".rtttl"))
+      return "RTTTL";
+    return "?";
   }
-  // Cycle order: built-in Nokia → each SD ringtone → loop.
-  if (notificationTone_.isEmpty()) {
-    if (!ringtoneNames_.empty()) {
-      notificationTone_ = ringtoneNames_.front();
-    }
-  } else {
-    int idx = -1;
-    for (size_t i = 0; i < ringtoneNames_.size(); ++i) {
-      if (ringtoneNames_[i] == notificationTone_) {
-        idx = static_cast<int>(i);
-        break;
-      }
-    }
-    if (idx < 0 || idx + 1 >= static_cast<int>(ringtoneNames_.size())) {
-      notificationTone_ = "";
-    } else {
-      notificationTone_ = ringtoneNames_[idx + 1];
+
+  String toneDisplayNameForFilename(const String &filename)
+  {
+    const int dot = filename.lastIndexOf('.');
+    if (dot > 0)
+      return filename.substring(0, dot);
+    return filename;
+  }
+
+} // namespace
+
+void App::openTonePicker()
+{
+  ringtoneNames_ = storage_.listRingtoneNames();
+
+  toneMenuItems_.clear();
+  tonePickerNames_.clear();
+
+  DisplayManager::LibraryItem backItem;
+  backItem.title = "Back";
+  toneMenuItems_.push_back(backItem);
+  tonePickerNames_.push_back("");
+
+  DisplayManager::LibraryItem builtIn;
+  builtIn.title = "Nokia";
+  builtIn.subtitle = "Built-in";
+  builtIn.badges.push_back("RTTTL");
+  toneMenuItems_.push_back(builtIn);
+  tonePickerNames_.push_back(""); // empty filename = built-in fallback
+
+  for (const String &filename : ringtoneNames_)
+  {
+    DisplayManager::LibraryItem item;
+    item.title = toneDisplayNameForFilename(filename);
+    item.subtitle = "";
+    item.badges.push_back(toneFormatBadgeForFilename(filename));
+    toneMenuItems_.push_back(item);
+    tonePickerNames_.push_back(filename);
+  }
+
+  // Highlight whichever tone is currently selected.
+  tonePickerSelectedIndex_ = notificationTone_.isEmpty() ? kTonePickerBuiltinIndex : 0;
+  for (size_t i = kTonePickerFirstSdIndex; i < tonePickerNames_.size(); ++i)
+  {
+    if (tonePickerNames_[i] == notificationTone_)
+    {
+      tonePickerSelectedIndex_ = i;
+      break;
     }
   }
-  preferences_.putString(kPrefNotifTone, notificationTone_);
-  rebuildSettingsMenuItems();
-  renderSettings();
-  playNotificationTone();
+
+  menuScreen_ = MenuScreen::TonePicker;
+  renderTonePicker();
 }
 
-void App::cycleNotificationVolume(uint32_t nowMs) {
+void App::renderTonePicker()
+{
+  display_.renderLibrary(toneMenuItems_, tonePickerSelectedIndex_);
+}
+
+void App::selectTonePickerItem(uint32_t nowMs)
+{
+  (void)nowMs;
+  if (tonePickerSelectedIndex_ == kTonePickerBackIndex ||
+      tonePickerSelectedIndex_ >= tonePickerNames_.size())
+  {
+    settingsSelectedIndex_ = kSettingsHomeToneIndex;
+    menuScreen_ = MenuScreen::SettingsHome;
+    rebuildSettingsMenuItems();
+    renderSettings();
+    return;
+  }
+  notificationTone_ = tonePickerNames_[tonePickerSelectedIndex_];
+  preferences_.putString(kPrefNotifTone, notificationTone_);
+  playNotificationTone();
+  // Stay on the picker so the user can audition more tones; selection bar
+  // shows their current pick.
+  renderTonePicker();
+}
+
+void App::cycleNotificationVolume(uint32_t nowMs)
+{
   (void)nowMs;
   uint8_t next = notificationVolume_ + kNotificationVolumeStep;
-  if (next > 100) next = 0;
+  if (next > 100)
+    next = 0;
   notificationVolume_ = next;
   preferences_.putUChar(kPrefNotifVolume, notificationVolume_);
   audio_.setVolumePercent(notificationVolume_);
   rebuildSettingsMenuItems();
   renderSettings();
-  if (notificationVolume_ > 0) playNotificationTone();
+  if (notificationVolume_ > 0)
+    playNotificationTone();
 }
 
-void App::toggleNotificationsEnabled(uint32_t nowMs) {
+void App::toggleNotificationsEnabled(uint32_t nowMs)
+{
   (void)nowMs;
   notificationsEnabled_ = !notificationsEnabled_;
   preferences_.putBool(kPrefNotifications, notificationsEnabled_);
@@ -2127,17 +2601,21 @@ void App::toggleNotificationsEnabled(uint32_t nowMs) {
   Serial.printf("[notif] enabled=%d\n", notificationsEnabled_ ? 1 : 0);
 }
 
-void App::renderNotificationBanner() {
-  if (notificationBannerUntilMs_ == 0) return;
+void App::renderNotificationBanner()
+{
+  if (notificationBannerUntilMs_ == 0)
+    return;
   display_.renderStatus(
       notificationBannerTitle_.isEmpty() ? "Notification" : notificationBannerTitle_,
       notificationBannerBody_, "");
 }
 
-void App::runOtaUpdate(uint32_t nowMs) {
+void App::runOtaUpdate(uint32_t nowMs)
+{
   saveReadingPosition(true);
   display_.renderProgress("OTA", "Starting update", "Reading wifi.json", 0);
-  if (!ota_.loadConfigFromSd()) {
+  if (!ota_.loadConfigFromSd())
+  {
     display_.renderStatus("OTA needs setup",
                           "Create /wifi.json on SD",
                           "ssid, password, url fields");
@@ -2147,7 +2625,8 @@ void App::runOtaUpdate(uint32_t nowMs) {
     return;
   }
   const bool ok = ota_.runUpdate();
-  if (!ok) {
+  if (!ok)
+  {
     display_.renderStatus("OTA failed", ota_.lastError().c_str(), "Returning to menu");
     delay(2500);
     menuScreen_ = MenuScreen::Main;
@@ -2155,8 +2634,10 @@ void App::runOtaUpdate(uint32_t nowMs) {
   }
 }
 
-void App::enterPowerOff(uint32_t nowMs) {
-  if (powerOffStarted_) {
+void App::enterPowerOff(uint32_t nowMs)
+{
+  if (powerOffStarted_)
+  {
     return;
   }
 
@@ -2182,7 +2663,8 @@ void App::enterPowerOff(uint32_t nowMs) {
   BoardConfig::releaseBatteryPowerHold();
 
   const uint32_t waitStartMs = millis();
-  while (powerButton_.isHeld() && millis() - waitStartMs < kPowerOffReleaseWaitMs) {
+  while (powerButton_.isHeld() && millis() - waitStartMs < kPowerOffReleaseWaitMs)
+  {
     powerButton_.update(millis());
     delay(10);
   }
@@ -2192,7 +2674,8 @@ void App::enterPowerOff(uint32_t nowMs) {
   esp_deep_sleep_start();
 }
 
-void App::enterSleep(uint32_t nowMs) {
+void App::enterSleep(uint32_t nowMs)
+{
   Serial.println("[app] entering light sleep; press BOOT to wake");
   saveReadingPosition(true);
   setState(AppState::Sleeping, nowMs);
@@ -2208,7 +2691,8 @@ void App::enterSleep(uint32_t nowMs) {
   wakeFromSleep();
 }
 
-void App::wakeFromSleep() {
+void App::wakeFromSleep()
+{
   const uint32_t nowMs = millis();
   Serial.println("[app] woke from light sleep");
 
@@ -2230,30 +2714,36 @@ void App::wakeFromSleep() {
   state_ = AppState::Paused;
 
   const bool displayReady = display_.wakeFromSleep();
-  if (displayReady) {
+  if (displayReady)
+  {
     renderReaderWord();
   }
 
   touchInitialized_ = touch_.begin();
   const bool storageReady = storage_.begin();
-  if (storageReady) {
+  if (storageReady)
+  {
     storage_.listBooks();
   }
 }
 
-bool App::restoreSavedBook(uint32_t nowMs) {
+bool App::restoreSavedBook(uint32_t nowMs)
+{
   const String savedPath = preferences_.getString(kPrefBookPath, "");
-  if (savedPath.isEmpty()) {
+  if (savedPath.isEmpty())
+  {
     return false;
   }
 
   const int bookIndex = findBookIndexByPath(savedPath);
-  if (bookIndex < 0) {
+  if (bookIndex < 0)
+  {
     Serial.printf("[app] saved book not found: %s\n", savedPath.c_str());
     return false;
   }
 
-  if (!loadBookAtIndex(static_cast<size_t>(bookIndex), nowMs, true)) {
+  if (!loadBookAtIndex(static_cast<size_t>(bookIndex), nowMs, true))
+  {
     return false;
   }
 
@@ -2262,20 +2752,24 @@ bool App::restoreSavedBook(uint32_t nowMs) {
   return true;
 }
 
-bool App::prepareSavedBookMeta() {
+bool App::prepareSavedBookMeta()
+{
   const String savedPath = preferences_.getString(kPrefBookPath, "");
-  if (savedPath.isEmpty()) {
+  if (savedPath.isEmpty())
+  {
     return false;
   }
   const int idx = findBookIndexByPath(savedPath);
-  if (idx < 0) {
+  if (idx < 0)
+  {
     Serial.printf("[app] saved book not found for meta-only: %s\n", savedPath.c_str());
     return false;
   }
   currentBookIndex_ = static_cast<size_t>(idx);
   currentBookPath_ = savedPath;
   currentBookTitle_ = storage_.bookDisplayName(currentBookIndex_);
-  if (currentBookTitle_.isEmpty()) {
+  if (currentBookTitle_.isEmpty())
+  {
     currentBookTitle_ = "Resume";
   }
   bookMetaOnly_ = true;
@@ -2285,27 +2779,34 @@ bool App::prepareSavedBookMeta() {
   return true;
 }
 
-bool App::ensureCurrentBookLoaded(uint32_t nowMs) {
-  if (usingStorageBook_) {
+bool App::ensureCurrentBookLoaded(uint32_t nowMs)
+{
+  if (usingStorageBook_)
+  {
     return true;
   }
-  if (!bookMetaOnly_ || currentBookPath_.isEmpty()) {
+  if (!bookMetaOnly_ || currentBookPath_.isEmpty())
+  {
     return false;
   }
-  if (loadBookAtIndex(currentBookIndex_, nowMs, true)) {
+  if (loadBookAtIndex(currentBookIndex_, nowMs, true))
+  {
     bookMetaOnly_ = false;
     return true;
   }
   return false;
 }
 
-void App::saveReadingPosition(bool force) {
-  if (!usingStorageBook_ || currentBookPath_.isEmpty()) {
+void App::saveReadingPosition(bool force)
+{
+  if (!usingStorageBook_ || currentBookPath_.isEmpty())
+  {
     return;
   }
 
   const size_t wordIndex = reader_.currentIndex();
-  if (!force && wordIndex == lastSavedWordIndex_) {
+  if (!force && wordIndex == lastSavedWordIndex_)
+  {
     return;
   }
 
@@ -2322,11 +2823,13 @@ void App::saveReadingPosition(bool force) {
                 currentBookPath_.c_str());
 }
 
-bool App::loadBookAtIndex(size_t index, uint32_t nowMs, bool allowLegacyPositionFallback) {
+bool App::loadBookAtIndex(size_t index, uint32_t nowMs, bool allowLegacyPositionFallback)
+{
   BookContent book;
   String loadedPath;
   size_t loadedIndex = index;
-  if (!storage_.loadBookContent(index, book, &loadedPath, &loadedIndex)) {
+  if (!storage_.loadBookContent(index, book, &loadedPath, &loadedIndex))
+  {
     return false;
   }
 
@@ -2342,9 +2845,11 @@ bool App::loadBookAtIndex(size_t index, uint32_t nowMs, bool allowLegacyPosition
 
   std::vector<float> chapterFractions;
   const size_t totalWords = reader_.wordCount();
-  if (totalWords > 0) {
+  if (totalWords > 0)
+  {
     chapterFractions.reserve(chapterMarkers_.size());
-    for (const ChapterMarker &marker : chapterMarkers_) {
+    for (const ChapterMarker &marker : chapterMarkers_)
+    {
       chapterFractions.push_back(static_cast<float>(marker.wordIndex) /
                                  static_cast<float>(totalWords));
     }
@@ -2357,7 +2862,8 @@ bool App::loadBookAtIndex(size_t index, uint32_t nowMs, bool allowLegacyPosition
 
   const uint32_t savedWordIndex =
       savedWordIndexForBook(currentBookPath_, allowLegacyPositionFallback);
-  if (savedWordIndex != kNoSavedWordIndex) {
+  if (savedWordIndex != kNoSavedWordIndex)
+  {
     reader_.seekTo(savedWordIndex);
     lastSavedWordIndex_ = reader_.currentIndex();
     Serial.printf("[app] restored book position word=%u key=%s\n",
@@ -2374,27 +2880,32 @@ bool App::loadBookAtIndex(size_t index, uint32_t nowMs, bool allowLegacyPosition
   return true;
 }
 
-String App::bookPositionKey(const String &bookPath) const {
+String App::bookPositionKey(const String &bookPath) const
+{
   char key[10];
   std::snprintf(key, sizeof(key), "p%08lx", static_cast<unsigned long>(hashBookPath(bookPath)));
   return String(key);
 }
 
-String App::bookWordCountKey(const String &bookPath) const {
+String App::bookWordCountKey(const String &bookPath) const
+{
   char key[10];
   std::snprintf(key, sizeof(key), "c%08lx", static_cast<unsigned long>(hashBookPath(bookPath)));
   return String(key);
 }
 
-String App::bookRecentKey(const String &bookPath) const {
+String App::bookRecentKey(const String &bookPath) const
+{
   char key[10];
   std::snprintf(key, sizeof(key), "r%08lx", static_cast<unsigned long>(hashBookPath(bookPath)));
   return String(key);
 }
 
-uint32_t App::nextRecentSequence() {
+uint32_t App::nextRecentSequence()
+{
   uint32_t sequence = preferences_.getUInt(kPrefRecentSeq, 0);
-  if (sequence == 0xFFFFFFFEUL) {
+  if (sequence == 0xFFFFFFFEUL)
+  {
     sequence = 0;
   }
   ++sequence;
@@ -2402,58 +2913,72 @@ uint32_t App::nextRecentSequence() {
   return sequence;
 }
 
-uint32_t App::bookRecentSequence(const String &bookPath) {
+uint32_t App::bookRecentSequence(const String &bookPath)
+{
   return preferences_.getUInt(bookRecentKey(bookPath).c_str(), 0);
 }
 
-uint32_t App::bookRecentSequenceByIndex(size_t bookIndex) {
+uint32_t App::bookRecentSequenceByIndex(size_t bookIndex)
+{
   return progressInfoFor(bookIndex).recentSequence;
 }
 
-void App::markBookRecent(const String &bookPath) {
-  if (bookPath.isEmpty()) {
+void App::markBookRecent(const String &bookPath)
+{
+  if (bookPath.isEmpty())
+  {
     return;
   }
 
   preferences_.putUInt(bookRecentKey(bookPath).c_str(), nextRecentSequence());
   const int idx = findBookIndexByPath(bookPath);
-  if (idx >= 0) {
+  if (idx >= 0)
+  {
     invalidateBookProgress(static_cast<size_t>(idx));
   }
 }
 
-void App::ensureBookProgressInfoSize() {
+void App::ensureBookProgressInfoSize()
+{
   const size_t count = storage_.bookCount();
-  if (bookProgressInfo_.size() != count) {
+  if (bookProgressInfo_.size() != count)
+  {
     bookProgressInfo_.assign(count, BookProgressInfo{});
   }
 }
 
-void App::invalidateBookProgress(size_t bookIndex) {
-  if (bookIndex < bookProgressInfo_.size()) {
+void App::invalidateBookProgress(size_t bookIndex)
+{
+  if (bookIndex < bookProgressInfo_.size())
+  {
     bookProgressInfo_[bookIndex] = BookProgressInfo{};
   }
 }
 
-const App::BookProgressInfo &App::progressInfoFor(size_t bookIndex) {
+const App::BookProgressInfo &App::progressInfoFor(size_t bookIndex)
+{
   static BookProgressInfo empty;
   ensureBookProgressInfoSize();
-  if (bookIndex >= bookProgressInfo_.size()) {
+  if (bookIndex >= bookProgressInfo_.size())
+  {
     return empty;
   }
   BookProgressInfo &info = bookProgressInfo_[bookIndex];
-  if (info.valid) {
+  if (info.valid)
+  {
     return info;
   }
   const String path = storage_.bookPath(bookIndex);
-  if (path.isEmpty()) {
+  if (path.isEmpty())
+  {
     info.valid = true;
     return info;
   }
   info.recentSequence = preferences_.getUInt(bookRecentKey(path).c_str(), 0);
   const String posKey = bookPositionKey(path);
   const String countKey = bookWordCountKey(path);
-  if (preferences_.isKey(posKey.c_str()) && preferences_.isKey(countKey.c_str())) {
+  if (preferences_.isKey(posKey.c_str()) && preferences_.isKey(countKey.c_str()))
+  {
     info.savedWordIndex = preferences_.getUInt(posKey.c_str(), 0);
     info.savedWordCount = preferences_.getUInt(countKey.c_str(), 0);
     info.hasPosition = true;
@@ -2462,13 +2987,16 @@ const App::BookProgressInfo &App::progressInfoFor(size_t bookIndex) {
   return info;
 }
 
-uint32_t App::savedWordIndexForBook(const String &bookPath, bool allowLegacyFallback) {
+uint32_t App::savedWordIndexForBook(const String &bookPath, bool allowLegacyFallback)
+{
   const String key = bookPositionKey(bookPath);
-  if (preferences_.isKey(key.c_str())) {
+  if (preferences_.isKey(key.c_str()))
+  {
     return preferences_.getUInt(key.c_str(), 0);
   }
 
-  if (allowLegacyFallback && preferences_.isKey(kPrefLegacyWordIndex)) {
+  if (allowLegacyFallback && preferences_.isKey(kPrefLegacyWordIndex))
+  {
     const uint32_t legacyWordIndex = preferences_.getUInt(kPrefLegacyWordIndex, 0);
     preferences_.putUInt(key.c_str(), legacyWordIndex);
     Serial.printf("[app] migrated legacy position word=%u to key=%s\n",
@@ -2479,23 +3007,29 @@ uint32_t App::savedWordIndexForBook(const String &bookPath, bool allowLegacyFall
   return kNoSavedWordIndex;
 }
 
-bool App::bookProgressPercent(size_t bookIndex, uint8_t &percent) {
+bool App::bookProgressPercent(size_t bookIndex, uint8_t &percent)
+{
   size_t wordIndex = 0;
   size_t wordCount = 0;
 
-  if (usingStorageBook_ && bookIndex == currentBookIndex_) {
+  if (usingStorageBook_ && bookIndex == currentBookIndex_)
+  {
     wordIndex = reader_.currentIndex();
     wordCount = reader_.wordCount();
-  } else {
+  }
+  else
+  {
     const BookProgressInfo &info = progressInfoFor(bookIndex);
-    if (!info.hasPosition) {
+    if (!info.hasPosition)
+    {
       return false;
     }
     wordIndex = info.savedWordIndex;
     wordCount = info.savedWordCount;
   }
 
-  if (wordCount <= 1) {
+  if (wordCount <= 1)
+  {
     return false;
   }
 
@@ -2505,74 +3039,107 @@ bool App::bookProgressPercent(size_t bookIndex, uint8_t &percent) {
   return true;
 }
 
-int App::findBookIndexByPath(const String &path) const {
-  for (size_t i = 0; i < storage_.bookCount(); ++i) {
-    if (storage_.bookPath(i) == path) {
+int App::findBookIndexByPath(const String &path) const
+{
+  for (size_t i = 0; i < storage_.bookCount(); ++i)
+  {
+    if (storage_.bookPath(i) == path)
+    {
       return static_cast<int>(i);
     }
   }
   return -1;
 }
 
-void App::renderMenu() {
+void App::renderMenu()
+{
   if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
-      menuScreen_ == MenuScreen::SettingsPacing) {
+      menuScreen_ == MenuScreen::SettingsPacing)
+  {
     renderSettings();
-  } else if (menuScreen_ == MenuScreen::TypographyTuning) {
+  }
+  else if (menuScreen_ == MenuScreen::TypographyTuning)
+  {
     renderTypographyTuning();
-  } else if (menuScreen_ == MenuScreen::BookPicker) {
+  }
+  else if (menuScreen_ == MenuScreen::BookPicker)
+  {
     renderBookPicker();
-  } else if (menuScreen_ == MenuScreen::AuthorPicker) {
+  }
+  else if (menuScreen_ == MenuScreen::AuthorPicker)
+  {
     renderAuthorPicker();
-  } else if (menuScreen_ == MenuScreen::ChapterPicker) {
+  }
+  else if (menuScreen_ == MenuScreen::ChapterPicker)
+  {
     renderChapterPicker();
-  } else if (menuScreen_ == MenuScreen::RestartConfirm) {
+  }
+  else if (menuScreen_ == MenuScreen::TonePicker)
+  {
+    renderTonePicker();
+  }
+  else if (menuScreen_ == MenuScreen::RestartConfirm)
+  {
     renderRestartConfirm();
-  } else {
+  }
+  else
+  {
     renderMainMenu();
   }
 }
 
-void App::renderMainMenu() {
+void App::renderMainMenu()
+{
   String accentTitle;
   std::vector<String> accentChips;
   const bool haveBookContext =
       (usingStorageBook_ || bookMetaOnly_) && !currentBookTitle_.isEmpty();
-  if (haveBookContext) {
+  if (haveBookContext)
+  {
     accentTitle = currentBookTitle_;
 
     size_t total = 0;
     size_t cur = 0;
-    if (usingStorageBook_) {
+    if (usingStorageBook_)
+    {
       total = reader_.wordCount();
       cur = reader_.currentIndex();
-    } else {
+    }
+    else
+    {
       const BookProgressInfo &info = progressInfoFor(currentBookIndex_);
       total = info.savedWordCount;
       cur = info.savedWordIndex;
     }
-    if (total > 0 && cur <= total) {
+    if (total > 0 && cur <= total)
+    {
       const uint32_t pct = (static_cast<uint64_t>(cur) * 100ULL) / total;
-      if (pct > 0) {
+      if (pct > 0)
+      {
         accentChips.push_back(String(pct) + "%");
       }
     }
     const uint16_t wpm = reader_.wpm();
-    if (total > cur && wpm > 0) {
+    if (total > cur && wpm > 0)
+    {
       const uint32_t remainingWords = static_cast<uint32_t>(total - cur);
       const uint32_t totalMin = (remainingWords + wpm / 2) / wpm;
       const uint32_t hours = totalMin / 60;
       const uint32_t mins = totalMin % 60;
       String t;
-      if (hours > 0) {
+      if (hours > 0)
+      {
         t = String(hours) + "h";
-        if (hours < 10 && mins > 0) {
+        if (hours < 10 && mins > 0)
+        {
           t += String(mins) + "m";
         }
-      } else {
+      }
+      else
+      {
         t = String(std::max<uint32_t>(1, mins)) + "m";
       }
-      accentChips.push_back(t + " rem.");
+      accentChips.push_back(t);
     }
   }
   std::vector<bool> chevrons(MenuItemCount, false);
@@ -2585,39 +3152,52 @@ void App::renderMainMenu() {
                                 accentTitle, accentChips, chevrons);
 }
 
-void App::renderSettings() {
-  if (settingsMenuItems_.empty()) {
+void App::renderSettings()
+{
+  if (settingsMenuItems_.empty())
+  {
     rebuildSettingsMenuItems();
   }
   std::vector<bool> chevrons(settingsMenuItems_.size(), false);
-  if (menuScreen_ == MenuScreen::SettingsHome) {
-    if (settingsMenuItems_.size() > kSettingsHomeDisplayIndex) {
+  if (menuScreen_ == MenuScreen::SettingsHome)
+  {
+    if (settingsMenuItems_.size() > kSettingsHomeDisplayIndex)
+    {
       chevrons[kSettingsHomeDisplayIndex] = true;
     }
-    if (settingsMenuItems_.size() > kSettingsHomeTypographyIndex) {
+    if (settingsMenuItems_.size() > kSettingsHomeTypographyIndex)
+    {
       chevrons[kSettingsHomeTypographyIndex] = true;
     }
-    if (settingsMenuItems_.size() > kSettingsHomePacingIndex) {
+    if (settingsMenuItems_.size() > kSettingsHomePacingIndex)
+    {
       chevrons[kSettingsHomePacingIndex] = true;
     }
-  } else if (menuScreen_ == MenuScreen::SettingsDisplay) {
-    if (settingsMenuItems_.size() > kSettingsDisplayTypographyIndex) {
+  }
+  else if (menuScreen_ == MenuScreen::SettingsDisplay)
+  {
+    if (settingsMenuItems_.size() > kSettingsDisplayTypographyIndex)
+    {
       chevrons[kSettingsDisplayTypographyIndex] = true;
     }
   }
   display_.renderMenu(settingsMenuItems_, settingsSelectedIndex_, chevrons);
 }
 
-void App::renderTypographyTuning() {
-  if (kTypographyPreviewWordCount == 0) {
+void App::renderTypographyTuning()
+{
+  if (kTypographyPreviewWordCount == 0)
+  {
     display_.renderStatus("Typography", "No samples", "");
     return;
   }
 
-  if (typographyPreviewSampleIndex_ >= kTypographyPreviewWordCount) {
+  if (typographyPreviewSampleIndex_ >= kTypographyPreviewWordCount)
+  {
     typographyPreviewSampleIndex_ = 0;
   }
-  if (typographyTuningSelectedIndex_ >= TypographyTuningItemCount) {
+  if (typographyTuningSelectedIndex_ >= TypographyTuningItemCount)
+  {
     typographyTuningSelectedIndex_ = TypographyTuningTracking;
   }
 
@@ -2631,9 +3211,12 @@ void App::renderTypographyTuning() {
       "Typography " + String(static_cast<unsigned int>(index + 1)) + "/" +
       String(static_cast<unsigned int>(kTypographyPreviewWordCount));
   String line2 = "Tap change  L/R sample";
-  if (typographyTuningSelectedIndex_ == TypographyTuningBack) {
+  if (typographyTuningSelectedIndex_ == TypographyTuningBack)
+  {
     line2 = "Tap exit  L/R sample";
-  } else if (typographyTuningSelectedIndex_ == TypographyTuningReset) {
+  }
+  else if (typographyTuningSelectedIndex_ == TypographyTuningReset)
+  {
     line2 = "Tap reset  L/R sample";
   }
 
@@ -2643,7 +3226,8 @@ void App::renderTypographyTuning() {
                                    readerFontSizeIndex_, title, line1, line2);
 }
 
-void App::renderBookPicker() {
+void App::renderBookPicker()
+{
   const int focus = (letterScrubActive_ && menuScreen_ == MenuScreen::BookPicker)
                         ? letterScrubFocusIdx_
                         : -1;
@@ -2651,71 +3235,88 @@ void App::renderBookPicker() {
                          focus);
 }
 
-void App::renderChapterPicker() {
+void App::renderChapterPicker()
+{
   display_.renderMenu(chapterMenuItems_, chapterPickerSelectedIndex_);
 }
 
-void App::renderRestartConfirm() {
+void App::renderRestartConfirm()
+{
   std::vector<String> items;
   items.reserve(sizeof(kRestartConfirmItems) / sizeof(kRestartConfirmItems[0]));
-  for (const char *item : kRestartConfirmItems) {
+  for (const char *item : kRestartConfirmItems)
+  {
     items.push_back(item);
   }
 
   display_.renderMenu(items, restartConfirmSelectedIndex_ + kRestartConfirmHeaderRows);
 }
 
-DisplayManager::LibraryItem App::libraryItemForBook(size_t bookIndex) {
+DisplayManager::LibraryItem App::libraryItemForBook(size_t bookIndex)
+{
   DisplayManager::LibraryItem item;
   item.title = storage_.bookDisplayName(bookIndex);
   item.subtitle = storage_.bookAuthorName(bookIndex);
 
   uint32_t words = 0;
   uint32_t chapters = 0;
-  if (storage_.bookStats(bookIndex, words, chapters)) {
-    if (words > 0) {
+  if (storage_.bookStats(bookIndex, words, chapters))
+  {
+    if (words > 0)
+    {
       item.wordCount = static_cast<int32_t>(words);
       const uint16_t wpm = reader_.wpm();
-      if (wpm > 0) {
+      if (wpm > 0)
+      {
         const uint32_t totalMinutes = (words + wpm / 2) / wpm;
         const uint32_t hours = totalMinutes / 60;
         const uint32_t minutes = totalMinutes % 60;
         String timeBadge;
-        if (hours > 0) {
+        if (hours > 0)
+        {
           timeBadge = String(hours) + "h";
-          if (hours < 10 && minutes > 0) {
+          if (hours < 10 && minutes > 0)
+          {
             timeBadge += String(minutes) + "m";
           }
-        } else {
+        }
+        else
+        {
           timeBadge = String(std::max<uint32_t>(1, minutes)) + "m";
         }
         item.badges.push_back(timeBadge);
       }
     }
-    if (chapters > 0) {
+    if (chapters > 0)
+    {
       item.chapterCount = static_cast<int32_t>(chapters);
     }
   }
 
   uint8_t percent = 0;
-  if (bookProgressPercent(bookIndex, percent)) {
+  if (bookProgressPercent(bookIndex, percent))
+  {
     item.progressPercent = static_cast<int8_t>(percent);
   }
 
-  if (item.subtitle.isEmpty() && usingStorageBook_ && bookIndex == currentBookIndex_) {
+  if (item.subtitle.isEmpty() && usingStorageBook_ && bookIndex == currentBookIndex_)
+  {
     item.subtitle = "Current book";
   }
 
   return item;
 }
 
-String App::chapterMenuLabel(size_t chapterIndex) const {
-  if (chapterIndex >= chapterMarkers_.size()) {
+String App::chapterMenuLabel(size_t chapterIndex) const
+{
+  if (chapterIndex >= chapterMarkers_.size())
+  {
     return "";
   }
 
   String label = String(chapterIndex + 1) + " " + chapterMarkers_[chapterIndex].title;
-  if (label.length() > 36) {
+  if (label.length() > 36)
+  {
     label = label.substring(0, 36) + "...";
   }
 
@@ -2724,21 +3325,26 @@ String App::chapterMenuLabel(size_t chapterIndex) const {
   const size_t endIndex = (chapterIndex + 1 < chapterMarkers_.size())
                               ? chapterMarkers_[chapterIndex + 1].wordIndex
                               : reader_.wordCount();
-  if (currentIndex >= startIndex && currentIndex < endIndex) {
+  if (currentIndex >= startIndex && currentIndex < endIndex)
+  {
     label += " *";
   }
   return label;
 }
 
-String App::currentChapterLabel() const {
-  if (chapterMarkers_.empty()) {
+String App::currentChapterLabel() const
+{
+  if (chapterMarkers_.empty())
+  {
     return currentBookTitle_.isEmpty() ? "Start" : currentBookTitle_;
   }
 
   size_t currentChapter = 0;
   const size_t currentIndex = reader_.currentIndex();
-  for (size_t i = 0; i < chapterMarkers_.size(); ++i) {
-    if (chapterMarkers_[i].wordIndex <= currentIndex) {
+  for (size_t i = 0; i < chapterMarkers_.size(); ++i)
+  {
+    if (chapterMarkers_[i].wordIndex <= currentIndex)
+    {
       currentChapter = i;
     }
   }
@@ -2746,9 +3352,11 @@ String App::currentChapterLabel() const {
   return chapterMarkers_[currentChapter].title;
 }
 
-uint8_t App::readingProgressPercent() const {
+uint8_t App::readingProgressPercent() const
+{
   const size_t count = reader_.wordCount();
-  if (count <= 1) {
+  if (count <= 1)
+  {
     return 0;
   }
 
@@ -2757,41 +3365,51 @@ uint8_t App::readingProgressPercent() const {
   return static_cast<uint8_t>(std::min(static_cast<size_t>(100), percent));
 }
 
-size_t App::phantomBeforeCharTarget() const {
+size_t App::phantomBeforeCharTarget() const
+{
   uint8_t levelIndex = readerFontSizeIndex_;
-  if (levelIndex >= kReaderFontSizeCount) {
+  if (levelIndex >= kReaderFontSizeCount)
+  {
     levelIndex = 0;
   }
   return kPhantomBeforeCharTargets[levelIndex];
 }
 
-size_t App::phantomAfterCharTarget() const {
+size_t App::phantomAfterCharTarget() const
+{
   uint8_t levelIndex = readerFontSizeIndex_;
-  if (levelIndex >= kReaderFontSizeCount) {
+  if (levelIndex >= kReaderFontSizeCount)
+  {
     levelIndex = 0;
   }
   return kPhantomAfterCharTargets[levelIndex];
 }
 
-String App::collectPhantomBeforeText(size_t currentIndex, size_t charTarget) const {
-  if (currentIndex == 0 || charTarget == 0) {
+String App::collectPhantomBeforeText(size_t currentIndex, size_t charTarget) const
+{
+  if (currentIndex == 0 || charTarget == 0)
+  {
     return "";
   }
 
   size_t startIndex = currentIndex;
   size_t totalChars = 0;
-  while (startIndex > 0 && totalChars < charTarget) {
+  while (startIndex > 0 && totalChars < charTarget)
+  {
     --startIndex;
     const String word = reader_.wordAt(startIndex);
     totalChars += word.length();
-    if (startIndex + 1 < currentIndex) {
+    if (startIndex + 1 < currentIndex)
+    {
       ++totalChars;
     }
   }
 
   String text;
-  for (size_t index = startIndex; index < currentIndex; ++index) {
-    if (!text.isEmpty()) {
+  for (size_t index = startIndex; index < currentIndex; ++index)
+  {
+    if (!text.isEmpty())
+    {
       text += ' ';
     }
     text += reader_.wordAt(index);
@@ -2799,26 +3417,32 @@ String App::collectPhantomBeforeText(size_t currentIndex, size_t charTarget) con
   return text;
 }
 
-String App::collectPhantomAfterText(size_t currentIndex, size_t charTarget) const {
+String App::collectPhantomAfterText(size_t currentIndex, size_t charTarget) const
+{
   const size_t wordCount = reader_.wordCount();
-  if (wordCount == 0 || currentIndex + 1 >= wordCount || charTarget == 0) {
+  if (wordCount == 0 || currentIndex + 1 >= wordCount || charTarget == 0)
+  {
     return "";
   }
 
   size_t endIndex = currentIndex + 1;
   size_t totalChars = 0;
-  while (endIndex < wordCount && totalChars < charTarget) {
+  while (endIndex < wordCount && totalChars < charTarget)
+  {
     const String word = reader_.wordAt(endIndex);
     totalChars += word.length();
-    if (endIndex > currentIndex + 1) {
+    if (endIndex > currentIndex + 1)
+    {
       ++totalChars;
     }
     ++endIndex;
   }
 
   String text;
-  for (size_t index = currentIndex + 1; index < endIndex; ++index) {
-    if (!text.isEmpty()) {
+  for (size_t index = currentIndex + 1; index < endIndex; ++index)
+  {
+    if (!text.isEmpty())
+    {
       text += ' ';
     }
     text += reader_.wordAt(index);
@@ -2826,9 +3450,11 @@ String App::collectPhantomAfterText(size_t currentIndex, size_t charTarget) cons
   return text;
 }
 
-String App::phantomBeforeText() const {
+String App::phantomBeforeText() const
+{
   const size_t wordCount = reader_.wordCount();
-  if (wordCount == 0) {
+  if (wordCount == 0)
+  {
     return "";
   }
 
@@ -2836,9 +3462,11 @@ String App::phantomBeforeText() const {
   return collectPhantomBeforeText(currentIndex, phantomBeforeCharTarget());
 }
 
-String App::phantomAfterText() const {
+String App::phantomAfterText() const
+{
   const size_t wordCount = reader_.wordCount();
-  if (wordCount == 0) {
+  if (wordCount == 0)
+  {
     return "";
   }
 
@@ -2846,7 +3474,8 @@ String App::phantomAfterText() const {
   return collectPhantomAfterText(currentIndex, phantomAfterCharTarget());
 }
 
-void App::renderReaderWord() {
+void App::renderReaderWord()
+{
   contextViewVisible_ = false;
   const bool showFooter = state_ != AppState::Playing;
   const String beforeText = phantomWordsEnabled_ ? phantomBeforeText() : "";
@@ -2856,35 +3485,43 @@ void App::renderReaderWord() {
                                  readingProgressPercent(), showFooter);
 }
 
-bool App::isParagraphStart(size_t wordIndex) const {
-  if (wordIndex == 0) {
+bool App::isParagraphStart(size_t wordIndex) const
+{
+  if (wordIndex == 0)
+  {
     return true;
   }
 
   return std::binary_search(paragraphStarts_.begin(), paragraphStarts_.end(), wordIndex);
 }
 
-size_t App::paragraphStartAtOrBefore(size_t wordIndex) const {
-  if (wordIndex == 0 || paragraphStarts_.empty()) {
+size_t App::paragraphStartAtOrBefore(size_t wordIndex) const
+{
+  if (wordIndex == 0 || paragraphStarts_.empty())
+  {
     return 0;
   }
 
   const auto it = std::upper_bound(paragraphStarts_.begin(), paragraphStarts_.end(), wordIndex);
-  if (it == paragraphStarts_.begin()) {
+  if (it == paragraphStarts_.begin())
+  {
     return 0;
   }
 
   return *std::prev(it);
 }
 
-size_t App::contextPreviewAnchorIndex(size_t currentIndex) const {
-  if (currentIndex <= kContextPreviewAnchorLeadWords) {
+size_t App::contextPreviewAnchorIndex(size_t currentIndex) const
+{
+  if (currentIndex <= kContextPreviewAnchorLeadWords)
+  {
     return 0;
   }
 
   const size_t anchorTarget = currentIndex - kContextPreviewAnchorLeadWords;
   const size_t paragraphStart = paragraphStartAtOrBefore(anchorTarget);
-  if (anchorTarget - paragraphStart <= kContextPreviewMaxParagraphSnapWords) {
+  if (anchorTarget - paragraphStart <= kContextPreviewMaxParagraphSnapWords)
+  {
     return paragraphStart;
   }
 
@@ -2893,22 +3530,26 @@ size_t App::contextPreviewAnchorIndex(size_t currentIndex) const {
 
 void App::invalidateContextPreviewWindow() { contextPreviewWindowValid_ = false; }
 
-void App::renderContextPreview() {
+void App::renderContextPreview()
+{
   const size_t wordCount = reader_.wordCount();
-  if (wordCount == 0) {
+  if (wordCount == 0)
+  {
     renderReaderWord();
     return;
   }
 
   const size_t currentIndex = std::min(reader_.currentIndex(), wordCount - 1);
-  if (!contextPreviewWindowValid_) {
+  if (!contextPreviewWindowValid_)
+  {
     contextPreviewStartIndex_ = contextPreviewAnchorIndex(currentIndex);
     contextPreviewWindowValid_ = true;
   }
 
   size_t startIndex = contextPreviewStartIndex_;
   size_t endIndex = std::min(wordCount, startIndex + kContextPreviewWindowWords);
-  if (currentIndex < startIndex || currentIndex >= endIndex) {
+  if (currentIndex < startIndex || currentIndex >= endIndex)
+  {
     startIndex = contextPreviewAnchorIndex(currentIndex);
     endIndex = std::min(wordCount, startIndex + kContextPreviewWindowWords);
     contextPreviewStartIndex_ = startIndex;
@@ -2916,7 +3557,8 @@ void App::renderContextPreview() {
 
   std::vector<DisplayManager::ContextWord> words;
   words.reserve(endIndex - startIndex);
-  for (size_t index = startIndex; index < endIndex; ++index) {
+  for (size_t index = startIndex; index < endIndex; ++index)
+  {
     DisplayManager::ContextWord word;
     word.text = reader_.wordAt(index);
     word.paragraphStart = isParagraphStart(index);
@@ -2928,7 +3570,8 @@ void App::renderContextPreview() {
   display_.renderContextView(words, currentChapterLabel(), readingProgressPercent());
 }
 
-void App::renderWpmFeedback(uint32_t nowMs) {
+void App::renderWpmFeedback(uint32_t nowMs)
+{
   contextViewVisible_ = false;
   wpmFeedbackVisible_ = true;
   wpmFeedbackUntilMs_ = nowMs + kWpmFeedbackMs;
@@ -2937,14 +3580,17 @@ void App::renderWpmFeedback(uint32_t nowMs) {
 }
 
 void App::renderStorageStatus(const char *title, const char *line1, const char *line2,
-                              int progressPercent) {
+                              int progressPercent)
+{
   display_.renderProgress(title == nullptr ? "SD" : title, line1 == nullptr ? "" : line1,
                           line2 == nullptr ? "" : line2, progressPercent);
 }
 
 void App::handleStorageStatus(void *context, const char *title, const char *line1,
-                              const char *line2, int progressPercent) {
-  if (context == nullptr) {
+                              const char *line2, int progressPercent)
+{
+  if (context == nullptr)
+  {
     return;
   }
 

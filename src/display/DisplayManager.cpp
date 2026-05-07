@@ -1232,6 +1232,57 @@ void DisplayManager::drawSerifTextScaledAt(const String &text, int x, int y, uin
   }
 }
 
+namespace {
+
+uint16_t blendRgb565(uint16_t fg, uint16_t bg, uint8_t alpha) {
+  if (alpha >= 250) return fg;
+  if (alpha == 0) return bg;
+  const uint32_t inv = 255U - alpha;
+  const uint32_t r = ((((fg >> 11) & 0x1FU) * alpha) + (((bg >> 11) & 0x1FU) * inv)) / 255U;
+  const uint32_t g = ((((fg >> 5) & 0x3FU) * alpha) + (((bg >> 5) & 0x3FU) * inv)) / 255U;
+  const uint32_t b = (((fg & 0x1FU) * alpha) + ((bg & 0x1FU) * inv)) / 255U;
+  return static_cast<uint16_t>((r << 11) | (g << 5) | b);
+}
+
+}  // namespace
+
+void DisplayManager::drawTinyGlyphFaded(int x, int y, char c, uint16_t color, int scale,
+                                        int clipLeftX, int clipRightX, int fadeWidth,
+                                        uint16_t fadeColor) {
+  const uint8_t *rows = tinyRowsFor(c);
+
+  // Pre-compute per-column alpha within the fade zones so we don't redo the
+  // math for every glyph row. Outside the clip window the column is skipped
+  // entirely.
+  for (int row = 0; row < kTinyGlyphHeight; ++row) {
+    for (int col = 0; col < kTinyGlyphWidth; ++col) {
+      if ((rows[row] & (1 << (kTinyGlyphWidth - 1 - col))) == 0) continue;
+      for (int yy = 0; yy < scale; ++yy) {
+        const int dstY = y + row * scale + yy;
+        if (dstY < 0 || dstY >= kVirtualBufferHeight) continue;
+        for (int xx = 0; xx < scale; ++xx) {
+          const int dstX = x + col * scale + xx;
+          if (dstX < 0 || dstX >= kVirtualBufferWidth) continue;
+          if (dstX < clipLeftX || dstX >= clipRightX) continue;
+
+          uint8_t alpha = 255;
+          if (fadeWidth > 0) {
+            const int distLeft = dstX - clipLeftX;
+            const int distRight = clipRightX - 1 - dstX;
+            const int edge = std::min(distLeft, distRight);
+            if (edge < fadeWidth) {
+              const int a = (edge * 255) / std::max(1, fadeWidth);
+              alpha = static_cast<uint8_t>(std::max(0, std::min(255, a)));
+            }
+          }
+          const uint16_t blended = blendRgb565(color, fadeColor, alpha);
+          virtualFrame_[dstY * kVirtualBufferWidth + dstX] = panelColor(blended);
+        }
+      }
+    }
+  }
+}
+
 void DisplayManager::drawTinyGlyphClipped(int x, int y, char c, uint16_t color, int scale,
                                           int clipLeftX, int clipRightX) {
   const uint8_t *rows = tinyRowsFor(c);
@@ -1321,12 +1372,16 @@ int DisplayManager::drawScrollingChipText(const String &text, int leftX, int tex
   const int charBodyWidth = kTinyGlyphWidth * kTinyScale;
   const int maxOffset = textW - (contentRight - contentLeft);
   const int offsetPx = marqueePingPongOffset(maxOffset);
+  // Soft edge fade — text dissolves into the chip's own fill color so the
+  // scroll feels continuous instead of clipping abruptly.
+  const int fadeWidthPx = std::min<int>(8, (contentRight - contentLeft) / 4);
   for (size_t i = 0; i < text.length(); ++i) {
     const int charX = contentLeft - offsetPx + static_cast<int>(i) * charPitch;
     const int charRight = charX + charBodyWidth;
     if (charX >= contentRight) break;
     if (charRight <= contentLeft) continue;
-    drawTinyGlyphClipped(charX, textY, text[i], textColor, kTinyScale, contentLeft, contentRight);
+    drawTinyGlyphFaded(charX, textY, text[i], textColor, kTinyScale, contentLeft, contentRight,
+                       fadeWidthPx, bgColor);
   }
   lastRenderKey_ = "";
   return leftX + chipW;
@@ -2258,13 +2313,15 @@ void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemC
           const int charBodyWidth = kTinyGlyphWidth * kTinyScale;
           const int maxOffset = titleW - (titleEndX - titleStartX);
           const int offsetPx = marqueePingPongOffset(maxOffset);
+          const int fadeWidthPx = std::min<int>(10, (titleEndX - titleStartX) / 5);
+          const uint16_t menuFadeColor = backgroundColor();
           for (size_t ci = 0; ci < accentText.length(); ++ci) {
             const int charX = titleStartX - offsetPx + static_cast<int>(ci) * charPitch;
             const int charRight = charX + charBodyWidth;
             if (charX >= titleEndX) break;
             if (charRight <= titleStartX) continue;
-            drawTinyGlyphClipped(charX, y + 3, accentText[ci], accentColor, kTinyScale,
-                                 titleStartX, titleEndX);
+            drawTinyGlyphFaded(charX, y + 3, accentText[ci], accentColor, kTinyScale,
+                               titleStartX, titleEndX, fadeWidthPx, menuFadeColor);
           }
         }
       }

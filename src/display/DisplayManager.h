@@ -122,6 +122,11 @@ class DisplayManager {
   void drawTinyGlyph(int x, int y, char c, uint16_t color, int scale);
   void drawTinyGlyphClipped(int x, int y, char c, uint16_t color, int scale, int clipLeftX,
                             int clipRightX);
+  // Like drawTinyGlyphClipped, but blends each pixel toward fadeColor along
+  // the leftmost/rightmost `fadeWidth` columns of the clip window. Useful to
+  // give marquee text a soft fade at chip edges instead of hard clipping.
+  void drawTinyGlyphFaded(int x, int y, char c, uint16_t color, int scale, int clipLeftX,
+                          int clipRightX, int fadeWidth, uint16_t fadeColor);
   void drawTinyTextAt(const String &text, int x, int y, uint16_t color, int scale);
   void drawTinyTextCentered(const String &text, int y, uint16_t color, int scale);
   void drawBatteryBadge(bool leftAlign = false);

@@ -52,6 +52,7 @@ class App {
     BookPicker,
     ChapterPicker,
     RestartConfirm,
+    TonePicker,
   };
 
   void setState(AppState nextState, uint32_t nowMs);
@@ -106,7 +107,9 @@ class App {
   void exitUsbTransfer(uint32_t nowMs);
   void runOtaUpdate(uint32_t nowMs);
   void toggleNotificationsEnabled(uint32_t nowMs);
-  void cycleNotificationTone(uint32_t nowMs);
+  void openTonePicker();
+  void selectTonePickerItem(uint32_t nowMs);
+  void renderTonePicker();
   void cycleNotificationVolume(uint32_t nowMs);
   void pollNotifications(uint32_t nowMs);
   void showNotificationBanner(uint32_t nowMs, const String &title, const String &body);
@@ -231,6 +234,9 @@ class App {
   std::vector<size_t> bookPickerLetterTargets_;
   std::vector<char> authorPickerLetterAnchors_;
   std::vector<size_t> authorPickerLetterTargets_;
+  std::vector<DisplayManager::LibraryItem> toneMenuItems_;
+  std::vector<String> tonePickerNames_;
+  size_t tonePickerSelectedIndex_ = 0;
   bool letterScrubActive_ = false;
   int letterScrubFocusIdx_ = -1;
   std::vector<String> chapterMenuItems_;

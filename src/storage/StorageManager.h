@@ -32,8 +32,13 @@ class StorageManager {
   String bookDisplayName(size_t index) const;
   String bookAuthorName(size_t index) const;
   bool bookStats(size_t index, uint32_t &words, uint32_t &chapters) const;
+  // Each entry is the bare filename (with extension) under /ringtones/.
   std::vector<String> listRingtoneNames() const;
+  // Reads a .rtttl file body into rtttlOut. Pass the filename with or without
+  // extension; ".rtttl" is appended if absent.
   bool loadRingtone(const String &name, String &rtttlOut) const;
+  // Returns the full /ringtones/ path for the file (for WAV streaming etc).
+  String ringtonePath(const String &name) const;
   bool loadBookWords(size_t index, std::vector<String> &words, String *loadedPath = nullptr,
                      size_t *loadedIndex = nullptr);
 

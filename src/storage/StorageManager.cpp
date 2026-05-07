@@ -1236,8 +1236,9 @@ std::vector<String> StorageManager::listRingtoneNames() const {
       String name = String(entry.name());
       const int slash = name.lastIndexOf('/');
       if (slash >= 0) name = name.substring(slash + 1);
-      if (name.endsWith(".rtttl") || name.endsWith(".RTTTL")) {
-        name = name.substring(0, name.length() - 6);
+      String lowered = name;
+      lowered.toLowerCase();
+      if (lowered.endsWith(".rtttl") || lowered.endsWith(".wav")) {
         names.push_back(name);
       }
     }
@@ -1256,12 +1257,21 @@ std::vector<String> StorageManager::listRingtoneNames() const {
   return names;
 }
 
+String StorageManager::ringtonePath(const String &name) const {
+  if (name.isEmpty()) return "";
+  String path = "/ringtones/";
+  path += name;
+  return path;
+}
+
 bool StorageManager::loadRingtone(const String &name, String &rtttlOut) const {
   rtttlOut = "";
   if (!mounted_ || name.isEmpty()) return false;
   String path = "/ringtones/";
   path += name;
-  if (!path.endsWith(".rtttl") && !path.endsWith(".RTTTL")) {
+  String lowered = path;
+  lowered.toLowerCase();
+  if (!lowered.endsWith(".rtttl")) {
     path += ".rtttl";
   }
   File f = SD_MMC.open(path);
