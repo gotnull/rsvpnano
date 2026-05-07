@@ -178,6 +178,8 @@ class App {
 
   uint32_t bootStartedMs_ = 0;
   uint32_t lastStateLogMs_ = 0;
+  uint32_t firmwareValidateAtMs_ = 0;
+  bool firmwarePendingVerify_ = false;
   uint32_t wpmFeedbackUntilMs_ = 0;
   uint32_t lastProgressSaveMs_ = 0;
   uint32_t lastBatterySampleMs_ = 0;

@@ -10,6 +10,8 @@
 
 #include "board/BoardConfig.h"
 
+#include <esp_ota_ops.h>
+
 #ifndef RSVP_USB_TRANSFER_ENABLED
 #define RSVP_USB_TRANSFER_ENABLED 0
 #endif
@@ -365,6 +367,17 @@ void App::begin() {
 
   state_ = AppState::Booting;
   Serial.println("[app] READY splash active");
+
+  const esp_partition_t *running = esp_ota_get_running_partition();
+  if (running != nullptr) {
+    esp_ota_img_states_t imgState;
+    if (esp_ota_get_state_partition(running, &imgState) == ESP_OK &&
+        imgState == ESP_OTA_IMG_PENDING_VERIFY) {
+      firmwarePendingVerify_ = true;
+      firmwareValidateAtMs_ = bootStartedMs_ + 60000;
+      Serial.println("[ota] firmware pending verify; will mark valid in 60s if stable");
+    }
+  }
 }
 
 void App::update(uint32_t nowMs) {
@@ -374,6 +387,15 @@ void App::update(uint32_t nowMs) {
   handlePowerButton(nowMs);
   if (powerOffStarted_) {
     return;
+  }
+
+  if (firmwarePendingVerify_ && nowMs >= firmwareValidateAtMs_) {
+    firmwarePendingVerify_ = false;
+    if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) {
+      Serial.println("[ota] firmware marked valid (rollback cancelled)");
+    } else {
+      Serial.println("[ota] failed to mark firmware valid");
+    }
   }
 
   const bool batteryChanged = updateBatteryStatus(nowMs);
