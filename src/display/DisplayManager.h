@@ -31,6 +31,7 @@ class DisplayManager {
 
   bool begin();
   void setBatteryLabel(const String &label);
+  void setCurrentWpm(uint16_t wpm);
   void setBrightnessPercent(uint8_t percent);
   void setDarkMode(bool darkMode);
   void setNightMode(bool nightMode);
@@ -63,7 +64,8 @@ class DisplayManager {
   void renderMenu(const char *const *items, size_t itemCount, size_t selectedIndex);
   void renderMenu(const std::vector<String> &items, size_t selectedIndex);
   void renderMenuWithAccent(const char *const *items, size_t itemCount, size_t selectedIndex,
-                            size_t accentRow, const String &accentText);
+                            size_t accentRow, const String &accentText,
+                            const std::vector<String> &accentChips = std::vector<String>());
   void renderLibrary(const std::vector<LibraryItem> &items, size_t selectedIndex,
                      const std::vector<char> &letterAnchors = std::vector<char>());
 
@@ -100,6 +102,8 @@ class DisplayManager {
   void drawSerifGlyphScaledPercent(int x, int y, char c, uint16_t color, uint8_t scalePercent);
   void fillVirtualRect(int x, int y, int width, int height, uint16_t color);
   void fillRoundedRect(int x, int y, int width, int height, int radius, uint16_t color);
+  int drawChipText(const String &text, int leftX, int textY, uint16_t textColor, uint16_t bgColor,
+                   bool rightAlign = false, int rightX = 0);
   void drawSerifTextAt(const String &text, int x, int y, uint16_t color, int divisor);
   void drawSerif70TextAt(const String &text, int x, int y, uint16_t color);
   void drawSerifTextScaledAt(const String &text, int x, int y, uint16_t color,
@@ -131,5 +135,6 @@ class DisplayManager {
   bool uiRotated_ = true;
   String lastRenderKey_;
   String batteryLabel_;
+  uint16_t currentWpm_ = 0;
   std::vector<float> chapterFractions_;
 };

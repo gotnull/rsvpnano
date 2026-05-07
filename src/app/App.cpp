@@ -344,6 +344,7 @@ void App::begin() {
   storage_.listBooks();
   const uint16_t savedWpm = preferences_.getUShort(kPrefWpm, reader_.wpm());
   reader_.setWpm(savedWpm);
+  display_.setCurrentWpm(savedWpm);
 
   const uint8_t savedAppState = preferences_.getUChar(kPrefAppState,
                                                       static_cast<uint8_t>(AppState::Paused));
@@ -975,6 +976,7 @@ void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs) {
     const int wpmDelta = (deltaY < 0) ? 1 : -1;
     reader_.adjustWpm(wpmDelta);
     preferences_.putUShort(kPrefWpm, reader_.wpm());
+    display_.setCurrentWpm(reader_.wpm());
     renderWpmFeedback(nowMs);
     Serial.printf("[app] WPM=%u interval=%lu ms\n", reader_.wpm(),
                   static_cast<unsigned long>(reader_.wordIntervalMs()));
@@ -2308,10 +2310,13 @@ void App::renderMenu() {
 }
 
 void App::renderMainMenu() {
-  String accent;
+  String accentTitle;
+  std::vector<String> accentChips;
   const bool haveBookContext =
       (usingStorageBook_ || bookMetaOnly_) && !currentBookTitle_.isEmpty();
   if (haveBookContext) {
+    accentTitle = currentBookTitle_;
+
     size_t total = 0;
     size_t cur = 0;
     if (usingStorageBook_) {
@@ -2322,11 +2327,10 @@ void App::renderMainMenu() {
       total = info.savedWordCount;
       cur = info.savedWordIndex;
     }
-    String inner;
     if (total > 0 && cur <= total) {
       const uint32_t pct = (static_cast<uint64_t>(cur) * 100ULL) / total;
       if (pct > 0) {
-        inner = String(pct) + "%";
+        accentChips.push_back(String(pct) + "%");
       }
     }
     const uint16_t wpm = reader_.wpm();
@@ -2344,17 +2348,11 @@ void App::renderMainMenu() {
       } else {
         t = String(std::max<uint32_t>(1, mins)) + "m";
       }
-      if (!inner.isEmpty()) inner += " - ";
-      inner += t + " rem.";
-    }
-    accent = currentBookTitle_;
-    if (!inner.isEmpty()) {
-      accent += " (";
-      accent += inner;
-      accent += ")";
+      accentChips.push_back(t + " rem.");
     }
   }
-  display_.renderMenuWithAccent(kMenuItems, MenuItemCount, menuSelectedIndex_, MenuResume, accent);
+  display_.renderMenuWithAccent(kMenuItems, MenuItemCount, menuSelectedIndex_, MenuResume,
+                                accentTitle, accentChips);
 }
 
 void App::renderSettings() {

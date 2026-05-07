@@ -643,6 +643,12 @@ void DisplayManager::setBatteryLabel(const String &label) {
   lastRenderKey_ = "";
 }
 
+void DisplayManager::setCurrentWpm(uint16_t wpm) {
+  if (currentWpm_ == wpm) return;
+  currentWpm_ = wpm;
+  lastRenderKey_ = "";
+}
+
 void DisplayManager::setBrightnessPercent(uint8_t percent) {
   if (percent == 0) {
     percent = 1;
@@ -1233,27 +1239,48 @@ void DisplayManager::drawTinyTextCentered(const String &text, int y, uint16_t co
   drawTinyTextAt(text, std::max(0, (kVirtualBufferWidth - textWidth) / 2), y, color, scale);
 }
 
+int DisplayManager::drawChipText(const String &text, int leftX, int textY, uint16_t textColor,
+                                 uint16_t bgColor, bool rightAlign, int rightX) {
+  if (text.isEmpty()) return rightAlign ? rightX : leftX;
+  const int chipPadX = 5;
+  const int chipPadY = 2;
+  const int textWidth = measureTinyTextWidth(text, kTinyScale);
+  const int chipW = textWidth + chipPadX * 2;
+  const int chipH = kTinyGlyphHeight * kTinyScale + chipPadY * 2;
+  const int chipX = rightAlign ? (rightX - chipW) : leftX;
+  const int chipY = textY - chipPadY;
+  fillRoundedRect(chipX, chipY, chipW, chipH, std::min(6, chipH / 2), bgColor);
+  drawTinyTextAt(text, chipX + chipPadX, textY, textColor, kTinyScale);
+  return rightAlign ? chipX : (chipX + chipW);
+}
+
 void DisplayManager::drawBatteryBadge(bool leftAlign) {
   if (batteryLabel_.isEmpty()) {
     return;
   }
-  const int width = measureTinyTextWidth(batteryLabel_, kTinyScale);
-  int x;
+  const uint16_t chipBg = blendOverBackground(footerColor(), kLibraryChipBgAlpha);
   if (leftAlign) {
-    x = kFooterMarginX;
+    drawChipText(batteryLabel_, kFooterMarginX, kFooterMarginBottom, footerColor(), chipBg);
   } else {
     const int rightInset = kFooterMarginX + kLibraryLetterStripWidth;
-    x = std::max(kFooterMarginX, kDisplayWidth - rightInset - width);
+    drawChipText(batteryLabel_, 0, kFooterMarginBottom, footerColor(), chipBg, true,
+                 kDisplayWidth - rightInset);
   }
-  drawTinyTextAt(batteryLabel_, x, kFooterMarginBottom, footerColor(), kTinyScale);
 }
 
 void DisplayManager::drawFooter(const String &chapterLabel, uint8_t progressPercent) {
   const int textY = kDisplayHeight - kTinyGlyphHeight * kTinyScale - kFooterMarginBottom;
-  const int maxChapterWidth = std::max(0, kDisplayWidth - 2 * kFooterMarginX);
+  const int maxChapterWidth = std::max(0, kDisplayWidth / 2 - 2 * kFooterMarginX);
   const String chapter = fitTinyText(chapterLabel.isEmpty() ? "START" : chapterLabel,
                                      maxChapterWidth, kTinyScale);
-  drawTinyTextAt(chapter, kFooterMarginX, textY, footerColor(), kTinyScale);
+  const uint16_t chipBg = blendOverBackground(footerColor(), kLibraryChipBgAlpha);
+  drawChipText(chapter, kFooterMarginX, textY, footerColor(), chipBg);
+
+  if (currentWpm_ > 0) {
+    const String wpmLabel = String(currentWpm_) + "wpm";
+    drawChipText(wpmLabel, 0, textY, footerColor(), chipBg, true,
+                 kDisplayWidth - kFooterMarginX);
+  }
 
   const int batteryWidth =
       batteryLabel_.isEmpty() ? 0 : measureTinyTextWidth(batteryLabel_, kTinyScale);
@@ -1941,12 +1968,12 @@ void DisplayManager::renderContextView(const std::vector<ContextWord> &words,
   (void)progressPercent;
   const int textY = kDisplayHeight - kTinyGlyphHeight * kTinyScale - kFooterMarginBottom;
   const String chapter = fitTinyText(chapterLabel.isEmpty() ? "START" : chapterLabel,
-                                     virtualWidth - 2 * kFooterMarginX, kTinyScale);
-  drawTinyTextAt(chapter, kFooterMarginX, textY, footerColor(), kTinyScale);
+                                     virtualWidth / 2 - 2 * kFooterMarginX, kTinyScale);
+  const uint16_t chipBg = blendOverBackground(footerColor(), kLibraryChipBgAlpha);
+  drawChipText(chapter, kFooterMarginX, textY, footerColor(), chipBg);
   if (!batteryLabel_.isEmpty()) {
-    const int batteryWidth = measureTinyTextWidth(batteryLabel_, kTinyScale);
-    const int batteryX = std::max(kFooterMarginX, virtualWidth - kFooterMarginX - batteryWidth);
-    drawTinyTextAt(batteryLabel_, batteryX, textY, footerColor(), kTinyScale);
+    drawChipText(batteryLabel_, 0, textY, footerColor(), chipBg, true,
+                 virtualWidth - kFooterMarginX);
   }
   flushScaledFrame(scale, virtualWidth, virtualHeight);
 }
@@ -1957,7 +1984,8 @@ void DisplayManager::renderMenu(const char *const *items, size_t itemCount, size
 
 void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemCount,
                                           size_t selectedIndex, size_t accentRow,
-                                          const String &accentText) {
+                                          const String &accentText,
+                                          const std::vector<String> &accentChips) {
   if (items == nullptr || itemCount == 0) {
     renderCenteredWord("MENU");
     return;
@@ -1979,12 +2007,16 @@ void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemC
     renderKey += "|";
     renderKey += (items[i] == nullptr ? "" : items[i]);
   }
-  if (accentRow < itemCount && !accentText.isEmpty()) {
+  if (accentRow < itemCount && (!accentText.isEmpty() || !accentChips.empty())) {
     renderKey += "|a:";
     renderKey += String(accentRow);
     renderKey += ":";
     renderKey += accentText;
-    if (measureTinyTextWidth(accentText, kTinyScale) > 250) {
+    for (const String &c : accentChips) {
+      renderKey += "|c:";
+      renderKey += c;
+    }
+    if (measureTinyTextWidth(accentText, kTinyScale) > 200) {
       renderKey += "|p:";
       renderKey += String(millis() / 30);
     }
@@ -2028,33 +2060,49 @@ void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemC
       fillVirtualRect(10, y + 2, 5, kTinyGlyphHeight * kTinyScale + 2, selectedBarColor());
     }
     const int itemWidth = measureTinyTextWidth(itemText, kTinyScale);
-    const bool hasAccent =
-        itemIndex == accentRow && !accentText.isEmpty();
+    const bool hasAccent = itemIndex == accentRow &&
+                           (!accentText.isEmpty() || !accentChips.empty());
     const int maxItemWidth = virtualWidth - textX - 16 - (hasAccent ? 4 : 0);
     const String fittedItem = fitTinyText(itemText, maxItemWidth, kTinyScale);
     drawTinyTextAt(fittedItem, textX, y + 3, color, kTinyScale);
 
     if (hasAccent) {
-      const int accentStartX = textX + std::max(itemWidth, 0) + 14;
-      const int accentMaxWidth =
-          std::max(0, virtualWidth - accentStartX - accentRightInset);
-      const int fullTextWidth = measureTinyTextWidth(accentText, kTinyScale);
-      if (fullTextWidth <= accentMaxWidth) {
-        drawTinyTextAt(accentText, accentStartX, y + 3, accentColor, kTinyScale);
-      } else {
-        const int charPitch = (kTinyGlyphWidth + kTinyGlyphSpacing) * kTinyScale;
-        const int charBodyWidth = kTinyGlyphWidth * kTinyScale;
-        const int gapPx = 48;
-        const int cycleWidth = fullTextWidth + gapPx;
-        const int offsetPx = static_cast<int>((millis() / 30) % cycleWidth);
-        const int accentEndX = accentStartX + accentMaxWidth;
-        for (size_t ci = 0; ci < accentText.length(); ++ci) {
-          const int charX = accentStartX - offsetPx + static_cast<int>(ci) * charPitch;
-          const int charRight = charX + charBodyWidth;
-          if (charX >= accentEndX) break;
-          if (charRight <= accentStartX) continue;
-          if (charX < accentStartX || charRight > accentEndX) continue;
-          drawTinyGlyph(charX, y + 3, accentText[ci], accentColor, kTinyScale);
+      const int chipPadX = 5;
+      const int chipPadY = 2;
+      const int chipH = kTinyGlyphHeight * kTinyScale + chipPadY * 2;
+      const int chipY = y + 3 - chipPadY;
+      const uint16_t chipBg = blendOverBackground(accentColor, kLibraryChipBgAlpha);
+      const int chipRadius = std::min(6, chipH / 2);
+      int rightCursor = virtualWidth - accentRightInset;
+      for (auto it = accentChips.rbegin(); it != accentChips.rend(); ++it) {
+        const int textW = measureTinyTextWidth(*it, kTinyScale);
+        const int chipW = textW + chipPadX * 2;
+        const int chipX = rightCursor - chipW;
+        fillRoundedRect(chipX, chipY, chipW, chipH, chipRadius, chipBg);
+        drawTinyTextAt(*it, chipX + chipPadX, y + 3, accentColor, kTinyScale);
+        rightCursor = chipX - 4;
+      }
+
+      const int titleStartX = textX + std::max(itemWidth, 0) + 14;
+      const int titleEndX = rightCursor - 6;
+      const int titleMaxWidth = std::max(0, titleEndX - titleStartX);
+      if (titleMaxWidth > 0 && !accentText.isEmpty()) {
+        const int titleW = measureTinyTextWidth(accentText, kTinyScale);
+        if (titleW <= titleMaxWidth) {
+          drawTinyTextAt(accentText, titleStartX, y + 3, accentColor, kTinyScale);
+        } else {
+          const int charPitch = (kTinyGlyphWidth + kTinyGlyphSpacing) * kTinyScale;
+          const int charBodyWidth = kTinyGlyphWidth * kTinyScale;
+          const int cycleWidth = titleW + 48;
+          const int offsetPx = static_cast<int>((millis() / 30) % cycleWidth);
+          for (size_t ci = 0; ci < accentText.length(); ++ci) {
+            const int charX = titleStartX - offsetPx + static_cast<int>(ci) * charPitch;
+            const int charRight = charX + charBodyWidth;
+            if (charX >= titleEndX) break;
+            if (charRight <= titleStartX) continue;
+            if (charX < titleStartX || charRight > titleEndX) continue;
+            drawTinyGlyph(charX, y + 3, accentText[ci], accentColor, kTinyScale);
+          }
         }
       }
     }
