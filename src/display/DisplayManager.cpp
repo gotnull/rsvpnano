@@ -63,6 +63,7 @@ constexpr int kScrubFocusPadX = 10;
 constexpr int kScrubFocusPadY = 4;
 constexpr int kScrubFocusMaxRadius = 10;
 constexpr uint8_t kScrubFocusBgAlpha = 110;
+constexpr uint8_t kWpmHighlightBgAlpha = 200;
 constexpr int kContextMarginX = 18;
 constexpr int kContextTop = 8;
 constexpr int kContextLineHeight = 23;
@@ -677,6 +678,11 @@ void DisplayManager::setCurrentWpm(uint16_t wpm) {
   lastRenderKey_ = "";
 }
 
+void DisplayManager::setWpmHighlightUntil(uint32_t deadlineMs) {
+  wpmHighlightUntilMs_ = deadlineMs;
+  lastRenderKey_ = "";
+}
+
 void DisplayManager::setBrightnessPercent(uint8_t percent) {
   if (percent == 0) {
     percent = 1;
@@ -1226,6 +1232,30 @@ void DisplayManager::drawSerifTextScaledAt(const String &text, int x, int y, uin
   }
 }
 
+void DisplayManager::drawTinyGlyphClipped(int x, int y, char c, uint16_t color, int scale,
+                                          int clipLeftX, int clipRightX) {
+  const uint8_t *rows = tinyRowsFor(c);
+  const uint16_t panel = panelColor(color);
+
+  for (int row = 0; row < kTinyGlyphHeight; ++row) {
+    for (int col = 0; col < kTinyGlyphWidth; ++col) {
+      if ((rows[row] & (1 << (kTinyGlyphWidth - 1 - col))) == 0) {
+        continue;
+      }
+      for (int yy = 0; yy < scale; ++yy) {
+        const int dstY = y + row * scale + yy;
+        if (dstY < 0 || dstY >= kVirtualBufferHeight) continue;
+        for (int xx = 0; xx < scale; ++xx) {
+          const int dstX = x + col * scale + xx;
+          if (dstX < 0 || dstX >= kVirtualBufferWidth) continue;
+          if (dstX < clipLeftX || dstX >= clipRightX) continue;
+          virtualFrame_[dstY * kVirtualBufferWidth + dstX] = panel;
+        }
+      }
+    }
+  }
+}
+
 void DisplayManager::drawTinyGlyph(int x, int y, char c, uint16_t color, int scale) {
   const uint8_t *rows = tinyRowsFor(c);
   const uint16_t panel = panelColor(color);
@@ -1296,8 +1326,7 @@ int DisplayManager::drawScrollingChipText(const String &text, int leftX, int tex
     const int charRight = charX + charBodyWidth;
     if (charX >= contentRight) break;
     if (charRight <= contentLeft) continue;
-    if (charX < contentLeft || charRight > contentRight) continue;
-    drawTinyGlyph(charX, textY, text[i], textColor, kTinyScale);
+    drawTinyGlyphClipped(charX, textY, text[i], textColor, kTinyScale, contentLeft, contentRight);
   }
   lastRenderKey_ = "";
   return leftX + chipW;
@@ -1342,7 +1371,11 @@ void DisplayManager::drawFooter(const String &chapterLabel, uint8_t progressPerc
 
   if (currentWpm_ > 0) {
     const String wpmLabel = String(currentWpm_) + "wpm";
-    drawChipText(wpmLabel, 0, textY, footerColor(), chipBg, true,
+    const bool highlighted = millis() < wpmHighlightUntilMs_;
+    const uint16_t wpmTextColor = highlighted ? focusColor() : footerColor();
+    const uint16_t wpmChipBg =
+        highlighted ? blendOverBackground(focusColor(), kWpmHighlightBgAlpha) : chipBg;
+    drawChipText(wpmLabel, 0, textY, wpmTextColor, wpmChipBg, true,
                  kDisplayWidth - kFooterMarginX);
   }
 
@@ -2194,11 +2227,9 @@ void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemC
 
       const int titleMaxWidth = std::max(0, titleEndX - titleStartX);
       if (titleMaxWidth > 0 && !accentText.isEmpty()) {
-        const bool shouldMarquee =
-            accentText.length() > 36 && titleW > titleMaxWidth;
+        const bool shouldMarquee = titleW > titleMaxWidth;
         if (!shouldMarquee) {
-          const String fittedTitle = fitTinyText(accentText, titleMaxWidth, kTinyScale);
-          drawTinyTextAt(fittedTitle, titleStartX, y + 3, accentColor, kTinyScale);
+          drawTinyTextAt(accentText, titleStartX, y + 3, accentColor, kTinyScale);
         } else {
           const int charPitch = (kTinyGlyphWidth + kTinyGlyphSpacing) * kTinyScale;
           const int charBodyWidth = kTinyGlyphWidth * kTinyScale;
@@ -2209,8 +2240,8 @@ void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemC
             const int charRight = charX + charBodyWidth;
             if (charX >= titleEndX) break;
             if (charRight <= titleStartX) continue;
-            if (charX < titleStartX || charRight > titleEndX) continue;
-            drawTinyGlyph(charX, y + 3, accentText[ci], accentColor, kTinyScale);
+            drawTinyGlyphClipped(charX, y + 3, accentText[ci], accentColor, kTinyScale,
+                                 titleStartX, titleEndX);
           }
         }
       }

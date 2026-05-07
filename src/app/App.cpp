@@ -2762,11 +2762,8 @@ void App::renderWpmFeedback(uint32_t nowMs) {
   contextViewVisible_ = false;
   wpmFeedbackVisible_ = true;
   wpmFeedbackUntilMs_ = nowMs + kWpmFeedbackMs;
-  const String beforeText = phantomWordsEnabled_ ? phantomBeforeText() : "";
-  const String afterText = phantomWordsEnabled_ ? phantomAfterText() : "";
-  display_.renderPhantomRsvpWordWithWpm(beforeText, reader_.currentWord(), afterText,
-                                        readerFontSizeIndex_, reader_.wpm(),
-                                        currentChapterLabel(), readingProgressPercent(), true);
+  display_.setWpmHighlightUntil(wpmFeedbackUntilMs_);
+  renderReaderWord();
 }
 
 void App::renderStorageStatus(const char *title, const char *line1, const char *line2,

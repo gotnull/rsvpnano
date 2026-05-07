@@ -32,6 +32,7 @@ class DisplayManager {
   bool begin();
   void setBatteryLabel(const String &label);
   void setCurrentWpm(uint16_t wpm);
+  void setWpmHighlightUntil(uint32_t deadlineMs);
   void setBrightnessPercent(uint8_t percent);
   void setDarkMode(bool darkMode);
   void setNightMode(bool nightMode);
@@ -119,6 +120,8 @@ class DisplayManager {
   void drawSerifTextScaledAt(const String &text, int x, int y, uint16_t color,
                              uint8_t scalePercent);
   void drawTinyGlyph(int x, int y, char c, uint16_t color, int scale);
+  void drawTinyGlyphClipped(int x, int y, char c, uint16_t color, int scale, int clipLeftX,
+                            int clipRightX);
   void drawTinyTextAt(const String &text, int x, int y, uint16_t color, int scale);
   void drawTinyTextCentered(const String &text, int y, uint16_t color, int scale);
   void drawBatteryBadge(bool leftAlign = false);
@@ -146,5 +149,6 @@ class DisplayManager {
   String lastRenderKey_;
   String batteryLabel_;
   uint16_t currentWpm_ = 0;
+  uint32_t wpmHighlightUntilMs_ = 0;
   std::vector<float> chapterFractions_;
 };
