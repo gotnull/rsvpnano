@@ -2147,7 +2147,13 @@ void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemC
 
   const int chevronWidth = measureTinyTextWidth(">", kTinyScale);
   const int chevronSpacingPx = (kTinyGlyphWidth + kTinyGlyphSpacing) * kTinyScale;
-  const int accentRightInset = kFooterMarginX + kLibraryLetterStripWidth + 36;
+  const int batteryChipWidth =
+      batteryLabel_.isEmpty()
+          ? 0
+          : measureTinyTextWidth(batteryLabel_, kTinyScale) + 5 * 2;
+  const int batteryReserve = batteryChipWidth > 0 ? batteryChipWidth + 8 : 0;
+  const int accentRightInset =
+      kFooterMarginX + kLibraryLetterStripWidth + batteryReserve;
   const uint16_t accentColor = darkMode_ ? 0xFFE0 : 0xFB00;
 
   // Chevron column sits two spaces past the widest item so all chevrons align.
