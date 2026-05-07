@@ -108,6 +108,30 @@ int clampTypographyTracking(int value) {
   return std::max(kTypographyTrackingMin, std::min(kTypographyTrackingMax, value));
 }
 
+constexpr int kMarqueePixelsPerSecond = 60;
+constexpr uint32_t kMarqueeEdgePauseMs = 1200;
+
+int marqueePingPongOffset(int maxOffset) {
+  if (maxOffset <= 0) return 0;
+  const uint32_t slideMs =
+      static_cast<uint32_t>((maxOffset * 1000) / kMarqueePixelsPerSecond);
+  const uint32_t cycleMs = (slideMs + kMarqueeEdgePauseMs) * 2;
+  const uint32_t phase = millis() % cycleMs;
+  if (phase < kMarqueeEdgePauseMs) {
+    return 0;
+  }
+  if (phase < kMarqueeEdgePauseMs + slideMs) {
+    const uint32_t slidIn = phase - kMarqueeEdgePauseMs;
+    return static_cast<int>((slidIn * maxOffset) / std::max<uint32_t>(1, slideMs));
+  }
+  if (phase < kMarqueeEdgePauseMs + slideMs + kMarqueeEdgePauseMs) {
+    return maxOffset;
+  }
+  const uint32_t slidBack = phase - kMarqueeEdgePauseMs - slideMs - kMarqueeEdgePauseMs;
+  return maxOffset -
+         static_cast<int>((slidBack * maxOffset) / std::max<uint32_t>(1, slideMs));
+}
+
 String formatCompactCount(uint32_t value) {
   if (value >= 1000000U) {
     const uint32_t tenths = (value + 50000U) / 100000U;
@@ -2269,33 +2293,6 @@ void DisplayManager::renderMenu(const std::vector<String> &items, size_t selecte
   drawBatteryBadge();
   flushScaledFrame(scale, virtualWidth, virtualHeight);
 }
-
-namespace {
-
-int marqueePingPongOffset(int maxOffset) {
-  if (maxOffset <= 0) return 0;
-  constexpr int kPxPerSec = 60;
-  constexpr uint32_t kPauseMs = 1200;
-  const uint32_t slideMs =
-      static_cast<uint32_t>((maxOffset * 1000) / kPxPerSec);
-  const uint32_t cycleMs = (slideMs + kPauseMs) * 2;
-  const uint32_t phase = millis() % cycleMs;
-  if (phase < kPauseMs) {
-    return 0;
-  }
-  if (phase < kPauseMs + slideMs) {
-    const uint32_t t = phase - kPauseMs;
-    return static_cast<int>((t * maxOffset) / std::max<uint32_t>(1, slideMs));
-  }
-  if (phase < kPauseMs + slideMs + kPauseMs) {
-    return maxOffset;
-  }
-  const uint32_t t = phase - kPauseMs - slideMs - kPauseMs;
-  return maxOffset -
-         static_cast<int>((t * maxOffset) / std::max<uint32_t>(1, slideMs));
-}
-
-}  // namespace
 
 int DisplayManager::libraryLetterAtY(const std::vector<char> &letterAnchors, int y) {
   if (letterAnchors.empty()) {
