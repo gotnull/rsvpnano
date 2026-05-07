@@ -59,6 +59,10 @@ constexpr int kLibraryChipPadY = 3;
 constexpr int kLibraryChipGap = 4;
 constexpr int kLibraryChipsRightMargin = 14;
 constexpr uint8_t kLibraryChipBgAlpha = 56;
+constexpr int kScrubFocusPadX = 10;
+constexpr int kScrubFocusPadY = 4;
+constexpr int kScrubFocusMaxRadius = 10;
+constexpr uint8_t kScrubFocusBgAlpha = 110;
 constexpr int kContextMarginX = 18;
 constexpr int kContextTop = 8;
 constexpr int kContextLineHeight = 23;
@@ -2320,7 +2324,8 @@ int DisplayManager::libraryScrubLetterAtY(const std::vector<char> &letterAnchors
 
 void DisplayManager::renderLibrary(const std::vector<LibraryItem> &items, size_t selectedIndex,
                                    const std::vector<char> &letterAnchors,
-                                   int focusedLetterIdx) {
+                                   int focusedLetterIdx,
+                                   const std::vector<char> &scrubLetters) {
   if (items.empty()) {
     renderCenteredWord("LIBRARY");
     return;
@@ -2453,9 +2458,11 @@ void DisplayManager::renderLibrary(const std::vector<LibraryItem> &items, size_t
 
   if (!letterAnchors.empty()) {
     const bool scrubbing = focusedLetterIdx >= 0;
+    const std::vector<char> &activeLetters =
+        (scrubbing && !scrubLetters.empty()) ? scrubLetters : letterAnchors;
     const int stripWidth = scrubbing ? kLibraryLetterScrubWidth : kLibraryLetterStripWidth;
     const int stripX = virtualWidth - stripWidth;
-    const int n = static_cast<int>(letterAnchors.size());
+    const int n = static_cast<int>(activeLetters.size());
     const uint16_t letterColor = blendOverBackground(wordColor(), 200);
     const uint16_t focusColor = wordColor();
 
@@ -2473,19 +2480,18 @@ void DisplayManager::renderLibrary(const std::vector<LibraryItem> &items, size_t
         const int letterIdx = windowStart + slot;
         if (letterIdx < 0 || letterIdx >= n) continue;
         const int slotY = slotHeight * slot + (slotHeight - kTinyGlyphHeight * letterScale) / 2;
-        const String label = String(letterAnchors[letterIdx]);
+        const String label = String(activeLetters[letterIdx]);
         const bool isFocus = letterIdx == focusedLetterIdx;
         if (isFocus) {
           const int textW = measureTinyTextWidth(label, letterScale);
-          const int padX = 10;
-          const int padY = 4;
-          const int boxW = textW + padX * 2;
-          const int boxH = kTinyGlyphHeight * letterScale + padY * 2;
-          const int boxX = stripX + (stripWidth - boxW) / 2;
-          const int boxY = slotY - padY;
-          fillRoundedRect(boxX, boxY, boxW, boxH, std::min(10, boxH / 2),
-                          blendOverBackground(focusColor, 110));
-          drawTinyTextAt(label, boxX + padX, slotY, focusColor, letterScale);
+          const int boxW = textW + kScrubFocusPadX * 2;
+          const int boxH = kTinyGlyphHeight * letterScale + kScrubFocusPadY * 2;
+          const int boxX = innerX - kScrubFocusPadX;
+          const int boxY = slotY - kScrubFocusPadY;
+          fillRoundedRect(boxX, boxY, boxW, boxH,
+                          std::min(kScrubFocusMaxRadius, boxH / 2),
+                          blendOverBackground(focusColor, kScrubFocusBgAlpha));
+          drawTinyTextAt(label, innerX, slotY, focusColor, letterScale);
         } else {
           drawTinyTextAt(label, innerX, slotY, letterColor, letterScale);
         }

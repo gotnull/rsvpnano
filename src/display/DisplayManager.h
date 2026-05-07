@@ -71,7 +71,8 @@ class DisplayManager {
                             const std::vector<bool> &chevronRows = std::vector<bool>());
   void renderLibrary(const std::vector<LibraryItem> &items, size_t selectedIndex,
                      const std::vector<char> &letterAnchors = std::vector<char>(),
-                     int focusedLetterIdx = -1);
+                     int focusedLetterIdx = -1,
+                     const std::vector<char> &scrubLetters = std::vector<char>());
 
   static constexpr int kLibraryLetterStripWidth = 22;
   static constexpr int kLibraryLetterScrubWidth = 140;
