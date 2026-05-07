@@ -157,6 +157,7 @@ constexpr const char *kAuthorAllBooksLabel = "All books";
 constexpr const char *kAuthorUnknownLabel = "Unknown";
 constexpr const char *kPrefsNamespace = "rsvp";
 constexpr const char *kPrefBookPath = "book";
+constexpr const char *kPrefAppState = "appst";
 constexpr const char *kPrefLegacyWordIndex = "word";
 constexpr const char *kPrefWpm = "wpm";
 constexpr const char *kPrefBrightness = "bright";
@@ -452,6 +453,10 @@ void App::setState(AppState nextState, uint32_t nowMs) {
 
   state_ = nextState;
 
+  if (state_ == AppState::Paused || state_ == AppState::Menu) {
+    preferences_.putUChar(kPrefAppState, static_cast<uint8_t>(state_));
+  }
+
   switch (state_) {
     case AppState::Paused:
       renderReaderWord();
@@ -489,7 +494,19 @@ void App::updateState(uint32_t nowMs) {
       return;
     }
 
-    setState(touchPlayHeld_ ? AppState::Playing : AppState::Paused, nowMs);
+    if (touchPlayHeld_) {
+      setState(AppState::Playing, nowMs);
+      return;
+    }
+    const uint8_t savedState = preferences_.getUChar(kPrefAppState,
+                                                     static_cast<uint8_t>(AppState::Paused));
+    if (savedState == static_cast<uint8_t>(AppState::Menu)) {
+      menuScreen_ = MenuScreen::Main;
+      menuSelectedIndex_ = MenuResume;
+      setState(AppState::Menu, nowMs);
+    } else {
+      setState(AppState::Paused, nowMs);
+    }
     return;
   }
 
