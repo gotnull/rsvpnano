@@ -45,6 +45,7 @@ class App {
     SettingsDisplay,
     SettingsPacing,
     TypographyTuning,
+    AuthorPicker,
     BookPicker,
     ChapterPicker,
     RestartConfirm,
@@ -87,7 +88,10 @@ class App {
   String readerFontSizeLabel() const;
   String typographyTuningLabel() const;
   String typographyTuningValueLabel() const;
+  void openAuthorPicker();
+  void selectAuthorPickerItem(uint32_t nowMs);
   void openBookPicker();
+  void openBookPickerForAuthor(const String &author);
   void selectBookPickerItem(uint32_t nowMs);
   void openChapterPicker();
   void selectChapterPickerItem(uint32_t nowMs);
@@ -115,6 +119,7 @@ class App {
   void renderMainMenu();
   void renderSettings();
   void renderTypographyTuning();
+  void renderAuthorPicker();
   void renderBookPicker();
   void renderChapterPicker();
   void renderRestartConfirm();
@@ -165,6 +170,7 @@ class App {
   size_t menuSelectedIndex_ = 0;
   size_t settingsSelectedIndex_ = 0;
   size_t bookPickerSelectedIndex_ = 0;
+  size_t authorPickerSelectedIndex_ = 0;
   size_t chapterPickerSelectedIndex_ = 0;
   size_t restartConfirmSelectedIndex_ = 0;
   uint8_t brightnessLevelIndex_ = 4;
@@ -178,6 +184,9 @@ class App {
   std::vector<String> settingsMenuItems_;
   std::vector<DisplayManager::LibraryItem> bookMenuItems_;
   std::vector<size_t> bookPickerBookIndices_;
+  std::vector<DisplayManager::LibraryItem> authorMenuItems_;
+  std::vector<String> authorPickerNames_;
+  String activeAuthorFilter_;
   std::vector<String> chapterMenuItems_;
   std::vector<ChapterMarker> chapterMarkers_;
   std::vector<size_t> paragraphStarts_;

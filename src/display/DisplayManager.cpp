@@ -54,6 +54,11 @@ constexpr int kLibraryTitleYOffset = 4;
 constexpr int kLibrarySubtitleYOffset = 20;
 constexpr int kLibraryScreenPaddingY = 28;
 constexpr uint8_t kLibrarySubtitleAlpha = 120;
+constexpr int kLibraryChipPadX = 6;
+constexpr int kLibraryChipPadY = 3;
+constexpr int kLibraryChipGap = 4;
+constexpr int kLibraryChipsRightMargin = 14;
+constexpr uint8_t kLibraryChipBgAlpha = 56;
 constexpr int kContextMarginX = 18;
 constexpr int kContextTop = 8;
 constexpr int kContextLineHeight = 23;
@@ -101,6 +106,23 @@ DisplayManager::TypographyConfig &activeTypographyConfig() {
 
 int clampTypographyTracking(int value) {
   return std::max(kTypographyTrackingMin, std::min(kTypographyTrackingMax, value));
+}
+
+String formatCompactCount(uint32_t value) {
+  if (value >= 1000000U) {
+    const uint32_t tenths = (value + 50000U) / 100000U;
+    String out(tenths / 10U);
+    if (tenths % 10U != 0U) {
+      out += ".";
+      out += String(tenths % 10U);
+    }
+    out += "M";
+    return out;
+  }
+  if (value >= 1000U) {
+    return String((value + 500U) / 1000U) + "k";
+  }
+  return String(value);
 }
 
 int clampTypographyAnchorPercent(int value) {
@@ -1952,6 +1974,16 @@ void DisplayManager::renderLibrary(const std::vector<LibraryItem> &items, size_t
     renderKey += item.title;
     renderKey += "~";
     renderKey += item.subtitle;
+    renderKey += "~w";
+    renderKey += String(item.wordCount);
+    renderKey += "~c";
+    renderKey += String(item.chapterCount);
+    renderKey += "~p";
+    renderKey += String(item.progressPercent);
+    for (const String &badge : item.badges) {
+      renderKey += "~b";
+      renderKey += badge;
+    }
   }
 
   if (!initialized_ || renderKey == lastRenderKey_) {
@@ -1980,19 +2012,55 @@ void DisplayManager::renderLibrary(const std::vector<LibraryItem> &items, size_t
 
   clearVirtualBuffer(virtualWidth, virtualHeight);
 
+  const int chipH = kTinyGlyphHeight * kTinyScale + kLibraryChipPadY * 2;
+
   for (size_t row = 0; row < visibleCount; ++row) {
     const size_t itemIndex = firstVisible + row;
     const LibraryItem &item = items[itemIndex];
     const bool selected = itemIndex == selectedIndex;
     const uint16_t titleColor = selected ? focusColor() : wordColor();
     const uint16_t subtitleColor = blendOverBackground(titleColor, kLibrarySubtitleAlpha);
-    const int maxWidth = virtualWidth - kLibraryInsetX - 16;
+    const uint16_t chipBg = blendOverBackground(titleColor, kLibraryChipBgAlpha);
     const int rowY = y + static_cast<int>(row) * kLibraryRowHeight;
 
     if (selected) {
       fillVirtualRect(10, rowY + 3, 5, kLibraryRowHeight - 6, selectedBarColor());
     }
 
+    std::vector<String> chipLabels;
+    chipLabels.reserve(3 + item.badges.size());
+    if (item.progressPercent >= 0) {
+      chipLabels.push_back(String(item.progressPercent) + "%");
+    }
+    if (item.wordCount > 0) {
+      chipLabels.push_back(formatCompactCount(static_cast<uint32_t>(item.wordCount)) + "w");
+    }
+    if (item.chapterCount > 0) {
+      chipLabels.push_back(String(item.chapterCount) + "ch");
+    }
+    for (const String &badge : item.badges) {
+      if (!badge.isEmpty()) {
+        chipLabels.push_back(badge);
+      }
+    }
+
+    int chipsLeftEdge = virtualWidth - kLibraryChipsRightMargin;
+    const int chipY = rowY + (kLibraryRowHeight - chipH) / 2;
+    int rightCursor = chipsLeftEdge;
+    for (const String &label : chipLabels) {
+      const int textW = measureTinyTextWidth(label, kTinyScale);
+      const int chipW = textW + kLibraryChipPadX * 2;
+      const int chipX = rightCursor - chipW;
+      fillVirtualRect(chipX, chipY, chipW, chipH, chipBg);
+      drawTinyTextAt(label, chipX + kLibraryChipPadX, chipY + kLibraryChipPadY, titleColor,
+                     kTinyScale);
+      rightCursor = chipX - kLibraryChipGap;
+    }
+    if (!chipLabels.empty()) {
+      chipsLeftEdge = rightCursor;
+    }
+
+    const int maxWidth = std::max(40, chipsLeftEdge - kLibraryInsetX - 8);
     const String title = fitTinyText(item.title, maxWidth, kTinyScale);
     if (item.subtitle.isEmpty()) {
       drawTinyTextAt(title, kLibraryInsetX, rowY + 12, titleColor, kTinyScale);

@@ -21,6 +21,10 @@ class DisplayManager {
   struct LibraryItem {
     String title;
     String subtitle;
+    int32_t wordCount = -1;
+    int32_t chapterCount = -1;
+    int8_t progressPercent = -1;
+    std::vector<String> badges;
   };
 
   ~DisplayManager();

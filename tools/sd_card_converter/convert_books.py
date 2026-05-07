@@ -269,6 +269,17 @@ class RsvpWriter:
             raise ValueError("no readable words found")
         if self.chapter_count == 0:
             self.lines.insert(4, f"@chapter {directive_text(fallback_chapter)}")
+            self.chapter_count = 1
+
+        source_idx = next(
+            (i for i, line in enumerate(self.lines) if line.startswith("@source ")),
+            None,
+        )
+        if source_idx is not None:
+            self.lines.insert(
+                source_idx + 1,
+                f"@stats words={self.word_count} chapters={self.chapter_count}",
+            )
 
         output_path.write_text("\n".join(self.lines).strip() + "\n", encoding="ascii")
 

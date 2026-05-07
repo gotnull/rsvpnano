@@ -240,6 +240,7 @@ std::vector<String> collectBookPaths() {
   }
 
   File entry = dir.openNextFile();
+  size_t scanned = 0;
   while (entry) {
     if (!entry.isDirectory()) {
       const String path = normalizeBookPath(String(entry.name()));
@@ -254,6 +255,9 @@ std::vector<String> collectBookPaths() {
       }
     }
     entry.close();
+    if ((++scanned & 0x07) == 0) {
+      yield();
+    }
     entry = dir.openNextFile();
   }
 
@@ -1074,26 +1078,16 @@ void StorageManager::listBooks() {
     return;
   }
 
-  refreshBookPaths();
+  if (bookPaths_.empty()) {
+    refreshBookPaths();
+  }
   if (bookPaths_.empty()) {
     Serial.println("[storage] No readable .rsvp, .txt, or .epub books found under /books");
     return;
   }
 
-  Serial.println("[storage] Listing /books (.rsvp/.txt/.epub pending conversion):");
-  for (const String &path : bookPaths_) {
-    File entry = SD_MMC.open(path);
-    if (!entry || entry.isDirectory()) {
-      if (entry) {
-        entry.close();
-      }
-      continue;
-    }
-
-    Serial.printf("  %s (%lu bytes)\n", displayNameForPath(path).c_str(),
-                  static_cast<unsigned long>(entry.size()));
-    entry.close();
-  }
+  Serial.printf("[storage] Library has %u books under /books\n",
+                static_cast<unsigned int>(bookPaths_.size()));
 }
 
 void StorageManager::refreshBooks() {
@@ -1138,6 +1132,35 @@ String StorageManager::bookAuthorName(size_t index) const {
   }
 
   return readRsvpDirectiveValue(path, "@author");
+}
+
+bool StorageManager::bookStats(size_t index, uint32_t &words, uint32_t &chapters) const {
+  const String path = bookPath(index);
+  if (path.isEmpty() || !hasRsvpExtension(path)) {
+    return false;
+  }
+  const String value = readRsvpDirectiveValue(path, "@stats");
+  if (value.isEmpty()) {
+    return false;
+  }
+
+  bool gotAny = false;
+  int start = 0;
+  const int len = value.length();
+  while (start < len) {
+    int sp = value.indexOf(' ', start);
+    if (sp < 0) sp = len;
+    const String token = value.substring(start, sp);
+    if (token.startsWith("words=")) {
+      words = static_cast<uint32_t>(token.substring(6).toInt());
+      gotAny = true;
+    } else if (token.startsWith("chapters=")) {
+      chapters = static_cast<uint32_t>(token.substring(9).toInt());
+      gotAny = true;
+    }
+    start = sp + 1;
+  }
+  return gotAny;
 }
 
 bool StorageManager::ensureEpubConverted(const String &epubPath, String &rsvpPath) {

@@ -123,6 +123,11 @@ constexpr size_t kSettingsPacingResetIndex = 4;
 constexpr size_t kBookPickerBackIndex = 0;
 constexpr size_t kChapterPickerBackIndex = 0;
 constexpr size_t kChapterPickerFallbackIndex = 1;
+constexpr size_t kAuthorPickerBackIndex = 0;
+constexpr size_t kAuthorPickerAllBooksIndex = 1;
+constexpr size_t kAuthorPickerFirstAuthorIndex = 2;
+constexpr const char *kAuthorAllBooksLabel = "All books";
+constexpr const char *kAuthorUnknownLabel = "Unknown";
 constexpr const char *kPrefsNamespace = "rsvp";
 constexpr const char *kPrefBookPath = "book";
 constexpr const char *kPrefLegacyWordIndex = "word";
@@ -971,6 +976,9 @@ void App::moveMenuSelection(int direction) {
   } else if (menuScreen_ == MenuScreen::BookPicker) {
     selectedIndex = &bookPickerSelectedIndex_;
     itemCount = bookMenuItems_.size();
+  } else if (menuScreen_ == MenuScreen::AuthorPicker) {
+    selectedIndex = &authorPickerSelectedIndex_;
+    itemCount = authorMenuItems_.size();
   } else if (menuScreen_ == MenuScreen::ChapterPicker) {
     selectedIndex = &chapterPickerSelectedIndex_;
     itemCount = chapterMenuItems_.size();
@@ -1001,6 +1009,9 @@ void App::moveMenuSelection(int direction) {
   } else if (menuScreen_ == MenuScreen::BookPicker) {
     Serial.printf("[book-picker] selected=%s\n",
                   bookMenuItems_[bookPickerSelectedIndex_].title.c_str());
+  } else if (menuScreen_ == MenuScreen::AuthorPicker) {
+    Serial.printf("[author-picker] selected=%s\n",
+                  authorMenuItems_[authorPickerSelectedIndex_].title.c_str());
   } else if (menuScreen_ == MenuScreen::ChapterPicker) {
     Serial.printf("[chapter-picker] selected=%s\n",
                   chapterMenuItems_[chapterPickerSelectedIndex_].c_str());
@@ -1020,6 +1031,10 @@ void App::selectMenuItem(uint32_t nowMs) {
   }
   if (menuScreen_ == MenuScreen::TypographyTuning) {
     selectTypographyTuningItem(nowMs);
+    return;
+  }
+  if (menuScreen_ == MenuScreen::AuthorPicker) {
+    selectAuthorPickerItem(nowMs);
     return;
   }
   if (menuScreen_ == MenuScreen::BookPicker) {
@@ -1054,7 +1069,8 @@ void App::selectMenuItem(uint32_t nowMs) {
       openChapterPicker();
       return;
     case MenuChangeBook:
-      openBookPicker();
+      activeAuthorFilter_ = "";
+      openAuthorPicker();
       return;
     case MenuSettings:
       openSettings();
@@ -1350,16 +1366,134 @@ String App::typographyTuningValueLabel() const {
   }
 }
 
+void App::openAuthorPicker() {
+  storage_.refreshBooks();
+  authorMenuItems_.clear();
+  authorPickerNames_.clear();
+
+  const size_t count = storage_.bookCount();
+  std::vector<String> authors;
+  std::vector<size_t> counts;
+  authors.reserve(count);
+  counts.reserve(count);
+
+  for (size_t i = 0; i < count; ++i) {
+    String name = storage_.bookAuthorName(i);
+    name.trim();
+    if (name.isEmpty()) {
+      name = kAuthorUnknownLabel;
+    }
+    bool found = false;
+    for (size_t j = 0; j < authors.size(); ++j) {
+      if (authors[j].equalsIgnoreCase(name)) {
+        counts[j] += 1;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      authors.push_back(name);
+      counts.push_back(1);
+    }
+  }
+
+  std::vector<size_t> order;
+  order.reserve(authors.size());
+  for (size_t i = 0; i < authors.size(); ++i) {
+    order.push_back(i);
+  }
+  std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+    String left = authors[a];
+    String right = authors[b];
+    left.toLowerCase();
+    right.toLowerCase();
+    return left < right;
+  });
+
+  DisplayManager::LibraryItem backItem;
+  backItem.title = "Back";
+  authorMenuItems_.push_back(backItem);
+  authorPickerNames_.push_back("");
+
+  DisplayManager::LibraryItem allBooks;
+  allBooks.title = kAuthorAllBooksLabel;
+  allBooks.subtitle = "";
+  allBooks.badges.push_back(String(static_cast<unsigned int>(count)) + " books");
+  authorMenuItems_.push_back(allBooks);
+  authorPickerNames_.push_back("");
+
+  for (size_t idx : order) {
+    DisplayManager::LibraryItem item;
+    item.title = authors[idx];
+    item.subtitle = "";
+    item.badges.push_back(String(static_cast<unsigned int>(counts[idx])) +
+                          (counts[idx] == 1 ? " book" : " books"));
+    authorMenuItems_.push_back(item);
+    authorPickerNames_.push_back(authors[idx]);
+  }
+
+  menuScreen_ = MenuScreen::AuthorPicker;
+  if (authorPickerSelectedIndex_ >= authorMenuItems_.size()) {
+    authorPickerSelectedIndex_ = authorMenuItems_.empty() ? 0 : authorMenuItems_.size() - 1;
+  }
+  if (authorMenuItems_.size() > kAuthorPickerAllBooksIndex &&
+      authorPickerSelectedIndex_ == kAuthorPickerBackIndex) {
+    authorPickerSelectedIndex_ = kAuthorPickerAllBooksIndex;
+  }
+  renderAuthorPicker();
+}
+
+void App::renderAuthorPicker() {
+  display_.renderLibrary(authorMenuItems_, authorPickerSelectedIndex_);
+}
+
+void App::selectAuthorPickerItem(uint32_t nowMs) {
+  (void)nowMs;
+  if (authorMenuItems_.empty() || authorPickerSelectedIndex_ == kAuthorPickerBackIndex) {
+    activeAuthorFilter_ = "";
+    menuScreen_ = MenuScreen::Main;
+    renderMainMenu();
+    return;
+  }
+  if (authorPickerSelectedIndex_ == kAuthorPickerAllBooksIndex) {
+    activeAuthorFilter_ = "";
+    openBookPicker();
+    return;
+  }
+  if (authorPickerSelectedIndex_ >= authorPickerNames_.size()) {
+    renderAuthorPicker();
+    return;
+  }
+  openBookPickerForAuthor(authorPickerNames_[authorPickerSelectedIndex_]);
+}
+
+void App::openBookPickerForAuthor(const String &author) {
+  activeAuthorFilter_ = author;
+  openBookPicker();
+}
+
 void App::openBookPicker() {
   storage_.refreshBooks();
   bookMenuItems_.clear();
   bookPickerBookIndices_.clear();
-  bookMenuItems_.push_back({"Back", ""});
+  DisplayManager::LibraryItem bookBackItem;
+  bookBackItem.title = "Back";
+  bookMenuItems_.push_back(bookBackItem);
 
   const size_t count = storage_.bookCount();
   std::vector<size_t> sortedBookIndices;
   sortedBookIndices.reserve(count);
   for (size_t i = 0; i < count; ++i) {
+    if (!activeAuthorFilter_.isEmpty()) {
+      String authorName = storage_.bookAuthorName(i);
+      authorName.trim();
+      if (authorName.isEmpty()) {
+        authorName = kAuthorUnknownLabel;
+      }
+      if (!authorName.equalsIgnoreCase(activeAuthorFilter_)) {
+        continue;
+      }
+    }
     sortedBookIndices.push_back(i);
   }
 
@@ -1413,6 +1547,11 @@ void App::openBookPicker() {
 
 void App::selectBookPickerItem(uint32_t nowMs) {
   if (bookPickerSelectedIndex_ == kBookPickerBackIndex || bookMenuItems_.size() <= 1) {
+    if (!activeAuthorFilter_.isEmpty()) {
+      activeAuthorFilter_ = "";
+      openAuthorPicker();
+      return;
+    }
     menuScreen_ = MenuScreen::Main;
     renderMainMenu();
     return;
@@ -1853,6 +1992,8 @@ void App::renderMenu() {
     renderTypographyTuning();
   } else if (menuScreen_ == MenuScreen::BookPicker) {
     renderBookPicker();
+  } else if (menuScreen_ == MenuScreen::AuthorPicker) {
+    renderAuthorPicker();
   } else if (menuScreen_ == MenuScreen::ChapterPicker) {
     renderChapterPicker();
   } else if (menuScreen_ == MenuScreen::RestartConfirm) {
@@ -1931,13 +2072,20 @@ DisplayManager::LibraryItem App::libraryItemForBook(size_t bookIndex) {
   item.title = storage_.bookDisplayName(bookIndex);
   item.subtitle = storage_.bookAuthorName(bookIndex);
 
-  uint8_t percent = 0;
-  const bool hasProgress = bookProgressPercent(bookIndex, percent);
-  if (hasProgress) {
-    if (!item.subtitle.isEmpty()) {
-      item.subtitle += " - ";
+  uint32_t words = 0;
+  uint32_t chapters = 0;
+  if (storage_.bookStats(bookIndex, words, chapters)) {
+    if (words > 0) {
+      item.wordCount = static_cast<int32_t>(words);
     }
-    item.subtitle += String(percent) + "%";
+    if (chapters > 0) {
+      item.chapterCount = static_cast<int32_t>(chapters);
+    }
+  }
+
+  uint8_t percent = 0;
+  if (bookProgressPercent(bookIndex, percent)) {
+    item.progressPercent = static_cast<int8_t>(percent);
   }
 
   if (item.subtitle.isEmpty() && usingStorageBook_ && bookIndex == currentBookIndex_) {
