@@ -1259,6 +1259,14 @@ void DisplayManager::setChapterFractions(const std::vector<float> &fractions) {
   lastRenderKey_ = "";
 }
 
+void DisplayManager::setUiRotated(bool rotated) {
+  if (uiRotated_ == rotated) return;
+  uiRotated_ = rotated;
+  lastRenderKey_ = "";
+}
+
+bool DisplayManager::uiRotated() const { return uiRotated_; }
+
 void DisplayManager::drawRsvpAnchorGuide(int anchorX, int textY, int textHeight) {
   const int topY = std::max(2, textY - kRsvpGuideTopOffset);
   const int bottomY = std::min(kVirtualBufferHeight - 3, textY + textHeight + kRsvpGuideBottomOffset);
@@ -1391,7 +1399,7 @@ void DisplayManager::flushScaledFrame(int scale, int virtualWidth, int virtualHe
       for (int nativeX = 0; nativeX < kPanelNativeWidth; ++nativeX) {
         int logicalX = kDisplayWidth - 1 - nativeY;
         int logicalY = nativeX;
-        if (BoardConfig::UI_ROTATED_180) {
+        if (uiRotated_) {
           logicalX = nativeY;
           logicalY = kDisplayHeight - 1 - nativeX;
         }

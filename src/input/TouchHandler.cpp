@@ -139,7 +139,7 @@ bool TouchHandler::poll(TouchEvent &event) {
   const uint16_t rawShortAxis = static_cast<uint16_t>(((data[4] & 0x0F) << 8) | data[5]);
   const uint16_t mappedX = clampDisplayX(rawLongAxis);
   const uint16_t mappedY = clampDisplayY(rawShortAxis);
-  if (BoardConfig::UI_ROTATED_180) {
+  if (uiRotated_) {
     event.x = static_cast<uint16_t>(BoardConfig::DISPLAY_WIDTH - 1 - mappedX);
     event.y = static_cast<uint16_t>(BoardConfig::DISPLAY_HEIGHT - 1 - mappedY);
   } else {
@@ -152,3 +152,5 @@ bool TouchHandler::poll(TouchEvent &event) {
 
   return true;
 }
+
+void TouchHandler::setUiRotated(bool rotated) { uiRotated_ = rotated; }

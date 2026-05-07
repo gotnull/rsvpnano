@@ -139,6 +139,7 @@ constexpr size_t kSettingsDisplayBrightnessIndex = 2;
 constexpr size_t kSettingsDisplayPhantomWordsIndex = 3;
 constexpr size_t kSettingsDisplayFontSizeIndex = 4;
 constexpr size_t kSettingsDisplayTypographyIndex = 5;
+constexpr size_t kSettingsDisplayFlipIndex = 6;
 constexpr size_t kSettingsPacingLongWordsIndex = 1;
 constexpr size_t kSettingsPacingComplexityIndex = 2;
 constexpr size_t kSettingsPacingPunctuationIndex = 3;
@@ -158,6 +159,7 @@ constexpr const char *kPrefLegacyWordIndex = "word";
 constexpr const char *kPrefWpm = "wpm";
 constexpr const char *kPrefBrightness = "bright";
 constexpr const char *kPrefDarkMode = "dark";
+constexpr const char *kPrefDisplayFlip = "flip";
 constexpr const char *kPrefNightMode = "night";
 constexpr const char *kPrefPhantomWords = "phantom_on";
 constexpr const char *kPrefReaderFontSize = "font_size";
@@ -301,6 +303,9 @@ void App::begin() {
       kTypographyGuideGapMin, kTypographyGuideGapMax));
   darkMode_ = preferences_.getBool(kPrefDarkMode, darkMode_);
   nightMode_ = preferences_.getBool(kPrefNightMode, nightMode_);
+  displayFlipped_ = preferences_.getBool(kPrefDisplayFlip, BoardConfig::UI_ROTATED_180);
+  display_.setUiRotated(displayFlipped_);
+  touch_.setUiRotated(displayFlipped_);
   applyDisplayPreferences(0, false);
   applyTypographySettings(0, false);
   applyPacingSettings();
@@ -720,6 +725,17 @@ void App::cycleThemeMode(uint32_t nowMs) {
   preferences_.putBool(kPrefNightMode, nightMode_);
   Serial.printf("[display] theme=%s\n", themeModeLabel().c_str());
   applyDisplayPreferences(nowMs);
+}
+
+void App::toggleDisplayFlip(uint32_t nowMs) {
+  (void)nowMs;
+  displayFlipped_ = !displayFlipped_;
+  preferences_.putBool(kPrefDisplayFlip, displayFlipped_);
+  display_.setUiRotated(displayFlipped_);
+  touch_.setUiRotated(displayFlipped_);
+  rebuildSettingsMenuItems();
+  renderSettings();
+  Serial.printf("[display] flipped=%d\n", displayFlipped_ ? 1 : 0);
 }
 
 void App::togglePhantomWords(uint32_t nowMs) {
@@ -1197,6 +1213,9 @@ void App::selectSettingsItem(uint32_t nowMs) {
       case kSettingsDisplayTypographyIndex:
         openTypographyTuning();
         return;
+      case kSettingsDisplayFlipIndex:
+        toggleDisplayFlip(nowMs);
+        return;
       default:
         return;
     }
@@ -1332,6 +1351,7 @@ void App::rebuildSettingsMenuItems() {
     settingsMenuItems_.push_back("Phantom words: " + phantomWordsLabel());
     settingsMenuItems_.push_back("Font size: " + readerFontSizeLabel());
     settingsMenuItems_.push_back("Typography tune");
+    settingsMenuItems_.push_back(String("Flip display: ") + (displayFlipped_ ? "On" : "Off"));
   } else if (menuScreen_ == MenuScreen::SettingsPacing) {
     settingsMenuItems_.push_back("Back");
     settingsMenuItems_.push_back("Long words: " + pacingLevelLabel(pacingLongWordLevelIndex_));

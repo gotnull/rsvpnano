@@ -38,6 +38,8 @@ class DisplayManager {
   TypographyConfig typographyConfig() const;
   bool darkMode() const;
   bool nightMode() const;
+  void setUiRotated(bool rotated);
+  bool uiRotated() const;
   void setChapterFractions(const std::vector<float> &fractions);
   void prepareForSleep();
   bool wakeFromSleep();
@@ -125,6 +127,7 @@ class DisplayManager {
   uint8_t brightnessPercent_ = 100;
   bool darkMode_ = true;
   bool nightMode_ = false;
+  bool uiRotated_ = true;
   String lastRenderKey_;
   String batteryLabel_;
   std::vector<float> chapterFractions_;

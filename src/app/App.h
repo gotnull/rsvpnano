@@ -62,6 +62,7 @@ class App {
   void openMainMenu(uint32_t nowMs);
   void cycleBrightness();
   void cycleThemeMode(uint32_t nowMs);
+  void toggleDisplayFlip(uint32_t nowMs);
   void togglePhantomWords(uint32_t nowMs);
   void cycleReaderFontSize(uint32_t nowMs);
   void applyDisplayPreferences(uint32_t nowMs, bool rerender = true);
@@ -225,5 +226,6 @@ class App {
   bool phantomWordsEnabled_ = true;
   bool darkMode_ = true;
   bool nightMode_ = false;
+  bool displayFlipped_ = true;
   DisplayManager::TypographyConfig typographyConfig_;
 };

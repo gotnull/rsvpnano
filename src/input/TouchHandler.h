@@ -22,10 +22,12 @@ class TouchHandler {
   void end();
   bool poll(TouchEvent &event);
   void cancel();
+  void setUiRotated(bool rotated);
 
  private:
   static constexpr uint8_t kAddress = 0x3B;  // AXS15231B touch endpoint on the 3.49" board.
   bool initialized_ = false;
+  bool uiRotated_ = true;
   uint32_t lastPollMs_ = 0;
   uint32_t backoffUntilMs_ = 0;
   uint32_t lastTouchSampleMs_ = 0;
