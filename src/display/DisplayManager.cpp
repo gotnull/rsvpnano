@@ -2073,21 +2073,44 @@ void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemC
       const int chipY = y + 3 - chipPadY;
       const uint16_t chipBg = blendOverBackground(accentColor, kLibraryChipBgAlpha);
       const int chipRadius = std::min(6, chipH / 2);
-      int rightCursor = virtualWidth - accentRightInset;
-      for (auto it = accentChips.rbegin(); it != accentChips.rend(); ++it) {
-        const int textW = measureTinyTextWidth(*it, kTinyScale);
-        const int chipW = textW + chipPadX * 2;
-        const int chipX = rightCursor - chipW;
-        fillRoundedRect(chipX, chipY, chipW, chipH, chipRadius, chipBg);
-        drawTinyTextAt(*it, chipX + chipPadX, y + 3, accentColor, kTinyScale);
-        rightCursor = chipX - 4;
-      }
+      const int chipGap = 4;
 
       const int titleStartX = textX + std::max(itemWidth, 0) + 14;
-      const int titleEndX = rightCursor - 6;
+      const int rightLimit = virtualWidth - accentRightInset;
+      const int titleW = measureTinyTextWidth(accentText, kTinyScale);
+
+      int chipsTotalWidth = 0;
+      for (const String &c : accentChips) {
+        const int textW = measureTinyTextWidth(c, kTinyScale);
+        chipsTotalWidth += textW + chipPadX * 2 + chipGap;
+      }
+
+      const int spaceAvailable = std::max(0, rightLimit - titleStartX);
+      const int needsForBoth = titleW + 8 + chipsTotalWidth;
+      const bool inlineLayout = !accentText.isEmpty() && needsForBoth <= spaceAvailable;
+
+      int titleEndX;
+      int chipsLeftStartX;
+      if (inlineLayout) {
+        titleEndX = titleStartX + titleW;
+        chipsLeftStartX = titleEndX + 8;
+      } else {
+        chipsLeftStartX = std::max(titleStartX, rightLimit - chipsTotalWidth);
+        titleEndX = chipsLeftStartX - chipGap;
+      }
+
+      int chipCursor = chipsLeftStartX;
+      for (const String &chip : accentChips) {
+        const int textW = measureTinyTextWidth(chip, kTinyScale);
+        const int chipW = textW + chipPadX * 2;
+        if (chipCursor + chipW > rightLimit) break;
+        fillRoundedRect(chipCursor, chipY, chipW, chipH, chipRadius, chipBg);
+        drawTinyTextAt(chip, chipCursor + chipPadX, y + 3, accentColor, kTinyScale);
+        chipCursor += chipW + chipGap;
+      }
+
       const int titleMaxWidth = std::max(0, titleEndX - titleStartX);
       if (titleMaxWidth > 0 && !accentText.isEmpty()) {
-        const int titleW = measureTinyTextWidth(accentText, kTinyScale);
         if (titleW <= titleMaxWidth) {
           drawTinyTextAt(accentText, titleStartX, y + 3, accentColor, kTinyScale);
         } else {
@@ -2353,11 +2376,18 @@ void DisplayManager::renderStatus(const String &title, const String &line1, cons
 
   clearVirtualBuffer(virtualWidth, virtualHeight);
   drawWordLine(title, titleY, wordColor());
+  const int textMaxWidth = virtualWidth - 24;
+  auto fittedScale = [&](const String &text) -> int {
+    if (measureTinyTextWidth(text, kTinyScale) <= textMaxWidth) return kTinyScale;
+    return 1;
+  };
   if (!line1.isEmpty()) {
-    drawTinyTextCentered(line1, line1Y, dimColor(), kTinyScale);
+    const int s = fittedScale(line1);
+    drawTinyTextCentered(fitTinyText(line1, textMaxWidth, s), line1Y, dimColor(), s);
   }
   if (!line2.isEmpty()) {
-    drawTinyTextCentered(line2, line2Y, focusColor(), kTinyScale);
+    const int s = fittedScale(line2);
+    drawTinyTextCentered(fitTinyText(line2, textMaxWidth, s), line2Y, focusColor(), s);
   }
   drawBatteryBadge();
 
@@ -2393,11 +2423,18 @@ void DisplayManager::renderProgress(const String &title, const String &line1, co
 
   clearVirtualBuffer(virtualWidth, virtualHeight);
   drawWordLine(title, titleY, wordColor());
+  const int textMaxWidth = virtualWidth - 24;
+  auto fittedScale = [&](const String &text) -> int {
+    if (measureTinyTextWidth(text, kTinyScale) <= textMaxWidth) return kTinyScale;
+    return 1;
+  };
   if (!line1.isEmpty()) {
-    drawTinyTextCentered(line1, line1Y, dimColor(), kTinyScale);
+    const int s = fittedScale(line1);
+    drawTinyTextCentered(fitTinyText(line1, textMaxWidth, s), line1Y, dimColor(), s);
   }
   if (!line2.isEmpty()) {
-    drawTinyTextCentered(line2, line2Y, focusColor(), kTinyScale);
+    const int s = fittedScale(line2);
+    drawTinyTextCentered(fitTinyText(line2, textMaxWidth, s), line2Y, focusColor(), s);
   }
 
   if (progressPercent >= 0) {
