@@ -56,6 +56,7 @@ class App {
     RestartConfirm,
     TonePicker,
     RemoteBookPicker,
+    BookDeleteConfirm,
   };
 
   void setState(AppState nextState, uint32_t nowMs);
@@ -116,6 +117,9 @@ class App {
   void openRemoteBookPicker(uint32_t nowMs);
   void selectRemoteBookPickerItem(uint32_t nowMs);
   void renderRemoteBookPicker();
+  void openBookDeleteConfirm(size_t bookIndex);
+  void selectBookDeleteConfirmItem(uint32_t nowMs);
+  void renderBookDeleteConfirm();
   void cycleNotificationVolume(uint32_t nowMs);
   void pollNotifications(uint32_t nowMs);
   void showNotificationBanner(uint32_t nowMs, const String &title, const String &body);
@@ -249,6 +253,12 @@ class App {
   size_t tonePickerSelectedIndex_ = 0;
   bool letterScrubActive_ = false;
   int letterScrubFocusIdx_ = -1;
+  // Index into bookPickerBookIndices_ that the long-press delete prompt is
+  // about to remove. Reset whenever the prompt is dismissed.
+  size_t bookDeleteIndex_ = 0;
+  String bookDeleteTitle_;
+  size_t bookDeleteSelectedIndex_ = 0;
+  bool bookLongPressFired_ = false;
   std::vector<String> chapterMenuItems_;
   std::vector<ChapterMarker> chapterMarkers_;
   std::vector<size_t> paragraphStarts_;
@@ -277,6 +287,8 @@ class App {
   bool paragraphChimeEnabled_ = false;   // play a tone when crossing paragraph boundary
   bool pageChimeEnabled_ = false;        // play a tone every kPageWordCount words
   uint8_t notificationVolume_ = 60;
+  uint8_t autoPowerOffIndex_ = 0;        // 0=Off; cycles through preset minute values
+  uint32_t lastActivityMs_ = 0;
   String notificationTone_;
   std::vector<String> ringtoneNames_;
   DisplayManager::TypographyConfig typographyConfig_;

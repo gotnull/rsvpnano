@@ -98,9 +98,20 @@ bool hasRsvpSibling(const String &path) {
 
 String epubSiblingPathForRsvp(const String &rsvpPath) {
   String epubPath = rsvpPath;
+  // Strip .rsvp first.
   const int dot = epubPath.lastIndexOf('.');
   if (dot > 0) {
     epubPath = epubPath.substring(0, dot);
+  }
+  // Now strip a trailing ".partN" if present so split parts resolve to the
+  // shared source EPUB (e.g. "GEB.part2" → "GEB", giving us "GEB.epub").
+  const int partAt = epubPath.lastIndexOf(".part");
+  if (partAt > 0) {
+    bool allDigits = partAt + 5 < static_cast<int>(epubPath.length());
+    for (int i = partAt + 5; i < static_cast<int>(epubPath.length()) && allDigits; ++i) {
+      if (!isDigit(epubPath[i])) allDigits = false;
+    }
+    if (allDigits) epubPath = epubPath.substring(0, partAt);
   }
   epubPath += ".epub";
   return epubPath;
@@ -1087,6 +1098,37 @@ void StorageManager::listBooks() {
     return;
   }
 
+  // One-time pass: any pre-existing oversized .rsvp files (e.g. a previously
+  // converted GEB-sized book) get split into sibling .partN.rsvp files now so
+  // they can actually load without OOM. Heuristic threshold by raw byte size:
+  // ~1.8 MB ≈ 200k+ words at our average word length, which is the max we want
+  // to load in one piece.
+  constexpr size_t kSplitByteThreshold = 1800000;
+  std::vector<String> oversized;
+  for (const String &path : bookPaths_) {
+    String lowered = path;
+    lowered.toLowerCase();
+    if (!lowered.endsWith(".rsvp")) continue;
+    if (path.indexOf(".part") >= 0) continue;  // already a part file
+    File f = SD_MMC.open(path);
+    if (!f || f.isDirectory()) {
+      if (f) f.close();
+      continue;
+    }
+    if (f.size() > kSplitByteThreshold) {
+      oversized.push_back(path);
+    }
+    f.close();
+  }
+  if (!oversized.empty()) {
+    Serial.printf("[storage] %u oversized .rsvp file(s) need splitting\n",
+                  static_cast<unsigned int>(oversized.size()));
+    for (const String &p : oversized) {
+      splitOversizedRsvp(p);
+    }
+    refreshBookPaths();
+  }
+
   Serial.printf("[storage] Library has %u books under /books\n",
                 static_cast<unsigned int>(bookPaths_.size()));
 }
@@ -1112,11 +1154,223 @@ bool StorageManager::wasConvertedFromEpub(size_t index) const {
   if (index >= bookPaths_.size()) {
     return false;
   }
-  const String epubPath = epubSiblingPathForRsvp(bookPaths_[index]);
-  File f = SD_MMC.open(epubPath);
-  const bool exists = f && !f.isDirectory() && f.size() > 0;
-  if (f) f.close();
-  return exists;
+  if (epubSiblingCache_.size() != bookPaths_.size()) {
+    epubSiblingCache_.assign(bookPaths_.size(), 0);
+  }
+  uint8_t &slot = epubSiblingCache_[index];
+  if (slot == 0) {
+    const String epubPath = epubSiblingPathForRsvp(bookPaths_[index]);
+    File f = SD_MMC.open(epubPath);
+    const bool exists = f && !f.isDirectory() && f.size() > 0;
+    if (f) f.close();
+    slot = exists ? 1 : 2;
+  }
+  return slot == 1;
+}
+
+bool StorageManager::deleteBookAtIndex(size_t index) {
+  if (index >= bookPaths_.size()) return false;
+  const String path = bookPaths_[index];
+
+  // Strip the trailing .partN suffix (if any) so we can locate sibling parts.
+  String base = path;
+  if (base.endsWith(".rsvp")) base = base.substring(0, base.length() - 5);
+  const int partAt = base.lastIndexOf(".part");
+  if (partAt > 0) {
+    bool allDigits = true;
+    for (size_t i = partAt + 5; i < base.length(); ++i) {
+      if (!isDigit(base[i])) { allDigits = false; break; }
+    }
+    if (allDigits) base = base.substring(0, partAt);
+  }
+
+  // Build the list of files to remove: the base .rsvp + sibling .epub +
+  // any .partN.rsvp variants that share the base.
+  std::vector<String> toRemove;
+  toRemove.push_back(base + ".rsvp");
+  toRemove.push_back(base + ".epub");
+  // Probe a generous part range; ESP32 SD enumeration is cheap and we'd rather
+  // catch a 12-part book than need a directory walk.
+  for (uint16_t p = 1; p <= 64; ++p) {
+    toRemove.push_back(base + ".part" + String(p) + ".rsvp");
+  }
+
+  size_t removed = 0;
+  for (const String &candidate : toRemove) {
+    if (SD_MMC.exists(candidate)) {
+      if (SD_MMC.remove(candidate)) {
+        ++removed;
+        Serial.printf("[storage] deleted %s\n", candidate.c_str());
+      } else {
+        Serial.printf("[storage] delete failed: %s\n", candidate.c_str());
+      }
+    }
+  }
+
+  refreshBookPaths();
+  return removed > 0;
+}
+
+bool StorageManager::splitOversizedRsvp(const String &path) {
+  // Stay safely under the configured RAM cap. 200k words per part leaves
+  // headroom under RSVP_MAX_BOOK_WORDS=250000 for system overhead.
+  constexpr size_t kWordsPerPart = 200000;
+
+  File src = SD_MMC.open(path, FILE_READ);
+  if (!src || src.isDirectory()) {
+    if (src) src.close();
+    return false;
+  }
+
+  // Pass 1 — accumulate the original header (lines starting with @ plus any
+  // blank lines before the first word) and count total body words to decide
+  // whether splitting is even needed and how many parts we'll write.
+  String header;
+  String originalTitle;
+  size_t totalWords = 0;
+  size_t bodyStartPos = 0;
+  bool inHeader = true;
+  String line;
+  while (src.available()) {
+    const int c = src.read();
+    if (c < 0) break;
+    if (c == '\n') {
+      String trimmed = line;
+      trimmed.trim();
+      if (inHeader) {
+        if (trimmed.isEmpty() || trimmed.startsWith("@")) {
+          header += line;
+          header += '\n';
+          if (trimmed.startsWith("@title ")) {
+            originalTitle = trimmed.substring(7);
+            originalTitle.trim();
+          }
+          bodyStartPos = src.position();
+        } else {
+          // First non-directive, non-blank line — body has begun.
+          inHeader = false;
+          if (!trimmed.isEmpty() && !trimmed.startsWith("@")) ++totalWords;
+        }
+      } else if (!trimmed.isEmpty() && !trimmed.startsWith("@")) {
+        ++totalWords;
+      }
+      line = "";
+    } else if (c != '\r') {
+      line += static_cast<char>(c);
+    }
+  }
+  if (!line.isEmpty()) {
+    String trimmed = line;
+    trimmed.trim();
+    if (!trimmed.isEmpty() && !trimmed.startsWith("@")) ++totalWords;
+  }
+
+  if (totalWords <= kWordsPerPart) {
+    src.close();
+    return true;  // single-part file, no split necessary
+  }
+
+  const size_t numParts = (totalWords + kWordsPerPart - 1) / kWordsPerPart;
+  Serial.printf("[storage] splitting %s: %u words → %u parts of %u\n",
+                path.c_str(), static_cast<unsigned>(totalWords),
+                static_cast<unsigned>(numParts), static_cast<unsigned>(kWordsPerPart));
+  notifyStatus("Book", "Splitting", String(static_cast<unsigned>(numParts)).c_str(), 30);
+
+  String basename = path;
+  if (basename.endsWith(".rsvp")) basename = basename.substring(0, basename.length() - 5);
+
+  if (!src.seek(bodyStartPos)) {
+    src.close();
+    return false;
+  }
+
+  String bufferedWord;
+  bool eofReached = false;
+  for (size_t partIdx = 1; partIdx <= numParts && !eofReached; ++partIdx) {
+    const String partPath = basename + ".part" + String(static_cast<unsigned>(partIdx)) + ".rsvp";
+    SD_MMC.remove(partPath);
+    File out = SD_MMC.open(partPath, FILE_WRITE);
+    if (!out) {
+      src.close();
+      return false;
+    }
+
+    // Re-emit the header but rewrite the @title to include the part suffix so
+    // the library picker shows distinct entries per part.
+    int cursor = 0;
+    while (cursor < static_cast<int>(header.length())) {
+      const int newline = header.indexOf('\n', cursor);
+      const int lineEnd = newline < 0 ? static_cast<int>(header.length()) : newline;
+      String headerLine = header.substring(cursor, lineEnd);
+      if (headerLine.startsWith("@title ")) {
+        String titled = originalTitle.isEmpty() ? String("Book") : originalTitle;
+        out.print("@title ");
+        out.print(titled);
+        out.print(" (Part ");
+        out.print(partIdx);
+        out.print(" of ");
+        out.print(numParts);
+        out.println(")");
+      } else {
+        out.println(headerLine);
+      }
+      if (newline < 0) break;
+      cursor = newline + 1;
+    }
+    out.print("@part ");
+    out.print(partIdx);
+    out.print(' ');
+    out.println(numParts);
+    out.println();
+
+    size_t partWords = 0;
+    String pending;
+    auto emit = [&](const String &raw) {
+      String t = raw;
+      t.trim();
+      if (t.startsWith("@")) {
+        // Pass through chapter / paragraph directives so structure survives.
+        out.println(raw);
+        return false;  // not a body word
+      }
+      if (t.isEmpty()) {
+        out.println();
+        return false;
+      }
+      out.println(raw);
+      ++partWords;
+      return true;
+    };
+
+    while (src.available() && partWords < kWordsPerPart) {
+      const int c = src.read();
+      if (c < 0) {
+        eofReached = true;
+        break;
+      }
+      if (c == '\n') {
+        emit(pending);
+        pending = "";
+      } else if (c != '\r') {
+        pending += static_cast<char>(c);
+      }
+    }
+    if (!pending.isEmpty() && partWords < kWordsPerPart) {
+      emit(pending);
+      pending = "";
+    }
+    out.close();
+    yield();
+    notifyStatus("Book", "Splitting",
+                 (String("Part ") + partIdx + "/" + numParts).c_str(),
+                 30 + static_cast<int>((partIdx * 60) / numParts));
+  }
+
+  src.close();
+  SD_MMC.remove(path);
+  notifyStatus("Book", "Split done",
+               (String(numParts) + " parts").c_str(), 100);
+  return true;
 }
 
 namespace {
@@ -1492,6 +1746,7 @@ void StorageManager::refreshBookPaths() {
   notifyStatus("SD", "Reading library", "", 50);
   bookPaths_ = collectBookPaths();
   bookMeta_.assign(bookPaths_.size(), BookMeta{});
+  epubSiblingCache_.assign(bookPaths_.size(), 0);  // invalidate sibling cache
 
   const size_t count = bookPaths_.size();
   uint32_t lastStatusMs = millis();
@@ -1501,6 +1756,8 @@ void StorageManager::refreshBookPaths() {
     } else {
       bookMeta_[i].loaded = true;
     }
+    // Sibling-EPUB cache is filled in a single batch *after* this loop using
+    // one directory enumeration — much cheaper than a per-book SD open here.
     if ((i & 0x07) == 0) {
       yield();
     }
@@ -1509,6 +1766,59 @@ void StorageManager::refreshBookPaths() {
       const int percent = static_cast<int>(((i + 1) * 50ULL) / std::max<size_t>(1, count)) + 50;
       notifyStatus("SD", "Indexing books", "", std::min(percent, 99));
       lastStatusMs = now;
+    }
+  }
+
+  // Walk /books/ once and harvest the set of .epub basenames present, then
+  // fan that out to populate the sibling-EPUB cache in O(N) hash lookups
+  // instead of O(N) SD stats. This is what makes Library/Resume-from/Author
+  // pickers feel snappy on first open after boot.
+  {
+    std::vector<String> epubStems;
+    File dir = SD_MMC.open(kBooksPath);
+    if (dir && dir.isDirectory()) {
+      File entry = dir.openNextFile();
+      while (entry) {
+        if (!entry.isDirectory()) {
+          String entryPath = normalizeBookPath(String(entry.name()));
+          if (hasEpubExtension(entryPath)) {
+            // Strip the trailing .epub
+            int extDot = entryPath.lastIndexOf('.');
+            if (extDot > 0) entryPath = entryPath.substring(0, extDot);
+            entryPath.toLowerCase();
+            epubStems.push_back(entryPath);
+          }
+        }
+        entry.close();
+        entry = dir.openNextFile();
+        yield();
+      }
+      dir.close();
+    }
+    std::sort(epubStems.begin(), epubStems.end());
+    auto stemForRsvp = [](const String &rsvpPath) {
+      String s = rsvpPath;
+      const int dot = s.lastIndexOf('.');
+      if (dot > 0) s = s.substring(0, dot);
+      const int partAt = s.lastIndexOf(".part");
+      if (partAt > 0) {
+        bool allDigits = partAt + 5 < static_cast<int>(s.length());
+        for (int i = partAt + 5; i < static_cast<int>(s.length()) && allDigits; ++i) {
+          if (!isDigit(s[i])) allDigits = false;
+        }
+        if (allDigits) s = s.substring(0, partAt);
+      }
+      s.toLowerCase();
+      return s;
+    };
+    for (size_t i = 0; i < count; ++i) {
+      if (!hasRsvpExtension(bookPaths_[i])) {
+        epubSiblingCache_[i] = 2;
+        continue;
+      }
+      const String stem = stemForRsvp(bookPaths_[i]);
+      const bool found = std::binary_search(epubStems.begin(), epubStems.end(), stem);
+      epubSiblingCache_[i] = found ? 1 : 2;
     }
   }
 
@@ -1565,6 +1875,10 @@ bool StorageManager::parseFile(File &file, BookContent &book, bool rsvpFormat,
           if (hasBookWordLimit()) {
             Serial.printf("[storage] Reached %lu word limit, truncating book\n",
                           static_cast<unsigned long>(kMaxBookWords));
+            String truncMsg = String("Truncated at ") +
+                              String(static_cast<unsigned long>(kMaxBookWords / 1000)) +
+                              "K words";
+            notifyStatus("Book", "Too long for RAM", truncMsg.c_str(), 99);
           }
           stopRequested = true;
           break;

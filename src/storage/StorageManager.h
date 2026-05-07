@@ -48,6 +48,17 @@ class StorageManager {
   // Returns true if there's a sibling .epub file next to this book's .rsvp on
   // the SD, indicating the book originated from an EPUB conversion.
   bool wasConvertedFromEpub(size_t index) const;
+  // If the .rsvp at `path` exceeds the per-part word budget, splits it into
+  // sibling files like `<base>.part1.rsvp` / `<base>.part2.rsvp`, with each
+  // part carrying its own header that names it "Title (Part N of M)". The
+  // original single file is removed on success. No-op (returns true) if the
+  // book already fits in one part.
+  bool splitOversizedRsvp(const String &path);
+  // Removes a book from the SD: deletes the .rsvp at this index, its sibling
+  // .epub (if present), and — when this book is part of a multi-part split —
+  // all the other .partN.rsvp / single-base companions. Refreshes book paths
+  // on success so the index list reflects the deletion immediately.
+  bool deleteBookAtIndex(size_t index);
 
  private:
   bool parseFile(File &file, BookContent &book, bool rsvpFormat,
@@ -63,4 +74,8 @@ class StorageManager {
   void *statusContext_ = nullptr;
   std::vector<String> bookPaths_;
   mutable std::vector<BookMeta> bookMeta_;
+  // 0 = unknown, 1 = has sibling .epub, 2 = no sibling. Computed lazily on
+  // first ask and reused so the picker filter doesn't re-stat every book on
+  // each open. Reset whenever bookPaths_ changes.
+  mutable std::vector<uint8_t> epubSiblingCache_;
 };

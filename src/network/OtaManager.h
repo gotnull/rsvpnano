@@ -17,6 +17,10 @@ class OtaManager {
 
   void setStatusCallback(StatusCallback callback, void *context);
   bool loadConfigFromSd(const char *path = "/wifi.json");
+  // Direct injection of a previously-cached Config (e.g. from NVS) so OTA
+  // and other network features still work when the SD card has been pulled
+  // out and the wifi.json read fails.
+  void setConfig(const Config &cfg);
   bool runUpdate();
   const String &lastError() const { return lastError_; }
   const Config &config() const { return config_; }

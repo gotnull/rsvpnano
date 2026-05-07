@@ -140,6 +140,13 @@ namespace
     RestartConfirmItemCount,
   };
 
+  enum BookDeleteOption : size_t {
+    BookDeleteCancel = 0,
+    BookDeleteYes = 1,
+    BookDeleteOptionCount,
+  };
+  constexpr size_t kBookDeleteConfirmHeaderRows = 1;
+
   constexpr const char *kRestartConfirmItems[] = {
       "Reboot now?",
       "No",
@@ -156,6 +163,7 @@ namespace
   constexpr size_t kSettingsHomeToneIndex = 6;
   constexpr size_t kSettingsHomeVolumeIndex = 7;
   constexpr size_t kSettingsHomeReadingSoundsIndex = 8;
+  constexpr size_t kSettingsHomeRemountSdIndex = 9;
   constexpr size_t kSettingsReadingSoundsChapterIndex = 1;
   constexpr size_t kSettingsReadingSoundsParagraphIndex = 2;
   constexpr size_t kSettingsReadingSoundsPageIndex = 3;
@@ -165,6 +173,7 @@ namespace
   constexpr size_t kSettingsDisplayFontSizeIndex = 4;
   constexpr size_t kSettingsDisplayTypographyIndex = 5;
   constexpr size_t kSettingsDisplayFlipIndex = 6;
+  constexpr size_t kSettingsDisplayAutoPowerOffIndex = 7;
   constexpr size_t kSettingsPacingLongWordsIndex = 1;
   constexpr size_t kSettingsPacingComplexityIndex = 2;
   constexpr size_t kSettingsPacingPunctuationIndex = 3;
@@ -194,6 +203,13 @@ namespace
   constexpr const char *kPrefChapterChime = "chchm";
   constexpr const char *kPrefParagraphChime = "pgchm";
   constexpr const char *kPrefPageChime = "pgnchm";
+  constexpr const char *kPrefAutoPowerOff = "apoff";
+  // Index 0 disables auto-off; rest are minute-thresholds. Bumping the cycle
+  // is one-tap, and Off is in the cycle so the user can disable from the
+  // Settings menu without a separate toggle.
+  constexpr uint16_t kAutoPowerOffMinutes[] = {0, 5, 15, 30, 60, 120};
+  constexpr size_t kAutoPowerOffOptionCount =
+      sizeof(kAutoPowerOffMinutes) / sizeof(kAutoPowerOffMinutes[0]);
   // RSVP has no inherent page concept; this is the average paperback page
   // size in words and lets us emit a "page" chime at predictable intervals.
   constexpr size_t kPageWordCount = 250;
@@ -392,6 +408,9 @@ void App::begin()
   chapterChimeEnabled_ = preferences_.getBool(kPrefChapterChime, chapterChimeEnabled_);
   paragraphChimeEnabled_ = preferences_.getBool(kPrefParagraphChime, paragraphChimeEnabled_);
   pageChimeEnabled_ = preferences_.getBool(kPrefPageChime, pageChimeEnabled_);
+  autoPowerOffIndex_ = preferences_.getUChar(kPrefAutoPowerOff, autoPowerOffIndex_);
+  if (autoPowerOffIndex_ >= kAutoPowerOffOptionCount) autoPowerOffIndex_ = 0;
+  lastActivityMs_ = millis();
   applyDisplayPreferences(0, false);
   applyTypographySettings(0, false);
   applyPacingSettings();
@@ -426,7 +445,42 @@ void App::begin()
   const bool storageReady = storage_.begin();
   storage_.listBooks();
 
+  // WiFi/OTA config: prefer the SD's wifi.json (so updates to credentials are
+  // easy), but persist a cached copy in NVS so the network features still
+  // work after the SD has been pulled out (typical recovery path = "boot
+  // without SD, hit OTA Update, then re-insert SD on next boot").
+  constexpr const char *kPrefWifiSsid = "wifissid";
+  constexpr const char *kPrefWifiPass = "wifipass";
+  constexpr const char *kPrefFirmwareUrl = "fwurl";
+  constexpr const char *kPrefNotifUrl = "nfurl";
+  constexpr const char *kPrefNotifTok = "nftok";
+  bool haveNetConfig = false;
   if (storageReady && ota_.loadConfigFromSd())
+  {
+    const auto &cfg = ota_.config();
+    preferences_.putString(kPrefWifiSsid, cfg.ssid);
+    preferences_.putString(kPrefWifiPass, cfg.password);
+    preferences_.putString(kPrefFirmwareUrl, cfg.firmwareUrl);
+    preferences_.putString(kPrefNotifUrl, cfg.notificationsUrl);
+    preferences_.putString(kPrefNotifTok, cfg.notificationsToken);
+    haveNetConfig = true;
+  }
+  else
+  {
+    OtaManager::Config cached;
+    cached.ssid = preferences_.getString(kPrefWifiSsid, "");
+    cached.password = preferences_.getString(kPrefWifiPass, "");
+    cached.firmwareUrl = preferences_.getString(kPrefFirmwareUrl, "");
+    cached.notificationsUrl = preferences_.getString(kPrefNotifUrl, "");
+    cached.notificationsToken = preferences_.getString(kPrefNotifTok, "");
+    if (!cached.ssid.isEmpty() && !cached.firmwareUrl.isEmpty())
+    {
+      ota_.setConfig(cached);
+      Serial.println("[app] using cached WiFi/OTA config from NVS");
+      haveNetConfig = true;
+    }
+  }
+  if (haveNetConfig)
   {
     const auto &cfg = ota_.config();
     notifications_.configure(cfg.ssid, cfg.password, cfg.notificationsUrl,
@@ -509,11 +563,35 @@ void App::update(uint32_t nowMs)
 {
   button_.update(nowMs);
   powerButton_.update(nowMs);
+  if (button_.isHeld() || powerButton_.isHeld())
+  {
+    lastActivityMs_ = nowMs;
+  }
   handleBootButton(nowMs);
   handlePowerButton(nowMs);
   if (powerOffStarted_)
   {
     return;
+  }
+
+  // Auto-power-off: enterPowerOff after the configured idle window. Active
+  // reading (state_ == Playing) and ongoing button holds count as activity, so
+  // someone reading slowly never gets cut off mid-paragraph.
+  if (autoPowerOffIndex_ > 0 && autoPowerOffIndex_ < kAutoPowerOffOptionCount &&
+      state_ != AppState::Playing && state_ != AppState::Booting &&
+      state_ != AppState::UsbTransfer && state_ != AppState::Sleeping &&
+      !powerOffStarted_)
+  {
+    const uint32_t idleLimitMs =
+        static_cast<uint32_t>(kAutoPowerOffMinutes[autoPowerOffIndex_]) * 60UL * 1000UL;
+    if (idleLimitMs > 0 && (nowMs - lastActivityMs_) >= idleLimitMs)
+    {
+      Serial.printf("[autoff] idle %lu ms >= %lu ms, powering off\n",
+                    static_cast<unsigned long>(nowMs - lastActivityMs_),
+                    static_cast<unsigned long>(idleLimitMs));
+      enterPowerOff(nowMs);
+      return;
+    }
   }
 
   if (firmwarePendingVerify_ && nowMs >= firmwareValidateAtMs_)
@@ -1165,6 +1243,8 @@ void App::handleTouch(uint32_t nowMs)
   {
     return;
   }
+  // Any touch counts as activity for the auto-power-off timer.
+  lastActivityMs_ = nowMs;
 
   Serial.printf("[touch] phase=%s touched=%u x=%u y=%u gesture=%u state=%s\n",
                 touchPhaseName(ev.phase), ev.touched ? 1 : 0, ev.x, ev.y, ev.gesture,
@@ -1359,6 +1439,7 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs)
     pausedTouch_.lastY = event.y;
     pausedTouch_.startMs = nowMs;
     pausedTouch_.lastMs = nowMs;
+    bookLongPressFired_ = false;
     return;
   }
 
@@ -1370,6 +1451,25 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs)
   pausedTouch_.lastX = event.x;
   pausedTouch_.lastY = event.y;
   pausedTouch_.lastMs = nowMs;
+
+  // Long-press on a book row in the BookPicker opens the delete-confirm screen.
+  // Threshold is 800 ms with little movement so it doesn't fire on a slow swipe.
+  if (!bookLongPressFired_ && menuScreen_ == MenuScreen::BookPicker &&
+      event.phase != TouchPhase::End && (nowMs - pausedTouch_.startMs) >= 800)
+  {
+    const int dx = abs(static_cast<int>(event.x) - static_cast<int>(pausedTouch_.startX));
+    const int dy = abs(static_cast<int>(event.y) - static_cast<int>(pausedTouch_.startY));
+    if (dx <= static_cast<int>(kTapSlopPx) && dy <= static_cast<int>(kTapSlopPx) &&
+        bookPickerSelectedIndex_ >= 1 &&
+        bookPickerSelectedIndex_ - 1 < bookPickerBookIndices_.size())
+    {
+      bookLongPressFired_ = true;
+      pausedTouch_.active = false;
+      const size_t storageIndex = bookPickerBookIndices_[bookPickerSelectedIndex_ - 1];
+      openBookDeleteConfirm(storageIndex);
+      return;
+    }
+  }
 
   const bool inPicker =
       menuScreen_ == MenuScreen::AuthorPicker || menuScreen_ == MenuScreen::BookPicker;
@@ -1532,6 +1632,11 @@ void App::moveMenuSelection(int direction)
     selectedIndex = &remoteBookSelectedIndex_;
     itemCount = remoteBookMenuItems_.size();
   }
+  else if (menuScreen_ == MenuScreen::BookDeleteConfirm)
+  {
+    selectedIndex = &bookDeleteSelectedIndex_;
+    itemCount = BookDeleteOptionCount;
+  }
   else if (menuScreen_ == MenuScreen::RestartConfirm)
   {
     selectedIndex = &restartConfirmSelectedIndex_;
@@ -1629,6 +1734,11 @@ void App::selectMenuItem(uint32_t nowMs)
   if (menuScreen_ == MenuScreen::RemoteBookPicker)
   {
     selectRemoteBookPickerItem(nowMs);
+    return;
+  }
+  if (menuScreen_ == MenuScreen::BookDeleteConfirm)
+  {
+    selectBookDeleteConfirmItem(nowMs);
     return;
   }
   if (menuScreen_ == MenuScreen::RestartConfirm)
@@ -1744,6 +1854,28 @@ void App::selectSettingsItem(uint32_t nowMs)
       rebuildSettingsMenuItems();
       renderSettings();
       return;
+    case kSettingsHomeRemountSdIndex:
+    {
+      display_.renderStatus("SD", "Unmounting", "");
+      storage_.end();
+      delay(100);
+      display_.renderStatus("SD", "Remounting", "");
+      const bool ok = storage_.begin();
+      if (ok)
+      {
+        storage_.listBooks();
+        bookProgressInfo_.clear();
+        display_.renderStatus("SD", "Mounted", String(static_cast<unsigned>(storage_.bookCount())).c_str());
+      }
+      else
+      {
+        display_.renderStatus("SD", "Mount failed", "Reseat the card");
+      }
+      delay(900);
+      rebuildSettingsMenuItems();
+      renderSettings();
+      return;
+    }
     default:
       return;
     }
@@ -1809,6 +1941,13 @@ void App::selectSettingsItem(uint32_t nowMs)
       return;
     case kSettingsDisplayFlipIndex:
       toggleDisplayFlip(nowMs);
+      return;
+    case kSettingsDisplayAutoPowerOffIndex:
+      autoPowerOffIndex_ = (autoPowerOffIndex_ + 1) % kAutoPowerOffOptionCount;
+      preferences_.putUChar(kPrefAutoPowerOff, autoPowerOffIndex_);
+      lastActivityMs_ = nowMs;  // start counting fresh
+      rebuildSettingsMenuItems();
+      renderSettings();
       return;
     default:
       return;
@@ -1958,6 +2097,7 @@ void App::rebuildSettingsMenuItems()
     settingsMenuItems_.push_back(String("Tone (") + currentNotificationToneLabel() + ")");
     settingsMenuItems_.push_back(String("Volume: ") + String(notificationVolume_) + "%");
     settingsMenuItems_.push_back("Reading sounds");
+    settingsMenuItems_.push_back("Remount SD");
   }
   else if (menuScreen_ == MenuScreen::SettingsReadingSounds)
   {
@@ -1978,6 +2118,17 @@ void App::rebuildSettingsMenuItems()
     settingsMenuItems_.push_back("Font size: " + readerFontSizeLabel());
     settingsMenuItems_.push_back("Typography tune");
     settingsMenuItems_.push_back(String("Flip display: ") + (displayFlipped_ ? "On" : "Off"));
+    String autoLabel;
+    if (autoPowerOffIndex_ == 0 || autoPowerOffIndex_ >= kAutoPowerOffOptionCount)
+    {
+      autoLabel = "Off";
+    }
+    else
+    {
+      const uint16_t mins = kAutoPowerOffMinutes[autoPowerOffIndex_];
+      autoLabel = (mins >= 60) ? (String(mins / 60) + "h") : (String(mins) + "m");
+    }
+    settingsMenuItems_.push_back(String("Auto off: ") + autoLabel);
   }
   else if (menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsReadingSounds)
   {
@@ -2824,7 +2975,11 @@ void App::selectRemoteBookPickerItem(uint32_t nowMs)
     renderRemoteBookPicker();
     return;
   }
-  // Refresh in-memory book list so the picker can find the new title.
+  // If the converted .rsvp is too big to fit in RAM, split it into multiple
+  // sibling files (.part1.rsvp / .part2.rsvp / …). Each part lands as its own
+  // entry in the library so the user can read GEB-sized books in chunks.
+  storage_.splitOversizedRsvp(rsvpPath);
+  // Refresh in-memory book list so the picker can find the new title(s).
   storage_.listBooks();
   bookProgressInfo_.clear();
   display_.renderStatus("Books", "Saved", filename.c_str());
@@ -2832,6 +2987,60 @@ void App::selectRemoteBookPickerItem(uint32_t nowMs)
   menuScreen_ = MenuScreen::Main;
   renderMainMenu();
   (void)nowMs;
+}
+
+void App::openBookDeleteConfirm(size_t bookIndex)
+{
+  bookDeleteIndex_ = bookIndex;
+  bookDeleteTitle_ = storage_.bookDisplayName(bookIndex);
+  bookDeleteSelectedIndex_ = BookDeleteCancel;  // default to safe option
+  menuScreen_ = MenuScreen::BookDeleteConfirm;
+  renderBookDeleteConfirm();
+}
+
+void App::renderBookDeleteConfirm()
+{
+  std::vector<String> items;
+  items.reserve(BookDeleteOptionCount + 1);
+  // Header row shows the title so the user knows exactly what they're nuking.
+  items.push_back(bookDeleteTitle_.isEmpty() ? String("Delete book?") : bookDeleteTitle_);
+  items.push_back(String("No"));
+  items.push_back(String("Yes, delete"));
+  display_.renderMenu(items, bookDeleteSelectedIndex_ + kBookDeleteConfirmHeaderRows);
+}
+
+void App::selectBookDeleteConfirmItem(uint32_t nowMs)
+{
+  (void)nowMs;
+  if (bookDeleteSelectedIndex_ != BookDeleteYes)
+  {
+    menuScreen_ = MenuScreen::BookPicker;
+    renderBookPicker();
+    return;
+  }
+  display_.renderStatus("Library", "Deleting", bookDeleteTitle_.c_str());
+  if (storage_.deleteBookAtIndex(bookDeleteIndex_))
+  {
+    bookProgressInfo_.clear();
+    // If we just deleted the currently-loaded book, drop reader state so the
+    // user lands cleanly on Library next time.
+    if (usingStorageBook_ && currentBookIndex_ == bookDeleteIndex_)
+    {
+      usingStorageBook_ = false;
+      bookMetaOnly_ = false;
+      currentBookPath_ = "";
+      currentBookTitle_ = "";
+    }
+  }
+  // Re-open the picker so the row is gone from the list.
+  if (!activeAuthorFilter_.isEmpty())
+  {
+    openBookPickerForAuthor(activeAuthorFilter_);
+  }
+  else
+  {
+    openBookPicker();
+  }
 }
 
 void App::cycleNotificationVolume(uint32_t nowMs)
@@ -3348,6 +3557,10 @@ void App::renderMenu()
   else if (menuScreen_ == MenuScreen::RemoteBookPicker)
   {
     renderRemoteBookPicker();
+  }
+  else if (menuScreen_ == MenuScreen::BookDeleteConfirm)
+  {
+    renderBookDeleteConfirm();
   }
   else if (menuScreen_ == MenuScreen::RestartConfirm)
   {

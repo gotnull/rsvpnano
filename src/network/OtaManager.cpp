@@ -31,6 +31,8 @@ void OtaManager::setStatusCallback(StatusCallback callback, void *context) {
   statusContext_ = context;
 }
 
+void OtaManager::setConfig(const Config &cfg) { config_ = cfg; }
+
 void OtaManager::notifyStatus(const char *title, const char *line1, const char *line2,
                               int progressPercent) {
   Serial.printf("[ota] %d%% %s | %s | %s\n", progressPercent,
