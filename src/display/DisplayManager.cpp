@@ -1088,6 +1088,37 @@ void DisplayManager::drawSerifGlyphScaledPercent(int x, int y, char c, uint16_t 
   }
 }
 
+void DisplayManager::fillRoundedRect(int x, int y, int width, int height, int radius,
+                                     uint16_t color) {
+  if (width <= 0 || height <= 0) return;
+  if (radius < 1) {
+    fillVirtualRect(x, y, width, height, color);
+    return;
+  }
+  const int r = std::min(radius, std::min(width, height) / 2);
+  fillVirtualRect(x + r, y, width - 2 * r, height, color);
+  fillVirtualRect(x, y + r, r, height - 2 * r, color);
+  fillVirtualRect(x + width - r, y + r, r, height - 2 * r, color);
+  const int r2 = r * r;
+  for (int dy = 0; dy < r; ++dy) {
+    const int distY = r - dy;
+    int firstX = r;
+    for (int dx = 0; dx < r; ++dx) {
+      const int distX = r - dx;
+      if (distX * distX + distY * distY <= r2) {
+        firstX = dx;
+        break;
+      }
+    }
+    const int span = r - firstX;
+    if (span <= 0) continue;
+    fillVirtualRect(x + firstX, y + dy, span, 1, color);
+    fillVirtualRect(x + width - firstX - span, y + dy, span, 1, color);
+    fillVirtualRect(x + firstX, y + height - 1 - dy, span, 1, color);
+    fillVirtualRect(x + width - firstX - span, y + height - 1 - dy, span, 1, color);
+  }
+}
+
 void DisplayManager::fillVirtualRect(int x, int y, int width, int height, uint16_t color) {
   const uint16_t panel = panelColor(color);
   const int xEnd = std::min(kVirtualBufferWidth, x + width);
@@ -1953,6 +1984,10 @@ void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemC
     renderKey += String(accentRow);
     renderKey += ":";
     renderKey += accentText;
+    if (measureTinyTextWidth(accentText, kTinyScale) > 250) {
+      renderKey += "|p:";
+      renderKey += String(millis() / 30);
+    }
   }
 
   if (!initialized_ || renderKey == lastRenderKey_) {
@@ -2003,9 +2038,24 @@ void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemC
       const int accentStartX = textX + std::max(itemWidth, 0) + 14;
       const int accentMaxWidth =
           std::max(0, virtualWidth - accentStartX - accentRightInset);
-      const String fittedAccent = fitTinyText(accentText, accentMaxWidth, kTinyScale);
-      if (!fittedAccent.isEmpty()) {
-        drawTinyTextAt(fittedAccent, accentStartX, y + 3, accentColor, kTinyScale);
+      const int fullTextWidth = measureTinyTextWidth(accentText, kTinyScale);
+      if (fullTextWidth <= accentMaxWidth) {
+        drawTinyTextAt(accentText, accentStartX, y + 3, accentColor, kTinyScale);
+      } else {
+        const int charPitch = (kTinyGlyphWidth + kTinyGlyphSpacing) * kTinyScale;
+        const int charBodyWidth = kTinyGlyphWidth * kTinyScale;
+        const int gapPx = 48;
+        const int cycleWidth = fullTextWidth + gapPx;
+        const int offsetPx = static_cast<int>((millis() / 30) % cycleWidth);
+        const int accentEndX = accentStartX + accentMaxWidth;
+        for (size_t ci = 0; ci < accentText.length(); ++ci) {
+          const int charX = accentStartX - offsetPx + static_cast<int>(ci) * charPitch;
+          const int charRight = charX + charBodyWidth;
+          if (charX >= accentEndX) break;
+          if (charRight <= accentStartX) continue;
+          if (charX < accentStartX || charRight > accentEndX) continue;
+          drawTinyGlyph(charX, y + 3, accentText[ci], accentColor, kTinyScale);
+        }
       }
     }
     y += rowHeight;
@@ -2192,11 +2242,12 @@ void DisplayManager::renderLibrary(const std::vector<LibraryItem> &items, size_t
     int chipsLeftEdge = rightContentEdge - kLibraryChipsRightMargin;
     const int chipY = rowY + (kLibraryRowHeight - chipH) / 2;
     int rightCursor = chipsLeftEdge;
+    const int chipRadius = std::min(6, chipH / 2);
     for (const String &label : chipLabels) {
       const int textW = measureTinyTextWidth(label, kTinyScale);
       const int chipW = textW + kLibraryChipPadX * 2;
       const int chipX = rightCursor - chipW;
-      fillVirtualRect(chipX, chipY, chipW, chipH, chipBg);
+      fillRoundedRect(chipX, chipY, chipW, chipH, chipRadius, chipBg);
       drawTinyTextAt(label, chipX + kLibraryChipPadX, chipY + kLibraryChipPadY, titleColor,
                      kTinyScale);
       rightCursor = chipX - kLibraryChipGap;

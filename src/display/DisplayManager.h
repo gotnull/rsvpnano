@@ -99,6 +99,7 @@ class DisplayManager {
   void drawSerif70Glyph(int x, int y, char c, uint16_t color);
   void drawSerifGlyphScaledPercent(int x, int y, char c, uint16_t color, uint8_t scalePercent);
   void fillVirtualRect(int x, int y, int width, int height, uint16_t color);
+  void fillRoundedRect(int x, int y, int width, int height, int radius, uint16_t color);
   void drawSerifTextAt(const String &text, int x, int y, uint16_t color, int divisor);
   void drawSerif70TextAt(const String &text, int x, int y, uint16_t color);
   void drawSerifTextScaledAt(const String &text, int x, int y, uint16_t color,

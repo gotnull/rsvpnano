@@ -414,6 +414,12 @@ void App::update(uint32_t nowMs) {
     }
   }
 
+  if (state_ == AppState::Menu && menuScreen_ == MenuScreen::Main &&
+      (nowMs - lastMenuRefreshMs_) >= 33) {
+    renderMainMenu();
+    lastMenuRefreshMs_ = nowMs;
+  }
+
   const bool batteryChanged = updateBatteryStatus(nowMs);
   updateState(nowMs);
   updateReader(nowMs);
@@ -2306,8 +2312,6 @@ void App::renderMainMenu() {
   const bool haveBookContext =
       (usingStorageBook_ || bookMetaOnly_) && !currentBookTitle_.isEmpty();
   if (haveBookContext) {
-    accent = currentBookTitle_;
-
     size_t total = 0;
     size_t cur = 0;
     if (usingStorageBook_) {
@@ -2318,11 +2322,11 @@ void App::renderMainMenu() {
       total = info.savedWordCount;
       cur = info.savedWordIndex;
     }
+    String inner;
     if (total > 0 && cur <= total) {
       const uint32_t pct = (static_cast<uint64_t>(cur) * 100ULL) / total;
       if (pct > 0) {
-        accent += " - ";
-        accent += String(pct) + "%";
+        inner = String(pct) + "%";
       }
     }
     const uint16_t wpm = reader_.wpm();
@@ -2331,17 +2335,23 @@ void App::renderMainMenu() {
       const uint32_t totalMin = (remainingWords + wpm / 2) / wpm;
       const uint32_t hours = totalMin / 60;
       const uint32_t mins = totalMin % 60;
-      String t = "~";
+      String t;
       if (hours > 0) {
-        t += String(hours) + "h";
+        t = String(hours) + "h";
         if (hours < 10 && mins > 0) {
           t += String(mins) + "m";
         }
       } else {
-        t += String(std::max<uint32_t>(1, mins)) + "m";
+        t = String(std::max<uint32_t>(1, mins)) + "m";
       }
-      accent += " - ";
-      accent += t;
+      if (!inner.isEmpty()) inner += " - ";
+      inner += t + " rem.";
+    }
+    accent = currentBookTitle_;
+    if (!inner.isEmpty()) {
+      accent += " (";
+      accent += inner;
+      accent += ")";
     }
   }
   display_.renderMenuWithAccent(kMenuItems, MenuItemCount, menuSelectedIndex_, MenuResume, accent);
