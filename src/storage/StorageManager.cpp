@@ -1412,9 +1412,28 @@ void StorageManager::refreshBookPaths() {
     return;
   }
 
-  notifyStatus("SD", "Reading library", "", 96);
+  notifyStatus("SD", "Reading library", "", 50);
   bookPaths_ = collectBookPaths();
   bookMeta_.assign(bookPaths_.size(), BookMeta{});
+
+  const size_t count = bookPaths_.size();
+  uint32_t lastStatusMs = millis();
+  for (size_t i = 0; i < count; ++i) {
+    if (hasRsvpExtension(bookPaths_[i])) {
+      readRsvpHeader(bookPaths_[i], bookMeta_[i]);
+    } else {
+      bookMeta_[i].loaded = true;
+    }
+    if ((i & 0x07) == 0) {
+      yield();
+    }
+    const uint32_t now = millis();
+    if (now - lastStatusMs >= 200) {
+      const int percent = static_cast<int>(((i + 1) * 50ULL) / std::max<size_t>(1, count)) + 50;
+      notifyStatus("SD", "Indexing books", "", std::min(percent, 99));
+      lastStatusMs = now;
+    }
+  }
 
   size_t rsvpCount = 0;
   size_t textCount = 0;

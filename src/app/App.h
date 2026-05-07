@@ -111,9 +111,22 @@ class App {
   String bookRecentKey(const String &bookPath) const;
   uint32_t nextRecentSequence();
   uint32_t bookRecentSequence(const String &bookPath);
+  uint32_t bookRecentSequenceByIndex(size_t bookIndex);
   void markBookRecent(const String &bookPath);
   uint32_t savedWordIndexForBook(const String &bookPath, bool allowLegacyFallback = false);
   bool bookProgressPercent(size_t bookIndex, uint8_t &percent);
+
+  struct BookProgressInfo {
+    bool valid = false;
+    bool hasPosition = false;
+    uint32_t recentSequence = 0;
+    uint32_t savedWordIndex = 0;
+    uint32_t savedWordCount = 0;
+  };
+  void ensureBookProgressInfoSize();
+  const BookProgressInfo &progressInfoFor(size_t bookIndex);
+  void invalidateBookProgress(size_t bookIndex);
+  std::vector<BookProgressInfo> bookProgressInfo_;
   int findBookIndexByPath(const String &path) const;
   void renderMenu();
   void renderMainMenu();

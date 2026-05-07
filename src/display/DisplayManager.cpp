@@ -2032,9 +2032,6 @@ void DisplayManager::renderLibrary(const std::vector<LibraryItem> &items, size_t
     if (item.progressPercent >= 0) {
       chipLabels.push_back(String(item.progressPercent) + "%");
     }
-    if (item.wordCount > 0) {
-      chipLabels.push_back(formatCompactCount(static_cast<uint32_t>(item.wordCount)) + "w");
-    }
     if (item.chapterCount > 0) {
       chipLabels.push_back(String(item.chapterCount) + "ch");
     }
