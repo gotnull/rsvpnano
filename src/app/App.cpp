@@ -182,6 +182,7 @@ namespace
   constexpr const char *kPrefNotifications = "notif";
   constexpr const char *kPrefNotifTone = "ntone";
   constexpr const char *kPrefNotifVolume = "nvol";
+  constexpr const char *kPrefNotifLastTs = "nlast";
   constexpr uint32_t kNotificationPollIntervalMs = 5UL * 60UL * 1000UL;
   constexpr uint32_t kNotificationBannerVisibleMs = 6000;
   constexpr uint32_t kNotificationFirstPollDelayMs = 30UL * 1000UL;
@@ -359,6 +360,7 @@ void App::begin()
     notificationVolume_ = 100;
   audio_.setVolumePercent(notificationVolume_);
   notificationTone_ = preferences_.getString(kPrefNotifTone, "");
+  notifications_.setLastSeenTs(preferences_.getUInt(kPrefNotifLastTs, 0));
   applyDisplayPreferences(0, false);
   applyTypographySettings(0, false);
   applyPacingSettings();
@@ -1820,7 +1822,7 @@ void App::rebuildSettingsMenuItems()
     settingsMenuItems_.push_back("Word pacing");
     settingsMenuItems_.push_back(String("Notifications: ") +
                                  (notificationsEnabled_ ? "On" : "Off"));
-    settingsMenuItems_.push_back(String("Tone: ") + currentNotificationToneLabel());
+    settingsMenuItems_.push_back(String("Tone (") + currentNotificationToneLabel() + ")");
     settingsMenuItems_.push_back(String("Volume: ") + String(notificationVolume_) + "%");
   }
   else if (menuScreen_ == MenuScreen::SettingsDisplay)
@@ -2419,6 +2421,7 @@ void App::pollNotifications(uint32_t nowMs)
   auto pending = notifications_.drainPending();
   if (pending.empty())
     return;
+  preferences_.putUInt(kPrefNotifLastTs, notifications_.lastSeenTs());
   // Show only the most recent one as a banner (queue collapses to most-recent so
   // the user always sees the freshest news).
   const auto &latest = pending.back();
@@ -3172,6 +3175,10 @@ void App::renderSettings()
     if (settingsMenuItems_.size() > kSettingsHomePacingIndex)
     {
       chevrons[kSettingsHomePacingIndex] = true;
+    }
+    if (settingsMenuItems_.size() > kSettingsHomeToneIndex)
+    {
+      chevrons[kSettingsHomeToneIndex] = true;
     }
   }
   else if (menuScreen_ == MenuScreen::SettingsDisplay)

@@ -29,6 +29,11 @@ class NotificationsManager {
   // Returns true if at least one new notification arrived.
   bool poll();
 
+  // Caller persists this across reboots so previously-seen notifications
+  // aren't re-shown after a power cycle.
+  uint32_t lastSeenTs() const { return lastSeenTs_; }
+  void setLastSeenTs(uint32_t ts) { lastSeenTs_ = ts; }
+
   // Drains pending notifications (those returned by the latest poll). Caller
   // takes ownership and is expected to surface them to the user.
   std::vector<Notification> drainPending();
