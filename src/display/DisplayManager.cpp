@@ -1202,12 +1202,19 @@ void DisplayManager::drawTinyTextCentered(const String &text, int y, uint16_t co
   drawTinyTextAt(text, std::max(0, (kVirtualBufferWidth - textWidth) / 2), y, color, scale);
 }
 
-void DisplayManager::drawBatteryBadge() {
+void DisplayManager::drawBatteryBadge(bool leftAlign) {
   if (batteryLabel_.isEmpty()) {
     return;
   }
-
-  drawTinyTextAt(batteryLabel_, kFooterMarginX, kFooterMarginBottom, footerColor(), kTinyScale);
+  const int width = measureTinyTextWidth(batteryLabel_, kTinyScale);
+  int x;
+  if (leftAlign) {
+    x = kFooterMarginX;
+  } else {
+    const int rightInset = kFooterMarginX + kLibraryLetterStripWidth;
+    x = std::max(kFooterMarginX, kDisplayWidth - rightInset - width);
+  }
+  drawTinyTextAt(batteryLabel_, x, kFooterMarginBottom, footerColor(), kTinyScale);
 }
 
 void DisplayManager::drawFooter(const String &chapterLabel, uint8_t progressPercent) {
@@ -1423,7 +1430,7 @@ void DisplayManager::renderCenteredWord(const String &word, uint16_t color) {
   clearVirtualBuffer(virtualWidth, virtualHeight);
   const int y = std::max(0, (virtualHeight - kBaseGlyphHeight) / 2);
   drawWordLine(normalized, y, renderColor);
-  drawBatteryBadge();
+  drawBatteryBadge(true);
 
   flushScaledFrame(scale, virtualWidth, virtualHeight);
 }
@@ -1454,7 +1461,7 @@ void DisplayManager::renderRsvpWord(const String &word, const String &chapterLab
   if (showFooter) {
     drawFooter(chapterLabel, progressPercent);
   }
-  drawBatteryBadge();
+  drawBatteryBadge(true);
   flushScaledFrame(scale, virtualWidth, virtualHeight);
 }
 
@@ -1489,7 +1496,7 @@ void DisplayManager::renderRsvpWordWithWpm(const String &word, uint16_t wpm,
   if (showFooter) {
     drawFooter(chapterLabel, progressPercent);
   }
-  drawBatteryBadge();
+  drawBatteryBadge(true);
   flushScaledFrame(scale, virtualWidth, virtualHeight);
 }
 
@@ -1537,7 +1544,7 @@ void DisplayManager::renderPhantomRsvpWord(const String &beforeText, const Strin
     if (showFooter) {
       drawFooter(chapterLabel, progressPercent);
     }
-    drawBatteryBadge();
+    drawBatteryBadge(true);
     flushScaledFrame(scale, virtualWidth, virtualHeight);
     return;
   }
@@ -1574,7 +1581,7 @@ void DisplayManager::renderPhantomRsvpWord(const String &beforeText, const Strin
   if (showFooter) {
     drawFooter(chapterLabel, progressPercent);
   }
-  drawBatteryBadge();
+  drawBatteryBadge(true);
   flushScaledFrame(scale, virtualWidth, virtualHeight);
 }
 
@@ -1725,7 +1732,7 @@ void DisplayManager::renderPhantomRsvpWordWithWpm(const String &beforeText, cons
     if (showFooter) {
       drawFooter(chapterLabel, progressPercent);
     }
-    drawBatteryBadge();
+    drawBatteryBadge(true);
     flushScaledFrame(scale, virtualWidth, virtualHeight);
     return;
   }
@@ -1765,7 +1772,7 @@ void DisplayManager::renderPhantomRsvpWordWithWpm(const String &beforeText, cons
   if (showFooter) {
     drawFooter(chapterLabel, progressPercent);
   }
-  drawBatteryBadge();
+  drawBatteryBadge(true);
   flushScaledFrame(scale, virtualWidth, virtualHeight);
 }
 
@@ -1893,7 +1900,7 @@ void DisplayManager::renderContextView(const std::vector<ContextWord> &words,
   }
 
   drawFooter(chapterLabel, progressPercent);
-  drawBatteryBadge();
+  drawBatteryBadge(true);
   flushScaledFrame(scale, virtualWidth, virtualHeight);
 }
 

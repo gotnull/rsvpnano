@@ -102,7 +102,7 @@ class DisplayManager {
   void drawTinyGlyph(int x, int y, char c, uint16_t color, int scale);
   void drawTinyTextAt(const String &text, int x, int y, uint16_t color, int scale);
   void drawTinyTextCentered(const String &text, int y, uint16_t color, int scale);
-  void drawBatteryBadge();
+  void drawBatteryBadge(bool leftAlign = false);
   void drawFooter(const String &chapterLabel, uint8_t progressPercent);
   void drawRsvpAnchorGuide(int anchorX, int textY, int textHeight);
   void drawWordAt(const String &word, int x, int y, uint16_t color);
