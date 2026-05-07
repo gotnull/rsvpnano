@@ -98,7 +98,11 @@ bool OtaManager::runUpdate() {
     return false;
   }
 
-  notifyStatus("OTA", "Fetching firmware", config_.firmwareUrl.c_str(), 15);
+  String displayName = config_.firmwareUrl;
+  const int lastSlash = displayName.lastIndexOf('/');
+  if (lastSlash >= 0) displayName = displayName.substring(lastSlash + 1);
+  if (displayName.isEmpty()) displayName = "firmware.bin";
+  notifyStatus("OTA", "Fetching", displayName.c_str(), 15);
 
   HTTPClient http;
   WiFiClientSecure secureClient;

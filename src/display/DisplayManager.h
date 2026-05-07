@@ -104,6 +104,8 @@ class DisplayManager {
   void fillRoundedRect(int x, int y, int width, int height, int radius, uint16_t color);
   int drawChipText(const String &text, int leftX, int textY, uint16_t textColor, uint16_t bgColor,
                    bool rightAlign = false, int rightX = 0);
+  int drawScrollingChipText(const String &text, int leftX, int textY, int maxChipWidth,
+                            uint16_t textColor, uint16_t bgColor);
   void drawSerifTextAt(const String &text, int x, int y, uint16_t color, int divisor);
   void drawSerif70TextAt(const String &text, int x, int y, uint16_t color);
   void drawSerifTextScaledAt(const String &text, int x, int y, uint16_t color,

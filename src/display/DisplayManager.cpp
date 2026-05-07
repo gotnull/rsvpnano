@@ -1239,6 +1239,42 @@ void DisplayManager::drawTinyTextCentered(const String &text, int y, uint16_t co
   drawTinyTextAt(text, std::max(0, (kVirtualBufferWidth - textWidth) / 2), y, color, scale);
 }
 
+int DisplayManager::drawScrollingChipText(const String &text, int leftX, int textY,
+                                          int maxChipWidth, uint16_t textColor,
+                                          uint16_t bgColor) {
+  if (text.isEmpty()) return leftX;
+  const int chipPadX = 5;
+  const int chipPadY = 2;
+  const int chipH = kTinyGlyphHeight * kTinyScale + chipPadY * 2;
+  const int textW = measureTinyTextWidth(text, kTinyScale);
+  const int chipMaxW = std::max(chipPadX * 2 + 8, maxChipWidth);
+  const int contentMaxW = chipMaxW - chipPadX * 2;
+  if (textW <= contentMaxW) {
+    return drawChipText(text, leftX, textY, textColor, bgColor);
+  }
+
+  const int chipW = chipMaxW;
+  const int chipY = textY - chipPadY;
+  fillRoundedRect(leftX, chipY, chipW, chipH, std::min(6, chipH / 2), bgColor);
+
+  const int contentLeft = leftX + chipPadX;
+  const int contentRight = leftX + chipW - chipPadX;
+  const int charPitch = (kTinyGlyphWidth + kTinyGlyphSpacing) * kTinyScale;
+  const int charBodyWidth = kTinyGlyphWidth * kTinyScale;
+  const int cycleWidth = textW + 32;
+  const int offsetPx = static_cast<int>((millis() / 30) % cycleWidth);
+  for (size_t i = 0; i < text.length(); ++i) {
+    const int charX = contentLeft - offsetPx + static_cast<int>(i) * charPitch;
+    const int charRight = charX + charBodyWidth;
+    if (charX >= contentRight) break;
+    if (charRight <= contentLeft) continue;
+    if (charX < contentLeft || charRight > contentRight) continue;
+    drawTinyGlyph(charX, textY, text[i], textColor, kTinyScale);
+  }
+  lastRenderKey_ = "";
+  return leftX + chipW;
+}
+
 int DisplayManager::drawChipText(const String &text, int leftX, int textY, uint16_t textColor,
                                  uint16_t bgColor, bool rightAlign, int rightX) {
   if (text.isEmpty()) return rightAlign ? rightX : leftX;
@@ -1270,11 +1306,11 @@ void DisplayManager::drawBatteryBadge(bool leftAlign) {
 
 void DisplayManager::drawFooter(const String &chapterLabel, uint8_t progressPercent) {
   const int textY = kDisplayHeight - kTinyGlyphHeight * kTinyScale - kFooterMarginBottom;
-  const int maxChapterWidth = std::max(0, kDisplayWidth / 2 - 2 * kFooterMarginX);
-  const String chapter = fitTinyText(chapterLabel.isEmpty() ? "START" : chapterLabel,
-                                     maxChapterWidth, kTinyScale);
+  const int maxChapterChipWidth = std::max(0, kDisplayWidth / 2 - 2 * kFooterMarginX);
+  const String chapter = chapterLabel.isEmpty() ? String("START") : chapterLabel;
   const uint16_t chipBg = blendOverBackground(footerColor(), kLibraryChipBgAlpha);
-  drawChipText(chapter, kFooterMarginX, textY, footerColor(), chipBg);
+  drawScrollingChipText(chapter, kFooterMarginX, textY, maxChapterChipWidth, footerColor(),
+                        chipBg);
 
   if (currentWpm_ > 0) {
     const String wpmLabel = String(currentWpm_) + "wpm";
@@ -1967,10 +2003,11 @@ void DisplayManager::renderContextView(const std::vector<ContextWord> &words,
 
   (void)progressPercent;
   const int textY = kDisplayHeight - kTinyGlyphHeight * kTinyScale - kFooterMarginBottom;
-  const String chapter = fitTinyText(chapterLabel.isEmpty() ? "START" : chapterLabel,
-                                     virtualWidth / 2 - 2 * kFooterMarginX, kTinyScale);
+  const int maxChapterChipWidth = std::max(0, virtualWidth / 2 - 2 * kFooterMarginX);
+  const String chapter = chapterLabel.isEmpty() ? String("START") : chapterLabel;
   const uint16_t chipBg = blendOverBackground(footerColor(), kLibraryChipBgAlpha);
-  drawChipText(chapter, kFooterMarginX, textY, footerColor(), chipBg);
+  drawScrollingChipText(chapter, kFooterMarginX, textY, maxChapterChipWidth, footerColor(),
+                        chipBg);
   if (!batteryLabel_.isEmpty()) {
     drawChipText(batteryLabel_, 0, textY, footerColor(), chipBg, true,
                  virtualWidth - kFooterMarginX);
@@ -2111,8 +2148,11 @@ void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemC
 
       const int titleMaxWidth = std::max(0, titleEndX - titleStartX);
       if (titleMaxWidth > 0 && !accentText.isEmpty()) {
-        if (titleW <= titleMaxWidth) {
-          drawTinyTextAt(accentText, titleStartX, y + 3, accentColor, kTinyScale);
+        const bool shouldMarquee =
+            accentText.length() > 36 && titleW > titleMaxWidth;
+        if (!shouldMarquee) {
+          const String fittedTitle = fitTinyText(accentText, titleMaxWidth, kTinyScale);
+          drawTinyTextAt(fittedTitle, titleStartX, y + 3, accentColor, kTinyScale);
         } else {
           const int charPitch = (kTinyGlyphWidth + kTinyGlyphSpacing) * kTinyScale;
           const int charBodyWidth = kTinyGlyphWidth * kTinyScale;

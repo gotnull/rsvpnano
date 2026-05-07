@@ -421,6 +421,11 @@ void App::update(uint32_t nowMs) {
     lastMenuRefreshMs_ = nowMs;
   }
 
+  if (state_ == AppState::Paused && (nowMs - lastReaderRefreshMs_) >= 33) {
+    renderReaderWord();
+    lastReaderRefreshMs_ = nowMs;
+  }
+
   const bool batteryChanged = updateBatteryStatus(nowMs);
   updateState(nowMs);
   updateReader(nowMs);
