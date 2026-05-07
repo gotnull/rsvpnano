@@ -1207,22 +1207,49 @@ void DisplayManager::drawBatteryBadge() {
     return;
   }
 
-  const int width = measureTinyTextWidth(batteryLabel_, kTinyScale);
-  const int x = std::max(kFooterMarginX, kDisplayWidth - kFooterMarginX - width);
-  drawTinyTextAt(batteryLabel_, x, kFooterMarginBottom, footerColor(), kTinyScale);
+  drawTinyTextAt(batteryLabel_, kFooterMarginX, kFooterMarginBottom, footerColor(), kTinyScale);
 }
 
 void DisplayManager::drawFooter(const String &chapterLabel, uint8_t progressPercent) {
-  const String percent = String(progressPercent) + "%";
-  const int y = kDisplayHeight - kTinyGlyphHeight * kTinyScale - kFooterMarginBottom;
-  const int percentWidth = measureTinyTextWidth(percent, kTinyScale);
-  const int rightX = std::max(kFooterMarginX, kDisplayWidth - kFooterMarginX - percentWidth);
-  const int maxChapterWidth = std::max(0, rightX - kFooterMarginX - 18);
+  const int textY = kDisplayHeight - kTinyGlyphHeight * kTinyScale - kFooterMarginBottom;
+  const int maxChapterWidth = std::max(0, kDisplayWidth - 2 * kFooterMarginX);
   const String chapter = fitTinyText(chapterLabel.isEmpty() ? "START" : chapterLabel,
-                                    maxChapterWidth, kTinyScale);
+                                     maxChapterWidth, kTinyScale);
+  drawTinyTextAt(chapter, kFooterMarginX, textY, footerColor(), kTinyScale);
 
-  drawTinyTextAt(chapter, kFooterMarginX, y, footerColor(), kTinyScale);
-  drawTinyTextAt(percent, rightX, y, footerColor(), kTinyScale);
+  const int batteryWidth =
+      batteryLabel_.isEmpty() ? 0 : measureTinyTextWidth(batteryLabel_, kTinyScale);
+  const int barHeight = 3;
+  const int barY = kFooterMarginBottom + (kTinyGlyphHeight * kTinyScale - barHeight) / 2;
+  const int barLeft = kFooterMarginX + batteryWidth + (batteryWidth > 0 ? 12 : 0);
+  const int barRight = kDisplayWidth - kFooterMarginX - kLibraryLetterStripWidth;
+  const int barWidth = std::max(0, barRight - barLeft);
+  if (barWidth <= 0) {
+    return;
+  }
+  const uint16_t trackColor = blendOverBackground(footerColor(), 60);
+  const uint16_t fillColor = focusColor();
+  const uint16_t tickColor = blendOverBackground(footerColor(), 200);
+
+  fillVirtualRect(barLeft, barY, barWidth, barHeight, trackColor);
+  const int filledWidth =
+      std::max(0, std::min(barWidth, (barWidth * static_cast<int>(progressPercent)) / 100));
+  if (filledWidth > 0) {
+    fillVirtualRect(barLeft, barY, filledWidth, barHeight, fillColor);
+  }
+  for (float fraction : chapterFractions_) {
+    if (fraction <= 0.0f || fraction >= 1.0f) continue;
+    const int tickX = barLeft + static_cast<int>(fraction * barWidth);
+    fillVirtualRect(tickX, barY - 1, 1, barHeight + 2, tickColor);
+  }
+}
+
+void DisplayManager::setChapterFractions(const std::vector<float> &fractions) {
+  if (chapterFractions_ == fractions) {
+    return;
+  }
+  chapterFractions_ = fractions;
+  lastRenderKey_ = "";
 }
 
 void DisplayManager::drawRsvpAnchorGuide(int anchorX, int textY, int textHeight) {
@@ -1951,7 +1978,17 @@ void DisplayManager::renderMenu(const std::vector<String> &items, size_t selecte
   flushScaledFrame(scale, virtualWidth, virtualHeight);
 }
 
-void DisplayManager::renderLibrary(const std::vector<LibraryItem> &items, size_t selectedIndex) {
+int DisplayManager::libraryLetterAtY(const std::vector<char> &letterAnchors, int y) {
+  if (letterAnchors.empty()) {
+    return -1;
+  }
+  const int n = static_cast<int>(letterAnchors.size());
+  const int slot = (n * y) / std::max(1, kDisplayHeight);
+  return std::max(0, std::min(n - 1, slot));
+}
+
+void DisplayManager::renderLibrary(const std::vector<LibraryItem> &items, size_t selectedIndex,
+                                   const std::vector<char> &letterAnchors) {
   if (items.empty()) {
     renderCenteredWord("LIBRARY");
     return;
@@ -1983,6 +2020,12 @@ void DisplayManager::renderLibrary(const std::vector<LibraryItem> &items, size_t
     for (const String &badge : item.badges) {
       renderKey += "~b";
       renderKey += badge;
+    }
+  }
+  if (!letterAnchors.empty()) {
+    renderKey += "|L";
+    for (char c : letterAnchors) {
+      renderKey += c;
     }
   }
 
@@ -2041,7 +2084,9 @@ void DisplayManager::renderLibrary(const std::vector<LibraryItem> &items, size_t
       }
     }
 
-    int chipsLeftEdge = virtualWidth - kLibraryChipsRightMargin;
+    const int rightContentEdge =
+        letterAnchors.empty() ? virtualWidth : (virtualWidth - kLibraryLetterStripWidth);
+    int chipsLeftEdge = rightContentEdge - kLibraryChipsRightMargin;
     const int chipY = rowY + (kLibraryRowHeight - chipH) / 2;
     int rightCursor = chipsLeftEdge;
     for (const String &label : chipLabels) {
@@ -2067,6 +2112,18 @@ void DisplayManager::renderLibrary(const std::vector<LibraryItem> &items, size_t
     drawTinyTextAt(title, kLibraryInsetX, rowY + kLibraryTitleYOffset, titleColor, kTinyScale);
     drawTinyTextAt(fitTinyText(item.subtitle, maxWidth, kTinyScale), kLibraryInsetX,
                    rowY + kLibrarySubtitleYOffset, subtitleColor, kTinyScale);
+  }
+
+  if (!letterAnchors.empty()) {
+    const int n = static_cast<int>(letterAnchors.size());
+    const int slotHeight = std::max(1, virtualHeight / std::max(1, n));
+    const int stripX = virtualWidth - kLibraryLetterStripWidth + 4;
+    const uint16_t letterColor = blendOverBackground(wordColor(), 200);
+    for (int i = 0; i < n; ++i) {
+      const int slotY = (slotHeight * i) + (slotHeight - kTinyGlyphHeight) / 2;
+      const String label = String(letterAnchors[i]);
+      drawTinyTextAt(label, stripX, slotY, letterColor, 1);
+    }
   }
 
   drawBatteryBadge();

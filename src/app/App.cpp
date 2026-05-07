@@ -42,6 +42,28 @@ constexpr size_t kBrightnessLevelCount = sizeof(kBrightnessLevels) / sizeof(kBri
 
 namespace {
 
+void computeLetterAnchors(const std::vector<DisplayManager::LibraryItem> &items,
+                          size_t firstSelectableIndex,
+                          std::vector<char> &letters,
+                          std::vector<size_t> &targets) {
+  letters.clear();
+  targets.clear();
+  char lastLetter = 0;
+  for (size_t i = firstSelectableIndex; i < items.size(); ++i) {
+    const String &t = items[i].title;
+    if (t.isEmpty()) continue;
+    char c = t[0];
+    if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+    if (!(c >= 'A' && c <= 'Z')) {
+      c = '#';
+    }
+    if (c == lastLetter) continue;
+    letters.push_back(c);
+    targets.push_back(i);
+    lastLetter = c;
+  }
+}
+
 enum MenuItem : size_t {
   MenuResume,
   MenuChapters,
@@ -958,6 +980,28 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs) {
   }
 
   if (absDeltaX <= static_cast<int>(kTapSlopPx) && absDeltaY <= static_cast<int>(kTapSlopPx)) {
+    const int stripX = BoardConfig::DISPLAY_WIDTH - DisplayManager::kLibraryLetterStripWidth;
+    if (pausedTouch_.startX >= stripX) {
+      if (menuScreen_ == MenuScreen::AuthorPicker && !authorPickerLetterAnchors_.empty()) {
+        const int letterIdx = DisplayManager::libraryLetterAtY(authorPickerLetterAnchors_,
+                                                               pausedTouch_.startY);
+        if (letterIdx >= 0 &&
+            static_cast<size_t>(letterIdx) < authorPickerLetterTargets_.size()) {
+          authorPickerSelectedIndex_ = authorPickerLetterTargets_[letterIdx];
+          renderAuthorPicker();
+          return;
+        }
+      } else if (menuScreen_ == MenuScreen::BookPicker && !bookPickerLetterAnchors_.empty()) {
+        const int letterIdx = DisplayManager::libraryLetterAtY(bookPickerLetterAnchors_,
+                                                               pausedTouch_.startY);
+        if (letterIdx >= 0 &&
+            static_cast<size_t>(letterIdx) < bookPickerLetterTargets_.size()) {
+          bookPickerSelectedIndex_ = bookPickerLetterTargets_[letterIdx];
+          renderBookPicker();
+          return;
+        }
+      }
+    }
     selectMenuItem(nowMs);
   }
 }
@@ -1445,11 +1489,14 @@ void App::openAuthorPicker() {
       authorPickerSelectedIndex_ == kAuthorPickerBackIndex) {
     authorPickerSelectedIndex_ = kAuthorPickerAllBooksIndex;
   }
+  computeLetterAnchors(authorMenuItems_, kAuthorPickerFirstAuthorIndex,
+                       authorPickerLetterAnchors_, authorPickerLetterTargets_);
   renderAuthorPicker();
 }
 
 void App::renderAuthorPicker() {
-  display_.renderLibrary(authorMenuItems_, authorPickerSelectedIndex_);
+  display_.renderLibrary(authorMenuItems_, authorPickerSelectedIndex_,
+                         authorPickerLetterAnchors_);
 }
 
 void App::selectAuthorPickerItem(uint32_t nowMs) {
@@ -1548,6 +1595,7 @@ void App::openBookPicker() {
       }
     }
   }
+  computeLetterAnchors(bookMenuItems_, 1, bookPickerLetterAnchors_, bookPickerLetterTargets_);
   renderBookPicker();
 }
 
@@ -1901,6 +1949,17 @@ bool App::loadBookAtIndex(size_t index, uint32_t nowMs, bool allowLegacyPosition
   currentBookTitle_ = book.title.isEmpty() ? displayNameForPath(loadedPath) : book.title;
   lastSavedWordIndex_ = static_cast<size_t>(-1);
   usingStorageBook_ = true;
+
+  std::vector<float> chapterFractions;
+  const size_t totalWords = reader_.wordCount();
+  if (totalWords > 0) {
+    chapterFractions.reserve(chapterMarkers_.size());
+    for (const ChapterMarker &marker : chapterMarkers_) {
+      chapterFractions.push_back(static_cast<float>(marker.wordIndex) /
+                                 static_cast<float>(totalWords));
+    }
+  }
+  display_.setChapterFractions(chapterFractions);
   preferences_.putString(kPrefBookPath, currentBookPath_);
   preferences_.putUInt(bookWordCountKey(currentBookPath_).c_str(),
                        static_cast<uint32_t>(reader_.wordCount()));
@@ -2131,7 +2190,7 @@ void App::renderTypographyTuning() {
 }
 
 void App::renderBookPicker() {
-  display_.renderLibrary(bookMenuItems_, bookPickerSelectedIndex_);
+  display_.renderLibrary(bookMenuItems_, bookPickerSelectedIndex_, bookPickerLetterAnchors_);
 }
 
 void App::renderChapterPicker() {

@@ -38,6 +38,7 @@ class DisplayManager {
   TypographyConfig typographyConfig() const;
   bool darkMode() const;
   bool nightMode() const;
+  void setChapterFractions(const std::vector<float> &fractions);
   void prepareForSleep();
   bool wakeFromSleep();
   void renderCenteredWord(const String &word, uint16_t color = 0xFFFF);
@@ -59,7 +60,11 @@ class DisplayManager {
                          uint8_t progressPercent = 0);
   void renderMenu(const char *const *items, size_t itemCount, size_t selectedIndex);
   void renderMenu(const std::vector<String> &items, size_t selectedIndex);
-  void renderLibrary(const std::vector<LibraryItem> &items, size_t selectedIndex);
+  void renderLibrary(const std::vector<LibraryItem> &items, size_t selectedIndex,
+                     const std::vector<char> &letterAnchors = std::vector<char>());
+
+  static constexpr int kLibraryLetterStripWidth = 22;
+  static int libraryLetterAtY(const std::vector<char> &letterAnchors, int y);
   void renderStatus(const String &title, const String &line1 = "", const String &line2 = "");
   void renderProgress(const String &title, const String &line1 = "", const String &line2 = "",
                       int progressPercent = -1);
@@ -120,4 +125,5 @@ class DisplayManager {
   bool nightMode_ = false;
   String lastRenderKey_;
   String batteryLabel_;
+  std::vector<float> chapterFractions_;
 };

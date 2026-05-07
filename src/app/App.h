@@ -200,6 +200,10 @@ class App {
   std::vector<DisplayManager::LibraryItem> authorMenuItems_;
   std::vector<String> authorPickerNames_;
   String activeAuthorFilter_;
+  std::vector<char> bookPickerLetterAnchors_;
+  std::vector<size_t> bookPickerLetterTargets_;
+  std::vector<char> authorPickerLetterAnchors_;
+  std::vector<size_t> authorPickerLetterTargets_;
   std::vector<String> chapterMenuItems_;
   std::vector<ChapterMarker> chapterMarkers_;
   std::vector<size_t> paragraphStarts_;
