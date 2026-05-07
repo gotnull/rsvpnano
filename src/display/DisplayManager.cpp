@@ -1363,9 +1363,20 @@ void DisplayManager::drawBatteryBadge(bool leftAlign) {
 
 void DisplayManager::drawFooter(const String &chapterLabel, uint8_t progressPercent) {
   const int textY = kDisplayHeight - kTinyGlyphHeight * kTinyScale - kFooterMarginBottom;
-  const int maxChapterChipWidth = std::max(0, kDisplayWidth / 2 - 2 * kFooterMarginX);
   const String chapter = chapterLabel.isEmpty() ? String("START") : chapterLabel;
   const uint16_t chipBg = blendOverBackground(footerColor(), kLibraryChipBgAlpha);
+
+  // Reserve room for the WPM chip on the right (if any) so the chapter chip
+  // can stretch across the rest of the bottom row.
+  int wpmChipReserve = 0;
+  if (currentWpm_ > 0) {
+    const String wpmLabel = String(currentWpm_) + "wpm";
+    const int wpmTextWidth = measureTinyTextWidth(wpmLabel, kTinyScale);
+    const int wpmChipPadX = 5;
+    wpmChipReserve = wpmTextWidth + wpmChipPadX * 2 + kFooterMarginX + 8;
+  }
+  const int maxChapterChipWidth =
+      std::max(0, kDisplayWidth - kFooterMarginX - wpmChipReserve);
   drawScrollingChipText(chapter, kFooterMarginX, textY, maxChapterChipWidth, footerColor(),
                         chipBg);
 

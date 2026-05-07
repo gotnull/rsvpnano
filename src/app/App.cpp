@@ -139,6 +139,8 @@ constexpr size_t kSettingsHomeDisplayIndex = 1;
 constexpr size_t kSettingsHomeTypographyIndex = 2;
 constexpr size_t kSettingsHomePacingIndex = 3;
 constexpr size_t kSettingsHomeNotificationsIndex = 4;
+constexpr size_t kSettingsHomeToneIndex = 5;
+constexpr size_t kSettingsHomeVolumeIndex = 6;
 constexpr size_t kSettingsDisplayThemeIndex = 1;
 constexpr size_t kSettingsDisplayBrightnessIndex = 2;
 constexpr size_t kSettingsDisplayPhantomWordsIndex = 3;
@@ -167,9 +169,14 @@ constexpr const char *kPrefBrightness = "bright";
 constexpr const char *kPrefDarkMode = "dark";
 constexpr const char *kPrefDisplayFlip = "flip";
 constexpr const char *kPrefNotifications = "notif";
+constexpr const char *kPrefNotifTone = "ntone";
+constexpr const char *kPrefNotifVolume = "nvol";
 constexpr uint32_t kNotificationPollIntervalMs = 5UL * 60UL * 1000UL;
 constexpr uint32_t kNotificationBannerVisibleMs = 6000;
 constexpr uint32_t kNotificationFirstPollDelayMs = 30UL * 1000UL;
+constexpr uint8_t kNotificationVolumeStep = 20;
+constexpr const char *kBuiltinNokiaRtttl =
+    "Nokia:d=4,o=5,b=180:8e6,8d6,f#,g#,8c#6,8b,d,e,8b,8a,c#,e,2a";
 constexpr const char *kPrefNightMode = "night";
 constexpr const char *kPrefPhantomWords = "phantom_on";
 constexpr const char *kPrefReaderFontSize = "font_size";
@@ -320,6 +327,10 @@ void App::begin() {
   touch_.setUiRotated(displayFlipped_);
   notificationsEnabled_ = preferences_.getBool(kPrefNotifications, true);
   notifications_.setEnabled(notificationsEnabled_);
+  notificationVolume_ = preferences_.getUChar(kPrefNotifVolume, notificationVolume_);
+  if (notificationVolume_ > 100) notificationVolume_ = 100;
+  audio_.setVolumePercent(notificationVolume_);
+  notificationTone_ = preferences_.getString(kPrefNotifTone, "");
   applyDisplayPreferences(0, false);
   applyTypographySettings(0, false);
   applyPacingSettings();
@@ -355,6 +366,9 @@ void App::begin() {
     const auto &cfg = ota_.config();
     notifications_.configure(cfg.ssid, cfg.password, cfg.notificationsUrl,
                              cfg.notificationsToken);
+  }
+  if (storageReady) {
+    ringtoneNames_ = storage_.listRingtoneNames();
   }
   nextNotificationPollMs_ = millis() + kNotificationFirstPollDelayMs;
   const uint16_t savedWpm = preferences_.getUShort(kPrefWpm, reader_.wpm());
@@ -1343,6 +1357,12 @@ void App::selectSettingsItem(uint32_t nowMs) {
       case kSettingsHomeNotificationsIndex:
         toggleNotificationsEnabled(nowMs);
         return;
+      case kSettingsHomeToneIndex:
+        cycleNotificationTone(nowMs);
+        return;
+      case kSettingsHomeVolumeIndex:
+        cycleNotificationVolume(nowMs);
+        return;
       default:
         return;
     }
@@ -1504,6 +1524,8 @@ void App::rebuildSettingsMenuItems() {
     settingsMenuItems_.push_back("Word pacing");
     settingsMenuItems_.push_back(String("Notifications: ") +
                                  (notificationsEnabled_ ? "On" : "Off"));
+    settingsMenuItems_.push_back(String("Tone: ") + currentNotificationToneLabel());
+    settingsMenuItems_.push_back(String("Volume: ") + String(notificationVolume_) + "%");
   } else if (menuScreen_ == MenuScreen::SettingsDisplay) {
     settingsMenuItems_.push_back("Back");
     settingsMenuItems_.push_back("Theme: " + themeModeLabel());
@@ -2019,6 +2041,65 @@ void App::showNotificationBanner(uint32_t nowMs, const String &title, const Stri
   notificationBannerUntilMs_ = nowMs + kNotificationBannerVisibleMs;
   display_.renderStatus(title.isEmpty() ? "Notification" : title,
                         body, "Tap to dismiss");
+  playNotificationTone();
+}
+
+void App::playNotificationTone() {
+  if (notificationVolume_ == 0) return;
+  audio_.setVolumePercent(notificationVolume_);
+  String rtttl;
+  if (!notificationTone_.isEmpty() && storage_.loadRingtone(notificationTone_, rtttl)) {
+    audio_.playRtttl(rtttl);
+  } else {
+    audio_.playRtttl(kBuiltinNokiaRtttl);
+  }
+}
+
+String App::currentNotificationToneLabel() const {
+  if (notificationTone_.isEmpty()) return "Nokia (built-in)";
+  return notificationTone_;
+}
+
+void App::cycleNotificationTone(uint32_t nowMs) {
+  (void)nowMs;
+  if (ringtoneNames_.empty()) {
+    ringtoneNames_ = storage_.listRingtoneNames();
+  }
+  // Cycle order: built-in Nokia → each SD ringtone → loop.
+  if (notificationTone_.isEmpty()) {
+    if (!ringtoneNames_.empty()) {
+      notificationTone_ = ringtoneNames_.front();
+    }
+  } else {
+    int idx = -1;
+    for (size_t i = 0; i < ringtoneNames_.size(); ++i) {
+      if (ringtoneNames_[i] == notificationTone_) {
+        idx = static_cast<int>(i);
+        break;
+      }
+    }
+    if (idx < 0 || idx + 1 >= static_cast<int>(ringtoneNames_.size())) {
+      notificationTone_ = "";
+    } else {
+      notificationTone_ = ringtoneNames_[idx + 1];
+    }
+  }
+  preferences_.putString(kPrefNotifTone, notificationTone_);
+  rebuildSettingsMenuItems();
+  renderSettings();
+  playNotificationTone();
+}
+
+void App::cycleNotificationVolume(uint32_t nowMs) {
+  (void)nowMs;
+  uint8_t next = notificationVolume_ + kNotificationVolumeStep;
+  if (next > 100) next = 0;
+  notificationVolume_ = next;
+  preferences_.putUChar(kPrefNotifVolume, notificationVolume_);
+  audio_.setVolumePercent(notificationVolume_);
+  rebuildSettingsMenuItems();
+  renderSettings();
+  if (notificationVolume_ > 0) playNotificationTone();
 }
 
 void App::toggleNotificationsEnabled(uint32_t nowMs) {

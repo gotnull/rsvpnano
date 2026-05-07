@@ -1222,6 +1222,62 @@ String StorageManager::bookAuthorName(size_t index) const {
   return bookMeta(index).author;
 }
 
+std::vector<String> StorageManager::listRingtoneNames() const {
+  std::vector<String> names;
+  if (!mounted_) return names;
+  File dir = SD_MMC.open("/ringtones");
+  if (!dir || !dir.isDirectory()) {
+    if (dir) dir.close();
+    return names;
+  }
+  File entry = dir.openNextFile();
+  while (entry) {
+    if (!entry.isDirectory()) {
+      String name = String(entry.name());
+      const int slash = name.lastIndexOf('/');
+      if (slash >= 0) name = name.substring(slash + 1);
+      if (name.endsWith(".rtttl") || name.endsWith(".RTTTL")) {
+        name = name.substring(0, name.length() - 6);
+        names.push_back(name);
+      }
+    }
+    entry.close();
+    entry = dir.openNextFile();
+    yield();
+  }
+  dir.close();
+  std::sort(names.begin(), names.end(), [](const String &a, const String &b) {
+    String al = a;
+    String bl = b;
+    al.toLowerCase();
+    bl.toLowerCase();
+    return al < bl;
+  });
+  return names;
+}
+
+bool StorageManager::loadRingtone(const String &name, String &rtttlOut) const {
+  rtttlOut = "";
+  if (!mounted_ || name.isEmpty()) return false;
+  String path = "/ringtones/";
+  path += name;
+  if (!path.endsWith(".rtttl") && !path.endsWith(".RTTTL")) {
+    path += ".rtttl";
+  }
+  File f = SD_MMC.open(path);
+  if (!f || f.isDirectory()) {
+    if (f) f.close();
+    return false;
+  }
+  while (f.available()) {
+    rtttlOut += static_cast<char>(f.read());
+    if (rtttlOut.length() > 4096) break;
+  }
+  f.close();
+  rtttlOut.trim();
+  return !rtttlOut.isEmpty();
+}
+
 bool StorageManager::bookStats(size_t index, uint32_t &words, uint32_t &chapters) const {
   const String path = bookPath(index);
   if (path.isEmpty() || !hasRsvpExtension(path)) {

@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "app/AppState.h"
+#include "audio/AudioManager.h"
 #include "display/DisplayManager.h"
 #include "input/ButtonHandler.h"
 #include "input/TouchHandler.h"
@@ -105,9 +106,13 @@ class App {
   void exitUsbTransfer(uint32_t nowMs);
   void runOtaUpdate(uint32_t nowMs);
   void toggleNotificationsEnabled(uint32_t nowMs);
+  void cycleNotificationTone(uint32_t nowMs);
+  void cycleNotificationVolume(uint32_t nowMs);
   void pollNotifications(uint32_t nowMs);
   void showNotificationBanner(uint32_t nowMs, const String &title, const String &body);
   void renderNotificationBanner();
+  void playNotificationTone();
+  String currentNotificationToneLabel() const;
   void enterPowerOff(uint32_t nowMs);
   void enterSleep(uint32_t nowMs);
   void wakeFromSleep();
@@ -180,6 +185,7 @@ class App {
   UsbMassStorageManager usbTransfer_;
   OtaManager ota_;
   NotificationsManager notifications_;
+  AudioManager audio_;
   Preferences preferences_;
   PausedTouchSession pausedTouch_;
   TouchIntent pausedTouchIntent_ = TouchIntent::None;
@@ -250,5 +256,8 @@ class App {
   bool nightMode_ = false;
   bool displayFlipped_ = true;
   bool notificationsEnabled_ = true;
+  uint8_t notificationVolume_ = 60;
+  String notificationTone_;
+  std::vector<String> ringtoneNames_;
   DisplayManager::TypographyConfig typographyConfig_;
 };

@@ -28,6 +28,11 @@ constexpr int PIN_SD_CMD = 39;
 constexpr int PIN_SD_D0 = 40;
 constexpr int PIN_I2C_SDA = 47;
 constexpr int PIN_I2C_SCL = 48;
+constexpr int PIN_AUDIO_MCLK = 7;
+constexpr int PIN_AUDIO_BCLK = 15;
+constexpr int PIN_AUDIO_LRCK = 46;
+constexpr int PIN_AUDIO_DOUT = 45;
+constexpr uint8_t ES8311_I2C_ADDR = 0x18;
 constexpr int PIN_TOUCH_SDA = 17;
 constexpr int PIN_TOUCH_SCL = 18;
 
