@@ -9,6 +9,7 @@
 #include "display/DisplayManager.h"
 #include "input/ButtonHandler.h"
 #include "input/TouchHandler.h"
+#include "network/BookDownloadManager.h"
 #include "network/NotificationsManager.h"
 #include "network/OtaManager.h"
 #include "reader/ReadingLoop.h"
@@ -47,12 +48,14 @@ class App {
     SettingsHome,
     SettingsDisplay,
     SettingsPacing,
+    SettingsReadingSounds,
     TypographyTuning,
     AuthorPicker,
     BookPicker,
     ChapterPicker,
     RestartConfirm,
     TonePicker,
+    RemoteBookPicker,
   };
 
   void setState(AppState nextState, uint32_t nowMs);
@@ -110,6 +113,9 @@ class App {
   void openTonePicker();
   void selectTonePickerItem(uint32_t nowMs);
   void renderTonePicker();
+  void openRemoteBookPicker(uint32_t nowMs);
+  void selectRemoteBookPickerItem(uint32_t nowMs);
+  void renderRemoteBookPicker();
   void cycleNotificationVolume(uint32_t nowMs);
   void pollNotifications(uint32_t nowMs);
   void showNotificationBanner(uint32_t nowMs, const String &title, const String &body);
@@ -189,6 +195,10 @@ class App {
   OtaManager ota_;
   NotificationsManager notifications_;
   AudioManager audio_;
+  BookDownloadManager bookDownloader_;
+  std::vector<BookDownloadManager::RemoteBook> remoteBooks_;
+  size_t remoteBookSelectedIndex_ = 0;
+  std::vector<DisplayManager::LibraryItem> remoteBookMenuItems_;
   Preferences preferences_;
   PausedTouchSession pausedTouch_;
   TouchIntent pausedTouchIntent_ = TouchIntent::None;
@@ -262,6 +272,10 @@ class App {
   bool nightMode_ = false;
   bool displayFlipped_ = true;
   bool notificationsEnabled_ = true;
+  bool soundEnabled_ = true;             // master audio switch — gates all playback
+  bool chapterChimeEnabled_ = false;     // play a tone when crossing chapter boundary
+  bool paragraphChimeEnabled_ = false;   // play a tone when crossing paragraph boundary
+  bool pageChimeEnabled_ = false;        // play a tone every kPageWordCount words
   uint8_t notificationVolume_ = 60;
   String notificationTone_;
   std::vector<String> ringtoneNames_;

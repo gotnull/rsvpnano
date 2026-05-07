@@ -1108,6 +1108,17 @@ String StorageManager::bookPath(size_t index) const {
   return bookPaths_[index];
 }
 
+bool StorageManager::wasConvertedFromEpub(size_t index) const {
+  if (index >= bookPaths_.size()) {
+    return false;
+  }
+  const String epubPath = epubSiblingPathForRsvp(bookPaths_[index]);
+  File f = SD_MMC.open(epubPath);
+  const bool exists = f && !f.isDirectory() && f.size() > 0;
+  if (f) f.close();
+  return exists;
+}
+
 namespace {
 
 void readRsvpHeader(const String &path, StorageManager::BookMeta &meta) {

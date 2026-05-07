@@ -79,6 +79,7 @@ namespace
     MenuResumeFrom,
     MenuChapters,
     MenuChangeBook,
+    MenuDownloadBooks,
     MenuSettings,
     MenuRestart,
 #if RSVP_USB_TRANSFER_ENABLED
@@ -94,6 +95,7 @@ namespace
       "Resume from",
       "Chapters",
       "Library",
+      "Download books",
       "Settings",
       "Reboot",
 #if RSVP_USB_TRANSFER_ENABLED
@@ -149,9 +151,14 @@ namespace
   constexpr size_t kSettingsHomeDisplayIndex = 1;
   constexpr size_t kSettingsHomeTypographyIndex = 2;
   constexpr size_t kSettingsHomePacingIndex = 3;
-  constexpr size_t kSettingsHomeNotificationsIndex = 4;
-  constexpr size_t kSettingsHomeToneIndex = 5;
-  constexpr size_t kSettingsHomeVolumeIndex = 6;
+  constexpr size_t kSettingsHomeSoundIndex = 4;
+  constexpr size_t kSettingsHomeNotificationsIndex = 5;
+  constexpr size_t kSettingsHomeToneIndex = 6;
+  constexpr size_t kSettingsHomeVolumeIndex = 7;
+  constexpr size_t kSettingsHomeReadingSoundsIndex = 8;
+  constexpr size_t kSettingsReadingSoundsChapterIndex = 1;
+  constexpr size_t kSettingsReadingSoundsParagraphIndex = 2;
+  constexpr size_t kSettingsReadingSoundsPageIndex = 3;
   constexpr size_t kSettingsDisplayThemeIndex = 1;
   constexpr size_t kSettingsDisplayBrightnessIndex = 2;
   constexpr size_t kSettingsDisplayPhantomWordsIndex = 3;
@@ -183,6 +190,13 @@ namespace
   constexpr const char *kPrefNotifTone = "ntone";
   constexpr const char *kPrefNotifVolume = "nvol";
   constexpr const char *kPrefNotifLastTs = "nlast";
+  constexpr const char *kPrefSoundEnabled = "snden";
+  constexpr const char *kPrefChapterChime = "chchm";
+  constexpr const char *kPrefParagraphChime = "pgchm";
+  constexpr const char *kPrefPageChime = "pgnchm";
+  // RSVP has no inherent page concept; this is the average paperback page
+  // size in words and lets us emit a "page" chime at predictable intervals.
+  constexpr size_t kPageWordCount = 250;
   constexpr uint32_t kNotificationPollIntervalMs = 5UL * 60UL * 1000UL;
   constexpr uint32_t kNotificationBannerVisibleMs = 6000;
   constexpr uint32_t kNotificationFirstPollDelayMs = 30UL * 1000UL;
@@ -310,6 +324,7 @@ void App::begin()
   storage_.setStatusCallback(&App::handleStorageStatus, this);
   ota_.setStatusCallback(&App::handleStorageStatus, this);
   notifications_.setStatusCallback(&App::handleStorageStatus, this);
+  bookDownloader_.setStatusCallback(&App::handleStorageStatus, this);
   preferences_.begin(kPrefsNamespace, false);
   brightnessLevelIndex_ = preferences_.getUChar(kPrefBrightness, brightnessLevelIndex_);
   if (brightnessLevelIndex_ >= kBrightnessLevelCount)
@@ -373,6 +388,10 @@ void App::begin()
   audio_.setVolumePercent(notificationVolume_);
   notificationTone_ = preferences_.getString(kPrefNotifTone, "");
   notifications_.setLastSeenTs(preferences_.getUInt(kPrefNotifLastTs, 0));
+  soundEnabled_ = preferences_.getBool(kPrefSoundEnabled, soundEnabled_);
+  chapterChimeEnabled_ = preferences_.getBool(kPrefChapterChime, chapterChimeEnabled_);
+  paragraphChimeEnabled_ = preferences_.getBool(kPrefParagraphChime, paragraphChimeEnabled_);
+  pageChimeEnabled_ = preferences_.getBool(kPrefPageChime, pageChimeEnabled_);
   applyDisplayPreferences(0, false);
   applyTypographySettings(0, false);
   applyPacingSettings();
@@ -412,6 +431,7 @@ void App::begin()
     const auto &cfg = ota_.config();
     notifications_.configure(cfg.ssid, cfg.password, cfg.notificationsUrl,
                              cfg.notificationsToken);
+    bookDownloader_.configure(cfg.ssid, cfg.password, "ccpaging", "books");
   }
   if (storageReady)
   {
@@ -723,9 +743,44 @@ void App::updateReader(uint32_t nowMs)
     return;
   }
 
+  const size_t previousWordIndex = reader_.currentIndex();
   if (!reader_.update(nowMs))
   {
     return;
+  }
+
+  // Chapter / paragraph chimes — fire once per crossing. We compare the
+  // current index against the previous one and ask the chapter / paragraph
+  // tables whether we just crossed a boundary, instead of polling each frame
+  // (which would re-trigger every render until the index moves on).
+  const size_t newIndex = reader_.currentIndex();
+  if (newIndex != previousWordIndex && soundEnabled_)
+  {
+    const bool crossedChapter =
+        chapterChimeEnabled_ &&
+        std::any_of(chapterMarkers_.begin(), chapterMarkers_.end(),
+                    [&](const ChapterMarker &m) {
+                      return m.wordIndex > previousWordIndex && m.wordIndex <= newIndex;
+                    });
+    const bool crossedParagraph =
+        paragraphChimeEnabled_ &&
+        std::any_of(paragraphStarts_.begin(), paragraphStarts_.end(),
+                    [&](size_t idx) { return idx > previousWordIndex && idx <= newIndex; });
+    // "Page" boundaries are every kPageWordCount words. We fire a chime when
+    // the floor-divided page index changes between previous and new word.
+    const bool crossedPage =
+        pageChimeEnabled_ &&
+        (previousWordIndex / kPageWordCount) != (newIndex / kPageWordCount);
+    if (crossedChapter || crossedParagraph || crossedPage)
+    {
+      // Three distinct timbres so chapter/page/paragraph are distinguishable
+      // by ear. Chapter is highest, page mid, paragraph lowest.
+      audio_.setVolumePercent(notificationVolume_);
+      const char *rtttl = crossedChapter ? "chap:d=8,o=6,b=180:e,g"
+                          : crossedPage  ? "page:d=8,o=6,b=180:d"
+                                         : "para:d=16,o=6,b=180:c";
+      audio_.playRtttl(rtttl);
+    }
   }
 
   renderReaderWord();
@@ -837,6 +892,13 @@ void App::toggleMenuFromPowerButton(uint32_t nowMs)
   {
     if (menuScreen_ == MenuScreen::Main)
     {
+      // Load full book content if we only have metadata, otherwise the reader's
+      // loadedWords_ is empty and wordAt() falls back to the built-in demo word
+      // array — chip stays right (from metadata) but words are wrong.
+      if (bookMetaOnly_)
+      {
+        ensureCurrentBookLoaded(nowMs);
+      }
       setState(AppState::Paused, nowMs);
     }
     else
@@ -886,7 +948,7 @@ void App::applyDisplayPreferences(uint32_t nowMs, bool rerender)
   if (state_ == AppState::Menu)
   {
     if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
-        menuScreen_ == MenuScreen::SettingsPacing)
+        menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsReadingSounds)
     {
       rebuildSettingsMenuItems();
       renderSettings();
@@ -1435,7 +1497,7 @@ void App::moveMenuSelection(int direction)
   size_t *selectedIndex = &menuSelectedIndex_;
   size_t itemCount = MenuItemCount;
   if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
-      menuScreen_ == MenuScreen::SettingsPacing)
+      menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsReadingSounds)
   {
     selectedIndex = &settingsSelectedIndex_;
     itemCount = settingsMenuItems_.size();
@@ -1465,6 +1527,11 @@ void App::moveMenuSelection(int direction)
     selectedIndex = &tonePickerSelectedIndex_;
     itemCount = toneMenuItems_.size();
   }
+  else if (menuScreen_ == MenuScreen::RemoteBookPicker)
+  {
+    selectedIndex = &remoteBookSelectedIndex_;
+    itemCount = remoteBookMenuItems_.size();
+  }
   else if (menuScreen_ == MenuScreen::RestartConfirm)
   {
     selectedIndex = &restartConfirmSelectedIndex_;
@@ -1492,7 +1559,7 @@ void App::moveMenuSelection(int direction)
 
   renderMenu();
   if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
-      menuScreen_ == MenuScreen::SettingsPacing)
+      menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsReadingSounds)
   {
     Serial.printf("[settings] selected=%s\n", settingsMenuItems_[settingsSelectedIndex_].c_str());
   }
@@ -1529,7 +1596,7 @@ void App::moveMenuSelection(int direction)
 void App::selectMenuItem(uint32_t nowMs)
 {
   if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
-      menuScreen_ == MenuScreen::SettingsPacing)
+      menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsReadingSounds)
   {
     selectSettingsItem(nowMs);
     return;
@@ -1557,6 +1624,11 @@ void App::selectMenuItem(uint32_t nowMs)
   if (menuScreen_ == MenuScreen::TonePicker)
   {
     selectTonePickerItem(nowMs);
+    return;
+  }
+  if (menuScreen_ == MenuScreen::RemoteBookPicker)
+  {
+    selectRemoteBookPickerItem(nowMs);
     return;
   }
   if (menuScreen_ == MenuScreen::RestartConfirm)
@@ -1595,6 +1667,9 @@ void App::selectMenuItem(uint32_t nowMs)
     activeAuthorFilter_ = "";
     recentOnlyFilter_ = false;
     openAuthorPicker();
+    return;
+  case MenuDownloadBooks:
+    openRemoteBookPicker(nowMs);
     return;
   case MenuResumeFrom:
     activeAuthorFilter_ = "";
@@ -1648,6 +1723,12 @@ void App::selectSettingsItem(uint32_t nowMs)
       rebuildSettingsMenuItems();
       renderSettings();
       return;
+    case kSettingsHomeSoundIndex:
+      soundEnabled_ = !soundEnabled_;
+      preferences_.putBool(kPrefSoundEnabled, soundEnabled_);
+      rebuildSettingsMenuItems();
+      renderSettings();
+      return;
     case kSettingsHomeNotificationsIndex:
       toggleNotificationsEnabled(nowMs);
       return;
@@ -1656,6 +1737,45 @@ void App::selectSettingsItem(uint32_t nowMs)
       return;
     case kSettingsHomeVolumeIndex:
       cycleNotificationVolume(nowMs);
+      return;
+    case kSettingsHomeReadingSoundsIndex:
+      settingsSelectedIndex_ = kSettingsReadingSoundsChapterIndex;
+      menuScreen_ = MenuScreen::SettingsReadingSounds;
+      rebuildSettingsMenuItems();
+      renderSettings();
+      return;
+    default:
+      return;
+    }
+  }
+
+  if (menuScreen_ == MenuScreen::SettingsReadingSounds)
+  {
+    switch (settingsSelectedIndex_)
+    {
+    case kSettingsBackIndex:
+      settingsSelectedIndex_ = kSettingsHomeReadingSoundsIndex;
+      menuScreen_ = MenuScreen::SettingsHome;
+      rebuildSettingsMenuItems();
+      renderSettings();
+      return;
+    case kSettingsReadingSoundsChapterIndex:
+      chapterChimeEnabled_ = !chapterChimeEnabled_;
+      preferences_.putBool(kPrefChapterChime, chapterChimeEnabled_);
+      rebuildSettingsMenuItems();
+      renderSettings();
+      return;
+    case kSettingsReadingSoundsParagraphIndex:
+      paragraphChimeEnabled_ = !paragraphChimeEnabled_;
+      preferences_.putBool(kPrefParagraphChime, paragraphChimeEnabled_);
+      rebuildSettingsMenuItems();
+      renderSettings();
+      return;
+    case kSettingsReadingSoundsPageIndex:
+      pageChimeEnabled_ = !pageChimeEnabled_;
+      preferences_.putBool(kPrefPageChime, pageChimeEnabled_);
+      rebuildSettingsMenuItems();
+      renderSettings();
       return;
     default:
       return;
@@ -1832,10 +1952,22 @@ void App::rebuildSettingsMenuItems()
     settingsMenuItems_.push_back("Display");
     settingsMenuItems_.push_back("Typography tune");
     settingsMenuItems_.push_back("Word pacing");
+    settingsMenuItems_.push_back(String("Sound: ") + (soundEnabled_ ? "On" : "Off"));
     settingsMenuItems_.push_back(String("Notifications: ") +
                                  (notificationsEnabled_ ? "On" : "Off"));
     settingsMenuItems_.push_back(String("Tone (") + currentNotificationToneLabel() + ")");
     settingsMenuItems_.push_back(String("Volume: ") + String(notificationVolume_) + "%");
+    settingsMenuItems_.push_back("Reading sounds");
+  }
+  else if (menuScreen_ == MenuScreen::SettingsReadingSounds)
+  {
+    settingsMenuItems_.push_back("Back");
+    settingsMenuItems_.push_back(String("End of chapter: ") +
+                                 (chapterChimeEnabled_ ? "On" : "Off"));
+    settingsMenuItems_.push_back(String("End of paragraph: ") +
+                                 (paragraphChimeEnabled_ ? "On" : "Off"));
+    settingsMenuItems_.push_back(String("End of page: ") +
+                                 (pageChimeEnabled_ ? "On" : "Off"));
   }
   else if (menuScreen_ == MenuScreen::SettingsDisplay)
   {
@@ -1847,7 +1979,7 @@ void App::rebuildSettingsMenuItems()
     settingsMenuItems_.push_back("Typography tune");
     settingsMenuItems_.push_back(String("Flip display: ") + (displayFlipped_ ? "On" : "Off"));
   }
-  else if (menuScreen_ == MenuScreen::SettingsPacing)
+  else if (menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsReadingSounds)
   {
     settingsMenuItems_.push_back("Back");
     settingsMenuItems_.push_back("Long words: " + pacingLevelLabel(pacingLongWordLevelIndex_));
@@ -2093,6 +2225,14 @@ void App::openBookPicker()
   sortedBookIndices.reserve(count);
   for (size_t i = 0; i < count; ++i)
   {
+    // Library shows only books that originated from an EPUB (have a sibling
+    // .epub file on the SD). Direct .rsvp drops are hidden — keeps the picker
+    // focused on user-curated books and on those downloaded via the in-app
+    // GitHub fetch path, both of which leave their .epub source on disk.
+    if (!storage_.wasConvertedFromEpub(i))
+    {
+      continue;
+    }
     if (recentOnlyFilter_)
     {
       if (bookRecentSequenceByIndex(i) == 0)
@@ -2458,6 +2598,10 @@ void App::showNotificationBanner(uint32_t nowMs, const String &title, const Stri
 
 void App::playNotificationTone(uint32_t maxDurationMs)
 {
+  // Master mute — Sound: Off in Settings short-circuits every audio path
+  // (volume preview, notifications, reading-sound chimes).
+  if (!soundEnabled_)
+    return;
   if (notificationVolume_ == 0)
     return;
   audio_.setVolumePercent(notificationVolume_);
@@ -2595,6 +2739,99 @@ void App::selectTonePickerItem(uint32_t nowMs)
   menuScreen_ = MenuScreen::SettingsHome;
   rebuildSettingsMenuItems();
   renderSettings();
+}
+
+namespace
+{
+constexpr size_t kRemoteBookPickerBackIndex = 0;
+constexpr size_t kRemoteBookPickerFirstBookIndex = 1;
+}  // namespace
+
+void App::openRemoteBookPicker(uint32_t nowMs)
+{
+  (void)nowMs;
+  display_.renderProgress("Books", "Connecting WiFi", "ccpaging/books", 5);
+  remoteBooks_.clear();
+  remoteBookMenuItems_.clear();
+  if (!bookDownloader_.listAvailable(remoteBooks_))
+  {
+    display_.renderStatus("Books", "Index failed",
+                          bookDownloader_.lastError().c_str());
+    delay(1500);
+    menuScreen_ = MenuScreen::Main;
+    renderMainMenu();
+    return;
+  }
+
+  DisplayManager::LibraryItem backItem;
+  backItem.title = "Back";
+  remoteBookMenuItems_.push_back(backItem);
+  for (const auto &book : remoteBooks_)
+  {
+    DisplayManager::LibraryItem item;
+    item.title = book.displayName;
+    if (book.sizeBytes > 0)
+    {
+      item.badges.push_back(String(book.sizeBytes / 1024) + "K");
+    }
+    remoteBookMenuItems_.push_back(item);
+  }
+  remoteBookSelectedIndex_ = remoteBooks_.empty() ? kRemoteBookPickerBackIndex
+                                                  : kRemoteBookPickerFirstBookIndex;
+  menuScreen_ = MenuScreen::RemoteBookPicker;
+  renderRemoteBookPicker();
+}
+
+void App::renderRemoteBookPicker()
+{
+  display_.renderLibrary(remoteBookMenuItems_, remoteBookSelectedIndex_);
+}
+
+void App::selectRemoteBookPickerItem(uint32_t nowMs)
+{
+  if (remoteBookSelectedIndex_ == kRemoteBookPickerBackIndex)
+  {
+    menuScreen_ = MenuScreen::Main;
+    renderMainMenu();
+    return;
+  }
+  const size_t bookIdx = remoteBookSelectedIndex_ - kRemoteBookPickerFirstBookIndex;
+  if (bookIdx >= remoteBooks_.size())
+  {
+    return;
+  }
+  const auto &book = remoteBooks_[bookIdx];
+  // Drop the original directory prefix so everything lands flat under /books.
+  String filename = book.path;
+  const int slash = filename.lastIndexOf('/');
+  if (slash >= 0) filename = filename.substring(slash + 1);
+  const String destPath = String("/books/") + filename;
+
+  if (!bookDownloader_.download(book, destPath))
+  {
+    display_.renderStatus("Books", "Download failed",
+                          bookDownloader_.lastError().c_str());
+    delay(1500);
+    renderRemoteBookPicker();
+    return;
+  }
+  display_.renderProgress("Books", "Converting", filename.c_str(), 95);
+  String rsvpPath;
+  if (!storage_.ensureEpubConverted(destPath, rsvpPath))
+  {
+    display_.renderStatus("Books", "Convert failed", filename.c_str());
+    delay(1500);
+    renderRemoteBookPicker();
+    return;
+  }
+  // Refresh in-memory book list so the picker can find the new title.
+  storage_.listBooks();
+  bookProgressInfo_.clear();
+  display_.renderStatus("Books", "Saved", filename.c_str());
+  delay(900);
+  menuScreen_ = MenuScreen::Main;
+  renderMainMenu();
+  (void)nowMs;
 }
 
 void App::cycleNotificationVolume(uint32_t nowMs)
@@ -3084,7 +3321,7 @@ int App::findBookIndexByPath(const String &path) const
 void App::renderMenu()
 {
   if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
-      menuScreen_ == MenuScreen::SettingsPacing)
+      menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsReadingSounds)
   {
     renderSettings();
   }
@@ -3107,6 +3344,10 @@ void App::renderMenu()
   else if (menuScreen_ == MenuScreen::TonePicker)
   {
     renderTonePicker();
+  }
+  else if (menuScreen_ == MenuScreen::RemoteBookPicker)
+  {
+    renderRemoteBookPicker();
   }
   else if (menuScreen_ == MenuScreen::RestartConfirm)
   {
@@ -3176,6 +3417,7 @@ void App::renderMainMenu()
   chevrons[MenuResumeFrom] = true;
   chevrons[MenuChapters] = true;
   chevrons[MenuChangeBook] = true;
+  chevrons[MenuDownloadBooks] = true;
   chevrons[MenuSettings] = true;
   chevrons[MenuRestart] = true;
   display_.renderMenuWithAccent(kMenuItems, MenuItemCount, menuSelectedIndex_, MenuResume,
@@ -3206,6 +3448,10 @@ void App::renderSettings()
     if (settingsMenuItems_.size() > kSettingsHomeToneIndex)
     {
       chevrons[kSettingsHomeToneIndex] = true;
+    }
+    if (settingsMenuItems_.size() > kSettingsHomeReadingSoundsIndex)
+    {
+      chevrons[kSettingsHomeReadingSoundsIndex] = true;
     }
   }
   else if (menuScreen_ == MenuScreen::SettingsDisplay)
@@ -3511,10 +3757,18 @@ String App::phantomAfterText() const
 void App::renderReaderWord()
 {
   contextViewVisible_ = false;
+  const String currentWord = reader_.currentWord();
+  // Skip rendering when the reader is in a transient empty state — without
+  // this, the user briefly sees just the anchor-guide marks with nothing
+  // between them on certain menu→reader transitions.
+  if (currentWord.isEmpty())
+  {
+    return;
+  }
   const bool showFooter = state_ != AppState::Playing;
   const String beforeText = phantomWordsEnabled_ ? phantomBeforeText() : "";
   const String afterText = phantomWordsEnabled_ ? phantomAfterText() : "";
-  display_.renderPhantomRsvpWord(beforeText, reader_.currentWord(), afterText,
+  display_.renderPhantomRsvpWord(beforeText, currentWord, afterText,
                                  readerFontSizeIndex_, currentChapterLabel(),
                                  readingProgressPercent(), showFooter);
 }
