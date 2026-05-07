@@ -6,6 +6,7 @@
 #   tools/sync_books.sh --dest <path>  # explicit destination (e.g. /Volumes/RSVP)
 #   tools/sync_books.sh --force        # re-convert even if .rsvp already exists
 #   tools/sync_books.sh --pull-extras  # also clone configured book repos and copy unique .epub files
+#   tools/sync_books.sh --exit-device  # after sync, eject SD and send EXIT-MSC over serial so the device leaves USB transfer mode
 #
 # Source files (.epub, .txt, .html, .md, ...) live in assets/books/.
 # Converted .rsvp files are written next to their sources, then copied
@@ -22,6 +23,7 @@ fallback_dest="$repo_root/build/sd_root"
 dest_override=""
 force_flag=""
 pull_extras=0
+exit_device=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dest)
@@ -41,8 +43,12 @@ while [[ $# -gt 0 ]]; do
       pull_extras=1
       shift
       ;;
+    --exit-device)
+      exit_device=1
+      shift
+      ;;
     -h|--help)
-      sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -118,5 +124,29 @@ fi
 
 echo "==> copying ${#rsvp_files[@]} .rsvp file(s) to $books_dest"
 rsync -av --human-readable "${rsvp_files[@]}" "$books_dest/"
+
+if [[ "$exit_device" == "1" ]]; then
+  sync
+  echo "==> ejecting SD volume $dest"
+  diskutil eject "$dest" || true
+
+  shopt -s nullglob
+  for cdc in /dev/cu.usbmodem*; do
+    [[ "$cdc" == */cu.usbmodem113101 ]] && continue   # ignore unrelated host CDC
+    echo "==> sending EXIT-MSC to $cdc"
+    "$python_bin" - "$cdc" <<'PY'
+import serial, sys, time
+port = sys.argv[1]
+try:
+  with serial.Serial(port, 115200, timeout=1) as s:
+    s.write(b"EXIT-MSC\n")
+    s.flush()
+    time.sleep(0.2)
+except Exception as e:
+  print(f"[exit-device] {port}: {e}")
+PY
+  done
+  shopt -u nullglob
+fi
 
 echo "done."

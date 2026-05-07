@@ -312,16 +312,19 @@ void App::begin() {
 
   if (storageReady && restoreSavedBook(bootStartedMs_)) {
     usingStorageBook_ = true;
-  } else if (storageReady && loadBookAtIndex(0, bootStartedMs_)) {
-    usingStorageBook_ = true;
   } else {
     usingStorageBook_ = false;
     chapterMarkers_.clear();
     paragraphStarts_.clear();
     currentBookPath_ = "";
-    currentBookTitle_ = "Demo";
+    currentBookTitle_ = storageReady && storage_.bookCount() > 0 ? "Pick a book" : "Demo";
     reader_.begin(bootStartedMs_);
-    Serial.println("[app] using built-in demo text");
+    if (storageReady && storage_.bookCount() > 0) {
+      Serial.printf("[app] %u books available; awaiting selection\n",
+                    static_cast<unsigned int>(storage_.bookCount()));
+    } else {
+      Serial.println("[app] using built-in demo text");
+    }
   }
 
   Serial.printf("[app] WPM=%u interval=%lu ms\n", reader_.wpm(),
@@ -1367,7 +1370,6 @@ String App::typographyTuningValueLabel() const {
 }
 
 void App::openAuthorPicker() {
-  storage_.refreshBooks();
   authorMenuItems_.clear();
   authorPickerNames_.clear();
 
@@ -1378,6 +1380,9 @@ void App::openAuthorPicker() {
   counts.reserve(count);
 
   for (size_t i = 0; i < count; ++i) {
+    if ((i & 0x07) == 0) {
+      yield();
+    }
     String name = storage_.bookAuthorName(i);
     name.trim();
     if (name.isEmpty()) {
@@ -1473,7 +1478,6 @@ void App::openBookPickerForAuthor(const String &author) {
 }
 
 void App::openBookPicker() {
-  storage_.refreshBooks();
   bookMenuItems_.clear();
   bookPickerBookIndices_.clear();
   DisplayManager::LibraryItem bookBackItem;
@@ -1523,7 +1527,11 @@ void App::openBookPicker() {
                      return false;
                    });
 
+  size_t pickerYieldCounter = 0;
   for (size_t bookIndex : sortedBookIndices) {
+    if ((pickerYieldCounter++ & 0x07) == 0) {
+      yield();
+    }
     bookPickerBookIndices_.push_back(bookIndex);
     bookMenuItems_.push_back(libraryItemForBook(bookIndex));
   }
@@ -1565,6 +1573,13 @@ void App::selectBookPickerItem(uint32_t nowMs) {
 
   const size_t bookIndex = bookPickerBookIndices_[rowIndex];
   saveReadingPosition(true);
+
+  String loadingTitle = storage_.bookDisplayName(bookIndex);
+  if (loadingTitle.isEmpty()) {
+    loadingTitle = "Book";
+  }
+  display_.renderProgress("Loading", loadingTitle.c_str(), "Reading from SD", 0);
+
   if (!loadBookAtIndex(bookIndex, nowMs)) {
     Serial.println("[book-picker] Failed to load selected book");
     renderBookPicker();
@@ -1685,14 +1700,36 @@ void App::updateUsbTransfer(uint32_t nowMs) {
     return;
   }
 
+  bool serialExitRequested = false;
+  static String serialBuffer;
+  while (Serial.available() > 0) {
+    const char c = static_cast<char>(Serial.read());
+    if (c == '\r') {
+      continue;
+    }
+    if (c == '\n') {
+      serialBuffer.trim();
+      if (serialBuffer.equalsIgnoreCase("EXIT-MSC")) {
+        serialExitRequested = true;
+        Serial.println("[app] EXIT-MSC received over serial");
+      }
+      serialBuffer = "";
+      continue;
+    }
+    serialBuffer += c;
+    if (serialBuffer.length() > 64) {
+      serialBuffer = "";
+    }
+  }
+
   const bool bootExitRequested =
       button_.isHeld() && nowMs - button_.lastEdgeMs() >= kUsbTransferExitHoldMs;
-  if (!usbTransfer_.ejected() && !bootExitRequested) {
+  if (!usbTransfer_.ejected() && !bootExitRequested && !serialExitRequested) {
     return;
   }
 
-  if (bootExitRequested && !usbTransfer_.ejected()) {
-    Serial.println("[app] leaving USB transfer by BOOT hold; make sure host was ejected first");
+  if ((bootExitRequested || serialExitRequested) && !usbTransfer_.ejected()) {
+    Serial.println("[app] leaving USB transfer; assuming host writes are flushed");
   }
 
   exitUsbTransfer(nowMs);

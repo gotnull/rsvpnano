@@ -11,6 +11,14 @@ class StorageManager {
   using StatusCallback = void (*)(void *context, const char *title, const char *line1,
                                   const char *line2, int progressPercent);
 
+  struct BookMeta {
+    String title;
+    String author;
+    uint32_t words = 0;
+    uint32_t chapters = 0;
+    bool loaded = false;
+  };
+
   void setStatusCallback(StatusCallback callback, void *context);
   bool begin();
   void end();
@@ -28,15 +36,18 @@ class StorageManager {
                      size_t *loadedIndex = nullptr);
 
  private:
-  bool parseFile(File &file, BookContent &book, bool rsvpFormat);
+  bool parseFile(File &file, BookContent &book, bool rsvpFormat,
+                 const String &progressLabel = "");
   bool ensureEpubConverted(const String &epubPath, String &rsvpPath);
   void refreshBookPaths();
   void notifyStatus(const char *title, const char *line1 = "", const char *line2 = "",
                     int progressPercent = -1);
+  const BookMeta &bookMeta(size_t index) const;
 
   bool mounted_ = false;
   bool listedOnce_ = false;
   StatusCallback statusCallback_ = nullptr;
   void *statusContext_ = nullptr;
   std::vector<String> bookPaths_;
+  mutable std::vector<BookMeta> bookMeta_;
 };

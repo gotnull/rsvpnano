@@ -1065,6 +1065,7 @@ void StorageManager::end() {
   mounted_ = false;
   listedOnce_ = false;
   bookPaths_.clear();
+  bookMeta_.clear();
 }
 
 void StorageManager::listBooks() {
@@ -1107,17 +1108,106 @@ String StorageManager::bookPath(size_t index) const {
   return bookPaths_[index];
 }
 
+namespace {
+
+void readRsvpHeader(const String &path, StorageManager::BookMeta &meta) {
+  meta.title = "";
+  meta.author = "";
+  meta.words = 0;
+  meta.chapters = 0;
+  meta.loaded = true;
+
+  File file = SD_MMC.open(path);
+  if (!file || file.isDirectory()) {
+    if (file) {
+      file.close();
+    }
+    return;
+  }
+
+  String line;
+  size_t scannedLines = 0;
+  while (file.available() && scannedLines < 16) {
+    const char c = static_cast<char>(file.read());
+    if (c == '\r') {
+      continue;
+    }
+    if (c != '\n') {
+      line += c;
+      if (line.length() > 256) {
+        line = "";
+      }
+      continue;
+    }
+
+    String trimmed = stripBom(line);
+    line = "";
+    ++scannedLines;
+    if (trimmed.isEmpty()) {
+      continue;
+    }
+    if (!trimmed.startsWith("@")) {
+      break;
+    }
+
+    String lowered = trimmed;
+    lowered.toLowerCase();
+    if (prefixHasBoundary(lowered, "@title")) {
+      meta.title = directiveValue(trimmed, "@title");
+    } else if (prefixHasBoundary(lowered, "@author")) {
+      meta.author = directiveValue(trimmed, "@author");
+    } else if (prefixHasBoundary(lowered, "@stats")) {
+      const String value = directiveValue(trimmed, "@stats");
+      int start = 0;
+      const int len = value.length();
+      while (start < len) {
+        int sp = value.indexOf(' ', start);
+        if (sp < 0) sp = len;
+        const String token = value.substring(start, sp);
+        if (token.startsWith("words=")) {
+          meta.words = static_cast<uint32_t>(token.substring(6).toInt());
+        } else if (token.startsWith("chapters=")) {
+          meta.chapters = static_cast<uint32_t>(token.substring(9).toInt());
+        }
+        start = sp + 1;
+      }
+    }
+  }
+
+  file.close();
+}
+
+}  // namespace
+
+const StorageManager::BookMeta &StorageManager::bookMeta(size_t index) const {
+  static BookMeta empty;
+  if (index >= bookPaths_.size()) {
+    return empty;
+  }
+  if (bookMeta_.size() != bookPaths_.size()) {
+    bookMeta_.assign(bookPaths_.size(), BookMeta{});
+  }
+  BookMeta &meta = bookMeta_[index];
+  if (!meta.loaded) {
+    const String path = bookPaths_[index];
+    if (hasRsvpExtension(path)) {
+      readRsvpHeader(path, meta);
+    } else {
+      meta.loaded = true;
+    }
+  }
+  return meta;
+}
+
 String StorageManager::bookDisplayName(size_t index) const {
   const String path = bookPath(index);
   if (path.isEmpty()) {
     return "";
   }
-
-  const String title = readRsvpDirectiveValue(path, "@title");
-  if (!title.isEmpty()) {
-    return title;
+  const BookMeta &meta = bookMeta(index);
+  if (!meta.title.isEmpty()) {
+    return meta.title;
   }
-
   return normalizeDisplayText(displayNameWithoutExtension(path));
 }
 
@@ -1126,12 +1216,10 @@ String StorageManager::bookAuthorName(size_t index) const {
   if (path.isEmpty()) {
     return "";
   }
-
   if (hasEpubExtension(path)) {
     return epubLibraryLabel(path);
   }
-
-  return readRsvpDirectiveValue(path, "@author");
+  return bookMeta(index).author;
 }
 
 bool StorageManager::bookStats(size_t index, uint32_t &words, uint32_t &chapters) const {
@@ -1139,28 +1227,17 @@ bool StorageManager::bookStats(size_t index, uint32_t &words, uint32_t &chapters
   if (path.isEmpty() || !hasRsvpExtension(path)) {
     return false;
   }
-  const String value = readRsvpDirectiveValue(path, "@stats");
-  if (value.isEmpty()) {
+  const BookMeta &meta = bookMeta(index);
+  if (meta.words == 0 && meta.chapters == 0) {
     return false;
   }
-
-  bool gotAny = false;
-  int start = 0;
-  const int len = value.length();
-  while (start < len) {
-    int sp = value.indexOf(' ', start);
-    if (sp < 0) sp = len;
-    const String token = value.substring(start, sp);
-    if (token.startsWith("words=")) {
-      words = static_cast<uint32_t>(token.substring(6).toInt());
-      gotAny = true;
-    } else if (token.startsWith("chapters=")) {
-      chapters = static_cast<uint32_t>(token.substring(9).toInt());
-      gotAny = true;
-    }
-    start = sp + 1;
+  if (meta.words > 0) {
+    words = meta.words;
   }
-  return gotAny;
+  if (meta.chapters > 0) {
+    chapters = meta.chapters;
+  }
+  return true;
 }
 
 bool StorageManager::ensureEpubConverted(const String &epubPath, String &rsvpPath) {
@@ -1242,7 +1319,9 @@ bool StorageManager::loadBookContent(size_t index, BookContent &book, String *lo
     return false;
   }
 
-  refreshBookPaths();
+  if (bookPaths_.empty()) {
+    refreshBookPaths();
+  }
   if (bookPaths_.empty()) {
     Serial.println("[storage] No readable .rsvp, .txt, or .epub books found under /books");
     return false;
@@ -1284,13 +1363,18 @@ bool StorageManager::loadBookContent(size_t index, BookContent &book, String *lo
       continue;
     }
 
-    if (parseFile(entry, book, hasRsvpExtension(path))) {
+    String progressLabel = bookMeta(parsedIndex).title;
+    if (progressLabel.isEmpty()) {
+      progressLabel = normalizeDisplayText(displayNameWithoutExtension(path));
+    }
+    if (parseFile(entry, book, hasRsvpExtension(path), progressLabel)) {
       if (book.title.isEmpty()) {
         book.title = normalizeDisplayText(displayNameWithoutExtension(path));
       }
       Serial.printf("[storage] Loaded %u words and %u chapters from %s\n",
                     static_cast<unsigned int>(book.words.size()),
                     static_cast<unsigned int>(book.chapters.size()), path.c_str());
+      notifyStatus("Loading", progressLabel.c_str(), "Ready", 100);
       if (loadedPath != nullptr) {
         *loadedPath = path;
       }
@@ -1324,11 +1408,13 @@ bool StorageManager::loadBookWords(size_t index, std::vector<String> &words, Str
 void StorageManager::refreshBookPaths() {
   if (!mounted_) {
     bookPaths_.clear();
+    bookMeta_.clear();
     return;
   }
 
   notifyStatus("SD", "Reading library", "", 96);
   bookPaths_ = collectBookPaths();
+  bookMeta_.assign(bookPaths_.size(), BookMeta{});
 
   size_t rsvpCount = 0;
   size_t textCount = 0;
@@ -1349,13 +1435,34 @@ void StorageManager::refreshBookPaths() {
                 static_cast<unsigned int>(pendingEpubCount));
 }
 
-bool StorageManager::parseFile(File &file, BookContent &book, bool rsvpFormat) {
+bool StorageManager::parseFile(File &file, BookContent &book, bool rsvpFormat,
+                               const String &progressLabel) {
   book.clear();
   String line;
   bool paragraphPending = true;
+  size_t bytesRead = 0;
+  const size_t totalBytes = static_cast<size_t>(file.size());
+  const bool emitProgress = totalBytes > 0 && !progressLabel.isEmpty();
+  uint32_t lastProgressMs = millis();
+  if (emitProgress) {
+    notifyStatus("Loading", progressLabel.c_str(), "Reading from SD", 0);
+  }
 
   while (file.available()) {
     const char c = static_cast<char>(file.read());
+    if ((++bytesRead & 0x0FFF) == 0) {
+      yield();
+      if (emitProgress) {
+        const uint32_t now = millis();
+        if (now - lastProgressMs >= 200) {
+          const int percent =
+              static_cast<int>((static_cast<uint64_t>(bytesRead) * 100ULL) / totalBytes);
+          notifyStatus("Loading", progressLabel.c_str(), "Reading from SD",
+                       std::min(percent, 99));
+          lastProgressMs = now;
+        }
+      }
+    }
 
     if (c == '\r') {
       continue;
