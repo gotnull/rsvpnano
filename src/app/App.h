@@ -107,6 +107,8 @@ class App {
   void enterSleep(uint32_t nowMs);
   void wakeFromSleep();
   bool restoreSavedBook(uint32_t nowMs);
+  bool prepareSavedBookMeta();
+  bool ensureCurrentBookLoaded(uint32_t nowMs);
   void saveReadingPosition(bool force = false);
   bool loadBookAtIndex(size_t index, uint32_t nowMs, bool allowLegacyPositionFallback = false);
   String bookPositionKey(const String &bookPath) const;
@@ -228,6 +230,7 @@ class App {
   bool contextPreviewWindowValid_ = false;
   bool wpmFeedbackVisible_ = false;
   bool usingStorageBook_ = false;
+  bool bookMetaOnly_ = false;
   bool phantomWordsEnabled_ = true;
   bool darkMode_ = true;
   bool nightMode_ = false;

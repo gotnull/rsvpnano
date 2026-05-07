@@ -345,10 +345,26 @@ void App::begin() {
   const uint16_t savedWpm = preferences_.getUShort(kPrefWpm, reader_.wpm());
   reader_.setWpm(savedWpm);
 
-  if (storageReady && restoreSavedBook(bootStartedMs_)) {
+  const uint8_t savedAppState = preferences_.getUChar(kPrefAppState,
+                                                      static_cast<uint8_t>(AppState::Paused));
+  const bool deferContentLoad =
+      (savedAppState == static_cast<uint8_t>(AppState::Menu));
+
+  bool haveBook = false;
+  if (storageReady) {
+    if (deferContentLoad) {
+      haveBook = prepareSavedBookMeta();
+    } else {
+      haveBook = restoreSavedBook(bootStartedMs_);
+    }
+  }
+
+  if (haveBook && !deferContentLoad) {
     usingStorageBook_ = true;
-  } else {
+    bookMetaOnly_ = false;
+  } else if (!haveBook) {
     usingStorageBook_ = false;
+    bookMetaOnly_ = false;
     chapterMarkers_.clear();
     paragraphStarts_.clear();
     currentBookPath_ = "";
@@ -1159,6 +1175,9 @@ void App::selectMenuItem(uint32_t nowMs) {
 
   switch (menuSelectedIndex_) {
     case MenuResume:
+      if (bookMetaOnly_) {
+        ensureCurrentBookLoaded(nowMs);
+      }
       setState(AppState::Paused, nowMs);
       return;
     case MenuRestart:
@@ -1887,8 +1906,10 @@ void App::runOtaUpdate(uint32_t nowMs) {
   saveReadingPosition(true);
   display_.renderProgress("OTA", "Starting update", "Reading wifi.json", 0);
   if (!ota_.loadConfigFromSd()) {
-    display_.renderStatus("OTA failed", ota_.lastError().c_str(), "Add wifi.json to SD");
-    delay(2500);
+    display_.renderStatus("OTA needs setup",
+                          "Create /wifi.json on SD",
+                          "ssid, password, url fields");
+    delay(4000);
     menuScreen_ = MenuScreen::Main;
     setState(AppState::Menu, nowMs);
     return;
@@ -2009,6 +2030,43 @@ bool App::restoreSavedBook(uint32_t nowMs) {
   return true;
 }
 
+bool App::prepareSavedBookMeta() {
+  const String savedPath = preferences_.getString(kPrefBookPath, "");
+  if (savedPath.isEmpty()) {
+    return false;
+  }
+  const int idx = findBookIndexByPath(savedPath);
+  if (idx < 0) {
+    Serial.printf("[app] saved book not found for meta-only: %s\n", savedPath.c_str());
+    return false;
+  }
+  currentBookIndex_ = static_cast<size_t>(idx);
+  currentBookPath_ = savedPath;
+  currentBookTitle_ = storage_.bookDisplayName(currentBookIndex_);
+  if (currentBookTitle_.isEmpty()) {
+    currentBookTitle_ = "Resume";
+  }
+  bookMetaOnly_ = true;
+  usingStorageBook_ = false;
+  Serial.printf("[app] meta-only restored: %s (idx=%u)\n", currentBookPath_.c_str(),
+                static_cast<unsigned int>(currentBookIndex_));
+  return true;
+}
+
+bool App::ensureCurrentBookLoaded(uint32_t nowMs) {
+  if (usingStorageBook_) {
+    return true;
+  }
+  if (!bookMetaOnly_ || currentBookPath_.isEmpty()) {
+    return false;
+  }
+  if (loadBookAtIndex(currentBookIndex_, nowMs, true)) {
+    bookMetaOnly_ = false;
+    return true;
+  }
+  return false;
+}
+
 void App::saveReadingPosition(bool force) {
   if (!usingStorageBook_ || currentBookPath_.isEmpty()) {
     return;
@@ -2048,6 +2106,7 @@ bool App::loadBookAtIndex(size_t index, uint32_t nowMs, bool allowLegacyPosition
   currentBookTitle_ = book.title.isEmpty() ? displayNameForPath(loadedPath) : book.title;
   lastSavedWordIndex_ = static_cast<size_t>(-1);
   usingStorageBook_ = true;
+  bookMetaOnly_ = false;
 
   std::vector<float> chapterFractions;
   const size_t totalWords = reader_.wordCount();
@@ -2244,15 +2303,28 @@ void App::renderMenu() {
 
 void App::renderMainMenu() {
   String accent;
-  if (usingStorageBook_ && !currentBookTitle_.isEmpty()) {
+  const bool haveBookContext =
+      (usingStorageBook_ || bookMetaOnly_) && !currentBookTitle_.isEmpty();
+  if (haveBookContext) {
     accent = currentBookTitle_;
-    const uint8_t pct = readingProgressPercent();
-    if (pct > 0) {
-      accent += " - ";
-      accent += String(pct) + "%";
+
+    size_t total = 0;
+    size_t cur = 0;
+    if (usingStorageBook_) {
+      total = reader_.wordCount();
+      cur = reader_.currentIndex();
+    } else {
+      const BookProgressInfo &info = progressInfoFor(currentBookIndex_);
+      total = info.savedWordCount;
+      cur = info.savedWordIndex;
     }
-    const size_t total = reader_.wordCount();
-    const size_t cur = reader_.currentIndex();
+    if (total > 0 && cur <= total) {
+      const uint32_t pct = (static_cast<uint64_t>(cur) * 100ULL) / total;
+      if (pct > 0) {
+        accent += " - ";
+        accent += String(pct) + "%";
+      }
+    }
     const uint16_t wpm = reader_.wpm();
     if (total > cur && wpm > 0) {
       const uint32_t remainingWords = static_cast<uint32_t>(total - cur);
