@@ -74,6 +74,7 @@ enum MenuItem : size_t {
 #if RSVP_USB_TRANSFER_ENABLED
   MenuUsbTransfer,
 #endif
+  MenuOtaUpdate,
   MenuPowerOff,
   MenuItemCount,
 };
@@ -88,6 +89,7 @@ constexpr const char *kMenuItems[] = {
 #if RSVP_USB_TRANSFER_ENABLED
     "USB transfer",
 #endif
+    "OTA update",
     "Power off",
 };
 
@@ -263,6 +265,7 @@ void App::begin() {
   powerButtonReleasedSinceBoot_ = !powerButton_.isHeld();
   powerButtonLongPressHandled_ = false;
   storage_.setStatusCallback(&App::handleStorageStatus, this);
+  ota_.setStatusCallback(&App::handleStorageStatus, this);
   preferences_.begin(kPrefsNamespace, false);
   brightnessLevelIndex_ = preferences_.getUChar(kPrefBrightness, brightnessLevelIndex_);
   if (brightnessLevelIndex_ >= kBrightnessLevelCount) {
@@ -1122,6 +1125,9 @@ void App::selectMenuItem(uint32_t nowMs) {
     case MenuRestart:
       openRestartConfirm();
       return;
+    case MenuOtaUpdate:
+      runOtaUpdate(nowMs);
+      return;
     case MenuPowerOff:
       enterPowerOff(nowMs);
       return;
@@ -1836,6 +1842,25 @@ void App::exitUsbTransfer(uint32_t nowMs) {
 
   menuScreen_ = MenuScreen::Main;
   setState(AppState::Paused, nowMs);
+}
+
+void App::runOtaUpdate(uint32_t nowMs) {
+  saveReadingPosition(true);
+  display_.renderProgress("OTA", "Starting update", "Reading wifi.json", 0);
+  if (!ota_.loadConfigFromSd()) {
+    display_.renderStatus("OTA failed", ota_.lastError().c_str(), "Add wifi.json to SD");
+    delay(2500);
+    menuScreen_ = MenuScreen::Main;
+    setState(AppState::Menu, nowMs);
+    return;
+  }
+  const bool ok = ota_.runUpdate();
+  if (!ok) {
+    display_.renderStatus("OTA failed", ota_.lastError().c_str(), "Returning to menu");
+    delay(2500);
+    menuScreen_ = MenuScreen::Main;
+    setState(AppState::Menu, nowMs);
+  }
 }
 
 void App::enterPowerOff(uint32_t nowMs) {

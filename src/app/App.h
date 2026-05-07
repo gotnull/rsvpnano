@@ -8,6 +8,7 @@
 #include "display/DisplayManager.h"
 #include "input/ButtonHandler.h"
 #include "input/TouchHandler.h"
+#include "network/OtaManager.h"
 #include "reader/ReadingLoop.h"
 #include "storage/StorageManager.h"
 #include "usb/UsbMassStorageManager.h"
@@ -101,6 +102,7 @@ class App {
   void enterUsbTransfer(uint32_t nowMs);
   void updateUsbTransfer(uint32_t nowMs);
   void exitUsbTransfer(uint32_t nowMs);
+  void runOtaUpdate(uint32_t nowMs);
   void enterPowerOff(uint32_t nowMs);
   void enterSleep(uint32_t nowMs);
   void wakeFromSleep();
@@ -169,6 +171,7 @@ class App {
   TouchHandler touch_;
   StorageManager storage_;
   UsbMassStorageManager usbTransfer_;
+  OtaManager ota_;
   Preferences preferences_;
   PausedTouchSession pausedTouch_;
   TouchIntent pausedTouchIntent_ = TouchIntent::None;
