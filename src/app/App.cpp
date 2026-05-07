@@ -444,13 +444,16 @@ void App::update(uint32_t nowMs) {
     }
   }
 
-  if (state_ == AppState::Menu && menuScreen_ == MenuScreen::Main &&
+  const bool bannerActive = notificationBannerUntilMs_ != 0;
+
+  if (!bannerActive && state_ == AppState::Menu && menuScreen_ == MenuScreen::Main &&
       (nowMs - lastMenuRefreshMs_) >= 33) {
     renderMainMenu();
     lastMenuRefreshMs_ = nowMs;
   }
 
-  if (state_ == AppState::Paused && (nowMs - lastReaderRefreshMs_) >= 33) {
+  if (!bannerActive && state_ == AppState::Paused &&
+      (nowMs - lastReaderRefreshMs_) >= 33) {
     renderReaderWord();
     lastReaderRefreshMs_ = nowMs;
   }
@@ -461,16 +464,7 @@ void App::update(uint32_t nowMs) {
     nextNotificationPollMs_ = nowMs + kNotificationPollIntervalMs;
   }
 
-  if (notificationBannerUntilMs_ != 0 && nowMs >= notificationBannerUntilMs_) {
-    notificationBannerUntilMs_ = 0;
-    notificationBannerTitle_ = "";
-    notificationBannerBody_ = "";
-    if (state_ == AppState::Paused) {
-      renderReaderWord();
-    } else if (state_ == AppState::Menu) {
-      renderMenu();
-    }
-  }
+  // Banner now stays up until the user taps to dismiss; no time-based clear.
 
   const bool batteryChanged = updateBatteryStatus(nowMs);
   updateState(nowMs);
@@ -938,6 +932,26 @@ void App::handleTouch(uint32_t nowMs) {
   Serial.printf("[touch] phase=%s touched=%u x=%u y=%u gesture=%u state=%s\n",
                 touchPhaseName(ev.phase), ev.touched ? 1 : 0, ev.x, ev.y, ev.gesture,
                 stateName(state_));
+
+  // Notification banner consumes any tap. The first End event dismisses it and
+  // we don't pass the gesture to the underlying state, so the user doesn't
+  // accidentally trigger the menu/reader behind it.
+  if (notificationBannerUntilMs_ != 0) {
+    if (ev.phase == TouchPhase::End) {
+      notificationBannerUntilMs_ = 0;
+      notificationBannerTitle_ = "";
+      notificationBannerBody_ = "";
+      pausedTouch_.active = false;
+      pausedTouchIntent_ = TouchIntent::None;
+      if (state_ == AppState::Menu) {
+        renderMenu();
+      } else {
+        renderReaderWord();
+      }
+    }
+    return;
+  }
+
   if (state_ == AppState::Menu) {
     applyMenuTouchGesture(ev, nowMs);
   } else {
@@ -2038,7 +2052,8 @@ void App::pollNotifications(uint32_t nowMs) {
 void App::showNotificationBanner(uint32_t nowMs, const String &title, const String &body) {
   notificationBannerTitle_ = title;
   notificationBannerBody_ = body;
-  notificationBannerUntilMs_ = nowMs + kNotificationBannerVisibleMs;
+  // Sentinel: any non-zero value means "banner active". We dismiss explicitly on tap.
+  notificationBannerUntilMs_ = nowMs == 0 ? 1 : nowMs;
   display_.renderStatus(title.isEmpty() ? "Notification" : title,
                         body, "Tap to dismiss");
   playNotificationTone();
