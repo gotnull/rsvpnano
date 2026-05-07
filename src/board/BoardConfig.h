@@ -39,6 +39,10 @@ constexpr int PIN_TOUCH_SCL = 18;
 constexpr int TCA9554_ADDRESS = 0x20;
 constexpr uint8_t TCA9554_PIN_BATTERY_ADC_ENABLE = 1;
 constexpr uint8_t TCA9554_PIN_SYS_EN = 6;
+// NS4150B speaker amp CTRL pin (NS_MODE on the schematic). Must be driven
+// HIGH to un-shutdown the amp; left floating, the chip is silent regardless of
+// what the codec is putting out — which is exactly what was happening for us.
+constexpr uint8_t TCA9554_PIN_AUDIO_AMP_EN = 7;
 
 struct BatteryStatus {
   bool present = false;
@@ -50,5 +54,8 @@ void begin();
 void lightSleepUntilBootButton();
 bool readBatteryStatus(BatteryStatus &status);
 bool releaseBatteryPowerHold();
+// Set a TCA9554 IO pin as a driven output at the given level. Other pins are
+// preserved (read-modify-write). Returns false if the I2C transaction failed.
+bool configureTca9554OutputPin(uint8_t pin, bool high);
 
 }  // namespace BoardConfig

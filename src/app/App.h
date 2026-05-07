@@ -114,7 +114,7 @@ class App {
   void pollNotifications(uint32_t nowMs);
   void showNotificationBanner(uint32_t nowMs, const String &title, const String &body);
   void renderNotificationBanner();
-  void playNotificationTone();
+  void playNotificationTone(uint32_t maxDurationMs = 0);
   String currentNotificationToneLabel() const;
   void enterPowerOff(uint32_t nowMs);
   void enterSleep(uint32_t nowMs);

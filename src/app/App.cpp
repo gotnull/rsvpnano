@@ -28,9 +28,9 @@ constexpr uint32_t kPowerOffReleaseWaitMs = 4000;
 constexpr uint32_t kBatterySampleIntervalMs = 180000;
 constexpr uint32_t kTouchPlayHoldMs = 180;
 constexpr uint32_t kThemeToggleHoldMs = 900;
-constexpr uint16_t kSwipeThresholdPx = 40;
-constexpr uint16_t kAxisBiasPx = 12;
-constexpr uint16_t kTapSlopPx = 18;
+constexpr uint16_t kSwipeThresholdPx = 28;
+constexpr uint16_t kAxisBiasPx = 8;
+constexpr uint16_t kTapSlopPx = 12;
 constexpr uint16_t kScrubStepPx = 22;
 constexpr int kMaxScrubStepsPerGesture = 96;
 constexpr size_t kContextPreviewWindowWords = 288;
@@ -95,7 +95,7 @@ namespace
       "Chapters",
       "Library",
       "Settings",
-      "Restart",
+      "Reboot",
 #if RSVP_USB_TRANSFER_ENABLED
       "USB transfer",
 #endif
@@ -139,9 +139,9 @@ namespace
   };
 
   constexpr const char *kRestartConfirmItems[] = {
-      "Are you sure?",
-      "No, keep place",
-      "Yes, restart",
+      "Reboot now?",
+      "No",
+      "Yes, reboot",
   };
 
   constexpr size_t kRestartConfirmHeaderRows = 1;
@@ -152,6 +152,7 @@ namespace
   constexpr size_t kSettingsHomeNotificationsIndex = 4;
   constexpr size_t kSettingsHomeToneIndex = 5;
   constexpr size_t kSettingsHomeVolumeIndex = 6;
+  constexpr size_t kSettingsHomeTestSoundIndex = 7;
   constexpr size_t kSettingsDisplayThemeIndex = 1;
   constexpr size_t kSettingsDisplayBrightnessIndex = 2;
   constexpr size_t kSettingsDisplayPhantomWordsIndex = 3;
@@ -295,6 +296,11 @@ App::App() : button_(BoardConfig::PIN_BOOT_BUTTON), powerButton_(BoardConfig::PI
 
 void App::begin()
 {
+#ifdef RSVP_BUILD_TAG
+  Serial.printf("[boot] rsvpnano build %s\n", RSVP_BUILD_TAG);
+#else
+  Serial.println("[boot] rsvpnano build (no tag)");
+#endif
   BoardConfig::begin();
   button_.begin();
   powerButton_.begin();
@@ -358,6 +364,13 @@ void App::begin()
   notificationVolume_ = preferences_.getUChar(kPrefNotifVolume, notificationVolume_);
   if (notificationVolume_ > 100)
     notificationVolume_ = 100;
+  // Rescue users who got stuck on 0% from the old wrap-to-zero cycle. Muting
+  // lives on the Notifications toggle now, not on volume.
+  if (notificationVolume_ == 0)
+  {
+    notificationVolume_ = 60;
+    preferences_.putUChar(kPrefNotifVolume, notificationVolume_);
+  }
   audio_.setVolumePercent(notificationVolume_);
   notificationTone_ = preferences_.getString(kPrefNotifTone, "");
   notifications_.setLastSeenTs(preferences_.getUInt(kPrefNotifLastTs, 0));
@@ -1645,6 +1658,16 @@ void App::selectSettingsItem(uint32_t nowMs)
     case kSettingsHomeVolumeIndex:
       cycleNotificationVolume(nowMs);
       return;
+    case kSettingsHomeTestSoundIndex:
+    {
+      // Force-set a known-good volume + bypass all notification gating; this
+      // proves whether the codec is producing audio at all, independent of any
+      // app-level state (volume, notification toggle, tone selection).
+      Serial.printf("[audio test] forcing vol=80%%, calling playUiClick\n");
+      audio_.setVolumePercent(80);
+      audio_.playUiClick();
+      return;
+    }
     default:
       return;
     }
@@ -1824,6 +1847,7 @@ void App::rebuildSettingsMenuItems()
                                  (notificationsEnabled_ ? "On" : "Off"));
     settingsMenuItems_.push_back(String("Tone (") + currentNotificationToneLabel() + ")");
     settingsMenuItems_.push_back(String("Volume: ") + String(notificationVolume_) + "%");
+    settingsMenuItems_.push_back("Test sound");
   }
   else if (menuScreen_ == MenuScreen::SettingsDisplay)
   {
@@ -2291,6 +2315,7 @@ void App::openRestartConfirm()
 
 void App::selectRestartConfirmItem(uint32_t nowMs)
 {
+  (void)nowMs;
   if (restartConfirmSelectedIndex_ != RestartConfirmYes)
   {
     menuScreen_ = MenuScreen::Main;
@@ -2298,11 +2323,15 @@ void App::selectRestartConfirmItem(uint32_t nowMs)
     return;
   }
 
-  reader_.begin(nowMs);
-  menuScreen_ = MenuScreen::Main;
-  setState(AppState::Paused, nowMs);
+  // Save current reading position so the boot path can restore it, then
+  // hand off to esp_restart. The boot flow already reads kPrefBookPath +
+  // kPrefBookPosition and seeks the reader, so the user lands exactly where
+  // they were.
   saveReadingPosition(true);
-  Serial.println("[restart] book restarted from beginning");
+  display_.renderStatus("Rebooting", "Saving place", "");
+  delay(150);  // give the LCD a chance to flush before the chip resets
+  Serial.println("[reboot] user requested device reboot, position saved");
+  ESP.restart();
 }
 
 void App::enterUsbTransfer(uint32_t nowMs)
@@ -2439,34 +2468,34 @@ void App::showNotificationBanner(uint32_t nowMs, const String &title, const Stri
   playNotificationTone();
 }
 
-void App::playNotificationTone()
+void App::playNotificationTone(uint32_t maxDurationMs)
 {
   if (notificationVolume_ == 0)
     return;
   audio_.setVolumePercent(notificationVolume_);
   if (notificationTone_.isEmpty())
   {
-    audio_.playRtttl(kBuiltinNokiaRtttl);
+    audio_.playRtttl(kBuiltinNokiaRtttl, maxDurationMs);
     return;
   }
   String lowered = notificationTone_;
   lowered.toLowerCase();
   if (lowered.endsWith(".wav"))
   {
-    if (!audio_.playWavFromSd(storage_.ringtonePath(notificationTone_)))
+    if (!audio_.playWavFromSd(storage_.ringtonePath(notificationTone_), maxDurationMs))
     {
-      audio_.playRtttl(kBuiltinNokiaRtttl); // fallback
+      audio_.playRtttl(kBuiltinNokiaRtttl, maxDurationMs); // fallback
     }
     return;
   }
   String rtttl;
   if (storage_.loadRingtone(notificationTone_, rtttl))
   {
-    audio_.playRtttl(rtttl);
+    audio_.playRtttl(rtttl, maxDurationMs);
   }
   else
   {
-    audio_.playRtttl(kBuiltinNokiaRtttl);
+    audio_.playRtttl(kBuiltinNokiaRtttl, maxDurationMs);
   }
 }
 
@@ -2572,25 +2601,38 @@ void App::selectTonePickerItem(uint32_t nowMs)
   }
   notificationTone_ = tonePickerNames_[tonePickerSelectedIndex_];
   preferences_.putString(kPrefNotifTone, notificationTone_);
-  playNotificationTone();
-  // Stay on the picker so the user can audition more tones; selection bar
-  // shows their current pick.
-  renderTonePicker();
+  // Pure select-and-return: no playback. Sound only fires on volume change
+  // (UI click) and on actual notifications — never as menu noise.
+  settingsSelectedIndex_ = kSettingsHomeToneIndex;
+  menuScreen_ = MenuScreen::SettingsHome;
+  rebuildSettingsMenuItems();
+  renderSettings();
 }
 
 void App::cycleNotificationVolume(uint32_t nowMs)
 {
   (void)nowMs;
+  // Cycle 20→40→60→80→100→20. Muting is handled by the Notifications On/Off
+  // toggle — without a min floor, a single accidental tap from 100% silently
+  // lands the user on 0% with no audible feedback that the device is muted.
+  constexpr uint8_t kMinAudibleVolume = 20;
   uint8_t next = notificationVolume_ + kNotificationVolumeStep;
   if (next > 100)
-    next = 0;
+    next = kMinAudibleVolume;
+  if (next < kMinAudibleVolume)
+    next = kMinAudibleVolume;
   notificationVolume_ = next;
   preferences_.putUChar(kPrefNotifVolume, notificationVolume_);
   audio_.setVolumePercent(notificationVolume_);
   rebuildSettingsMenuItems();
   renderSettings();
   if (notificationVolume_ > 0)
-    playNotificationTone();
+  {
+    // A short fixed click is more useful as volume feedback than a multi-note
+    // RTTTL/WAV preview, and only blocks the main loop for ~80 ms so a rapid
+    // volume cycle followed by a swipe doesn't drop the swipe.
+    audio_.playUiClick();
+  }
 }
 
 void App::toggleNotificationsEnabled(uint32_t nowMs)

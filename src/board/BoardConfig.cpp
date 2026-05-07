@@ -36,6 +36,8 @@ bool tca9554Write(uint8_t reg, uint8_t value) {
   return Wire1.endTransmission(true) == 0;
 }
 
+}  // namespace
+
 bool configureTca9554OutputPin(uint8_t pin, bool high) {
   uint8_t output = 0;
   if (!tca9554Read(kTca9554OutputReg, output)) {
@@ -138,8 +140,6 @@ uint8_t batteryPercentForVoltage(float voltage) {
   return 0;
 }
 
-}  // namespace
-
 void begin() {
   pinMode(PIN_BOOT_BUTTON, INPUT_PULLUP);
   pinMode(PIN_PWR_BUTTON, INPUT_PULLUP);
@@ -155,6 +155,13 @@ void begin() {
   Wire1.setTimeOut(10);
   holdBatteryPowerIfAvailable();
   disableBatteryAdcPathIfAvailable();
+  // NS4150B PA CTRL — float = silent. Drive HIGH so the codec's analog output
+  // actually reaches the speaker.
+  if (configureTca9554OutputPin(TCA9554_PIN_AUDIO_AMP_EN, true)) {
+    Serial.println("[board] Audio PA enabled (TCA9554 P7 HIGH)");
+  } else {
+    Serial.println("[board] Audio PA enable failed (TCA9554 not detected?)");
+  }
 
   pinMode(PIN_BATTERY_ADC, INPUT);
   analogReadResolution(12);

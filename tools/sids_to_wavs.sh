@@ -64,7 +64,7 @@ for src_file in "${sources[@]}"; do
     continue
   fi
   ffmpeg -y -hide_banner -loglevel error \
-    -i "$intermediate" -ar 8000 -ac 1 -sample_fmt u8 "$out"
+    -i "$intermediate" -ar 8000 -ac 1 -c:a pcm_u8 "$out"
   rm -f "$intermediate"
   ((count++)) || true
 done

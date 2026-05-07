@@ -85,6 +85,10 @@ bool AudioManager::initCodec() {
     Serial.println("[audio] ES8311 not detected on I2C bus 1");
     return false;
   }
+  // The init sequence already contains its own power-up step (writing 0x80 to
+  // reg 0x00 mid-sequence is *not* a soft reset — bit 7 there is CSM_ON, the
+  // charge-state-machine power-up). Don't add a prefix or skip any writes —
+  // run the sequence verbatim or the DAC never powers up.
   for (const CodecRegister &reg : kEs8311InitSequence) {
     if (!writeCodecRegister(reg.reg, reg.value)) {
       Serial.printf("[audio] codec write 0x%02X failed\n", reg.reg);
@@ -134,6 +138,10 @@ bool AudioManager::initI2sChannel() {
 }
 
 bool AudioManager::begin() {
+  // Re-assert PA enable every time begin() runs. Cheap, and covers the case
+  // where some other I2C transaction has clobbered TCA9554 P7 (the NS4150B's
+  // CTRL line) since the last enable. The amp goes silent if CTRL ever drops.
+  BoardConfig::configureTca9554OutputPin(BoardConfig::TCA9554_PIN_AUDIO_AMP_EN, true);
   if (initialized_) return true;
   if (!initI2sChannel()) {
     return false;
@@ -215,10 +223,29 @@ float frequencyForNote(int noteIdx, int octave) {
 
 }  // namespace
 
-bool AudioManager::playRtttl(const String &melodyIn) {
+void AudioManager::playUiClick() {
+  Serial.printf("[audio] playUiClick: initialized=%d s_i2sInstalled=%d vol=%u\n",
+                initialized_ ? 1 : 0, s_i2sInstalled ? 1 : 0,
+                static_cast<unsigned>(volumePercent_));
+  // Force re-init every time. We've seen the codec stop responding after the
+  // first playback (likely an ES8311 power-state quirk after DMA goes silent).
+  // Cost is only ~30 ms of codec register writes and only on explicit user
+  // taps, so it's not a hot path.
+  initialized_ = false;
+  if (!begin()) {
+    Serial.println("[audio] playUiClick: begin() failed, no sound");
+    return;
+  }
+  constexpr uint16_t kClickFrequencyHz = 800;
+  constexpr uint16_t kClickDurationMs = 80;
+  playToneSamples(kClickFrequencyHz, kClickDurationMs);
+}
+
+bool AudioManager::playRtttl(const String &melodyIn, uint32_t maxDurationMs) {
   if (!initialized_ && !begin()) return false;
   const String melody = normalizeRtttl(melodyIn);
   if (melody.isEmpty()) return false;
+  const uint32_t startMs = millis();
 
   // Format: name:defaults:notes
   const int firstColon = melody.indexOf(':');
@@ -258,6 +285,7 @@ bool AudioManager::playRtttl(const String &melodyIn) {
 
   int cursor = 0;
   while (cursor < static_cast<int>(notesSection.length())) {
+    if (maxDurationMs > 0 && millis() - startMs >= maxDurationMs) break;
     int comma = notesSection.indexOf(',', cursor);
     if (comma < 0) comma = notesSection.length();
     String note = notesSection.substring(cursor, comma);
@@ -375,8 +403,9 @@ bool parseWavHeader(File &file, uint16_t &channels, uint32_t &sampleRate,
 
 }  // namespace
 
-bool AudioManager::playWavFromSd(const String &path) {
+bool AudioManager::playWavFromSd(const String &path, uint32_t maxDurationMs) {
   if (!initialized_ && !begin()) return false;
+  const uint32_t startMs = millis();
 
   File f = SD_MMC.open(path);
   if (!f || f.isDirectory()) {
@@ -423,6 +452,7 @@ bool AudioManager::playWavFromSd(const String &path) {
   uint32_t remaining = dataBytes;
 
   while (remaining > 0 && f.available()) {
+    if (maxDurationMs > 0 && millis() - startMs >= maxDurationMs) break;
     const size_t toRead = std::min<size_t>(kWavReadBytes, remaining);
     const int got = f.read(readBuf, toRead);
     if (got <= 0) break;
