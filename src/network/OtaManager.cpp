@@ -162,10 +162,13 @@ bool OtaManager::runUpdate() {
         written += got;
         const uint32_t now = millis();
         if (now - lastReportMs >= 200) {
-          const int percent =
-              15 + static_cast<int>((written * 80ULL) / static_cast<size_t>(contentLength));
-          notifyStatus("OTA", "Downloading", String(written / 1024).c_str(),
-                       std::min(percent, 95));
+          const int dlPercent =
+              static_cast<int>((written * 100ULL) / static_cast<size_t>(contentLength));
+          const int barPercent = 15 + (dlPercent * 80) / 100;
+          const String line2 = String(dlPercent) + "% - " +
+                               String(written / 1024) + "/" +
+                               String(static_cast<size_t>(contentLength) / 1024) + " KB";
+          notifyStatus("OTA", "Downloading", line2.c_str(), std::min(barPercent, 95));
           lastReportMs = now;
         }
       }
