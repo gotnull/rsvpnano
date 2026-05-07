@@ -2117,6 +2117,15 @@ void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemC
   const int accentRightInset = kFooterMarginX + kLibraryLetterStripWidth + 36;
   const uint16_t accentColor = darkMode_ ? 0xFFE0 : 0xFB00;
 
+  // Chevron column sits two spaces past the widest item so all chevrons align.
+  int maxItemTextWidth = 0;
+  for (size_t i = 0; i < itemCount; ++i) {
+    if (items[i] == nullptr) continue;
+    const int w = measureTinyTextWidth(String(items[i]), kTinyScale);
+    if (w > maxItemTextWidth) maxItemTextWidth = w;
+  }
+  const int chevronColumnX = kCompactMenuX + maxItemTextWidth + chevronSpacingPx * 2;
+
   for (size_t row = 0; row < visibleCount; ++row) {
     const size_t itemIndex = firstVisible + row;
     const bool selected = itemIndex == selectedIndex;
@@ -2131,14 +2140,13 @@ void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemC
     const bool hasAccent = itemIndex == accentRow &&
                            (!accentText.isEmpty() || !accentChips.empty());
     const bool hasChevron = itemIndex < chevronRows.size() && chevronRows[itemIndex];
-    const int chevronTotalWidth = hasChevron ? (chevronSpacingPx + chevronWidth) : 0;
+    const int rowRightLimit = chevronColumnX - chevronSpacingPx;
     const int maxItemWidth =
-        virtualWidth - textX - kFooterMarginX - chevronTotalWidth - (hasAccent ? 4 : 0);
+        std::max(0, rowRightLimit - textX - (hasAccent ? 4 : 0));
     const String fittedItem = fitTinyText(itemText, maxItemWidth, kTinyScale);
     drawTinyTextAt(fittedItem, textX, y + 3, color, kTinyScale);
     if (hasChevron) {
-      const int fittedItemWidth = measureTinyTextWidth(fittedItem, kTinyScale);
-      drawTinyTextAt(">", textX + fittedItemWidth + chevronSpacingPx, y + 3, color, kTinyScale);
+      drawTinyTextAt(">", chevronColumnX, y + 3, color, kTinyScale);
     }
 
     if (hasAccent) {
@@ -2277,22 +2285,29 @@ void DisplayManager::renderMenu(const std::vector<String> &items, size_t selecte
   const int chevronWidth = measureTinyTextWidth(">", kTinyScale);
   const int spaceWidth = (kTinyGlyphWidth + kTinyGlyphSpacing) * kTinyScale;
 
+  // Chevron column sits two spaces past the widest item in this menu so every
+  // chevron lines up regardless of which row it's on.
+  int maxItemTextWidth = 0;
+  for (size_t i = 0; i < itemCount; ++i) {
+    const int w = measureTinyTextWidth(items[i], kTinyScale);
+    if (w > maxItemTextWidth) maxItemTextWidth = w;
+  }
+  const int chevronColumnX = kCompactMenuX + maxItemTextWidth + spaceWidth * 2;
+
   for (size_t row = 0; row < visibleCount; ++row) {
     const size_t itemIndex = firstVisible + row;
     const bool selected = itemIndex == selectedIndex;
     const uint16_t color = selected ? focusColor() : dimColor();
     const bool hasChevron = itemIndex < chevronRows.size() && chevronRows[itemIndex];
-    const int chevronTotalWidth = hasChevron ? spaceWidth + chevronWidth : 0;
-    const int maxWidth =
-        virtualWidth - kCompactMenuX - chevronTotalWidth - kFooterMarginX;
+    const int rightReserve = chevronColumnX - kCompactMenuX + chevronWidth + kFooterMarginX;
+    const int maxWidth = virtualWidth - kCompactMenuX - rightReserve;
     if (selected) {
       fillVirtualRect(10, y + 2, 5, kTinyGlyphHeight * kTinyScale + 2, selectedBarColor());
     }
     const String fittedItem = fitTinyText(items[itemIndex], maxWidth, kTinyScale);
     drawTinyTextAt(fittedItem, kCompactMenuX, y + 3, color, kTinyScale);
     if (hasChevron) {
-      const int itemWidth = measureTinyTextWidth(fittedItem, kTinyScale);
-      drawTinyTextAt(">", kCompactMenuX + itemWidth + spaceWidth, y + 3, color, kTinyScale);
+      drawTinyTextAt(">", chevronColumnX, y + 3, color, kTinyScale);
     }
     y += rowHeight;
   }
@@ -2317,8 +2332,11 @@ int DisplayManager::libraryScrubLetterAtY(const std::vector<char> &letterAnchors
   }
   const int n = static_cast<int>(letterAnchors.size());
   const int visible = std::min(n, kLibraryScrubVisibleLetters);
-  const int slotHeight = std::max(1, kDisplayHeight / visible);
-  const int slot = std::max(0, std::min(visible - 1, y / slotHeight));
+  const int stripTopPad = kScrubFocusPadY;
+  const int usableHeight = std::max(1, kDisplayHeight - stripTopPad * 2);
+  const int slotHeight = std::max(1, usableHeight / visible);
+  const int slot =
+      std::max(0, std::min(visible - 1, (y - stripTopPad) / slotHeight));
   int windowStart = focusIdx - visible / 2;
   if (windowStart < 0) windowStart = 0;
   if (windowStart + visible > n) windowStart = n - visible;
@@ -2401,6 +2419,32 @@ void DisplayManager::renderLibrary(const std::vector<LibraryItem> &items, size_t
 
   const int chipH = kTinyGlyphHeight * kTinyScale + kLibraryChipPadY * 2;
 
+  // Pre-pass: compute max chip-text width per column so chip widths align across rows
+  // (numbers in chips line up vertically because text is left-aligned within a fixed-width chip).
+  std::vector<int> chipColumnTextWidths;
+  auto recordChipWidth = [&](size_t colIdx, const String &label) {
+    const int textW = measureTinyTextWidth(label, kTinyScale);
+    if (chipColumnTextWidths.size() <= colIdx) {
+      chipColumnTextWidths.resize(colIdx + 1, 0);
+    }
+    if (textW > chipColumnTextWidths[colIdx]) {
+      chipColumnTextWidths[colIdx] = textW;
+    }
+  };
+  for (const LibraryItem &item : items) {
+    size_t col = 0;
+    if (item.progressPercent >= 0) {
+      recordChipWidth(col++, String(item.progressPercent) + "%");
+    }
+    if (item.chapterCount > 0) {
+      recordChipWidth(col++, String(item.chapterCount) + "ch");
+    }
+    for (const String &badge : item.badges) {
+      if (badge.isEmpty()) continue;
+      recordChipWidth(col++, badge);
+    }
+  }
+
   for (size_t row = 0; row < visibleCount; ++row) {
     const size_t itemIndex = firstVisible + row;
     const LibraryItem &item = items[itemIndex];
@@ -2434,9 +2478,12 @@ void DisplayManager::renderLibrary(const std::vector<LibraryItem> &items, size_t
     const int chipY = rowY + (kLibraryRowHeight - chipH) / 2;
     int rightCursor = chipsLeftEdge;
     const int chipRadius = std::min(6, chipH / 2);
-    for (const String &label : chipLabels) {
-      const int textW = measureTinyTextWidth(label, kTinyScale);
-      const int chipW = textW + kLibraryChipPadX * 2;
+    for (size_t ci = 0; ci < chipLabels.size(); ++ci) {
+      const String &label = chipLabels[ci];
+      const int columnTextW = ci < chipColumnTextWidths.size()
+                                  ? chipColumnTextWidths[ci]
+                                  : measureTinyTextWidth(label, kTinyScale);
+      const int chipW = columnTextW + kLibraryChipPadX * 2;
       const int chipX = rightCursor - chipW;
       fillRoundedRect(chipX, chipY, chipW, chipH, chipRadius, chipBg);
       drawTinyTextAt(label, chipX + kLibraryChipPadX, chipY + kLibraryChipPadY, titleColor,
@@ -2473,7 +2520,9 @@ void DisplayManager::renderLibrary(const std::vector<LibraryItem> &items, size_t
       const uint16_t panelBg = blendOverBackground(wordColor(), 40);
       fillVirtualRect(stripX, 0, stripWidth, virtualHeight, panelBg);
       const int visible = std::min(n, kLibraryScrubVisibleLetters);
-      const int slotHeight = std::max(1, virtualHeight / visible);
+      const int stripTopPad = kScrubFocusPadY;
+      const int usableHeight = std::max(1, virtualHeight - stripTopPad * 2);
+      const int slotHeight = std::max(1, usableHeight / visible);
       int windowStart = focusedLetterIdx - visible / 2;
       if (windowStart < 0) windowStart = 0;
       if (windowStart + visible > n) windowStart = n - visible;
@@ -2482,7 +2531,8 @@ void DisplayManager::renderLibrary(const std::vector<LibraryItem> &items, size_t
       for (int slot = 0; slot < visible; ++slot) {
         const int letterIdx = windowStart + slot;
         if (letterIdx < 0 || letterIdx >= n) continue;
-        const int slotY = slotHeight * slot + (slotHeight - kTinyGlyphHeight * letterScale) / 2;
+        const int slotY =
+            stripTopPad + slotHeight * slot + (slotHeight - kTinyGlyphHeight * letterScale) / 2;
         const String label = String(activeLetters[letterIdx]);
         const bool isFocus = letterIdx == focusedLetterIdx;
         if (isFocus) {
