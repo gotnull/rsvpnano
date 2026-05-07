@@ -215,6 +215,8 @@ class App {
   std::vector<size_t> bookPickerLetterTargets_;
   std::vector<char> authorPickerLetterAnchors_;
   std::vector<size_t> authorPickerLetterTargets_;
+  bool letterScrubActive_ = false;
+  int letterScrubFocusIdx_ = -1;
   std::vector<String> chapterMenuItems_;
   std::vector<ChapterMarker> chapterMarkers_;
   std::vector<size_t> paragraphStarts_;

@@ -1044,6 +1044,52 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs) {
   pausedTouch_.lastY = event.y;
   pausedTouch_.lastMs = nowMs;
 
+  const bool inPicker =
+      menuScreen_ == MenuScreen::AuthorPicker || menuScreen_ == MenuScreen::BookPicker;
+  if (inPicker) {
+    const int stripStartX = BoardConfig::DISPLAY_WIDTH - DisplayManager::kLibraryLetterStripWidth;
+    const bool startInStrip = pausedTouch_.startX >= stripStartX;
+    if (startInStrip && !letterScrubActive_ &&
+        (nowMs - pausedTouch_.startMs) >= 350) {
+      letterScrubActive_ = true;
+      const std::vector<char> &lettersInit =
+          (menuScreen_ == MenuScreen::AuthorPicker) ? authorPickerLetterAnchors_
+                                                    : bookPickerLetterAnchors_;
+      letterScrubFocusIdx_ =
+          DisplayManager::libraryLetterAtY(lettersInit, pausedTouch_.startY);
+      if (letterScrubFocusIdx_ < 0) letterScrubFocusIdx_ = 0;
+    }
+    if (letterScrubActive_) {
+      const std::vector<char> &letters =
+          (menuScreen_ == MenuScreen::AuthorPicker) ? authorPickerLetterAnchors_
+                                                    : bookPickerLetterAnchors_;
+      const std::vector<size_t> &targets =
+          (menuScreen_ == MenuScreen::AuthorPicker) ? authorPickerLetterTargets_
+                                                    : bookPickerLetterTargets_;
+      const int currentFocus =
+          letterScrubFocusIdx_ >= 0 ? letterScrubFocusIdx_ : 0;
+      const int idx =
+          DisplayManager::libraryScrubLetterAtY(letters, event.y, currentFocus);
+      if (idx >= 0 && static_cast<size_t>(idx) < targets.size()) {
+        letterScrubFocusIdx_ = idx;
+        if (menuScreen_ == MenuScreen::AuthorPicker) {
+          authorPickerSelectedIndex_ = targets[idx];
+          renderAuthorPicker();
+        } else {
+          bookPickerSelectedIndex_ = targets[idx];
+          renderBookPicker();
+        }
+      }
+      if (event.phase == TouchPhase::End) {
+        letterScrubActive_ = false;
+        letterScrubFocusIdx_ = -1;
+        pausedTouch_.active = false;
+        renderMenu();
+      }
+      return;
+    }
+  }
+
   if (event.phase != TouchPhase::End) {
     return;
   }
@@ -1600,8 +1646,11 @@ void App::openAuthorPicker() {
 }
 
 void App::renderAuthorPicker() {
+  const int focus = (letterScrubActive_ && menuScreen_ == MenuScreen::AuthorPicker)
+                        ? letterScrubFocusIdx_
+                        : -1;
   display_.renderLibrary(authorMenuItems_, authorPickerSelectedIndex_,
-                         authorPickerLetterAnchors_);
+                         authorPickerLetterAnchors_, focus);
 }
 
 void App::selectAuthorPickerItem(uint32_t nowMs) {
@@ -2356,15 +2405,37 @@ void App::renderMainMenu() {
       accentChips.push_back(t + " rem.");
     }
   }
+  std::vector<bool> chevrons(MenuItemCount, false);
+  chevrons[MenuResumeFrom] = true;
+  chevrons[MenuChapters] = true;
+  chevrons[MenuChangeBook] = true;
+  chevrons[MenuSettings] = true;
+  chevrons[MenuRestart] = true;
   display_.renderMenuWithAccent(kMenuItems, MenuItemCount, menuSelectedIndex_, MenuResume,
-                                accentTitle, accentChips);
+                                accentTitle, accentChips, chevrons);
 }
 
 void App::renderSettings() {
   if (settingsMenuItems_.empty()) {
     rebuildSettingsMenuItems();
   }
-  display_.renderMenu(settingsMenuItems_, settingsSelectedIndex_);
+  std::vector<bool> chevrons(settingsMenuItems_.size(), false);
+  if (menuScreen_ == MenuScreen::SettingsHome) {
+    if (settingsMenuItems_.size() > kSettingsHomeDisplayIndex) {
+      chevrons[kSettingsHomeDisplayIndex] = true;
+    }
+    if (settingsMenuItems_.size() > kSettingsHomeTypographyIndex) {
+      chevrons[kSettingsHomeTypographyIndex] = true;
+    }
+    if (settingsMenuItems_.size() > kSettingsHomePacingIndex) {
+      chevrons[kSettingsHomePacingIndex] = true;
+    }
+  } else if (menuScreen_ == MenuScreen::SettingsDisplay) {
+    if (settingsMenuItems_.size() > kSettingsDisplayTypographyIndex) {
+      chevrons[kSettingsDisplayTypographyIndex] = true;
+    }
+  }
+  display_.renderMenu(settingsMenuItems_, settingsSelectedIndex_, chevrons);
 }
 
 void App::renderTypographyTuning() {
@@ -2403,7 +2474,11 @@ void App::renderTypographyTuning() {
 }
 
 void App::renderBookPicker() {
-  display_.renderLibrary(bookMenuItems_, bookPickerSelectedIndex_, bookPickerLetterAnchors_);
+  const int focus = (letterScrubActive_ && menuScreen_ == MenuScreen::BookPicker)
+                        ? letterScrubFocusIdx_
+                        : -1;
+  display_.renderLibrary(bookMenuItems_, bookPickerSelectedIndex_, bookPickerLetterAnchors_,
+                         focus);
 }
 
 void App::renderChapterPicker() {

@@ -63,14 +63,21 @@ class DisplayManager {
                          uint8_t progressPercent = 0);
   void renderMenu(const char *const *items, size_t itemCount, size_t selectedIndex);
   void renderMenu(const std::vector<String> &items, size_t selectedIndex);
+  void renderMenu(const std::vector<String> &items, size_t selectedIndex,
+                  const std::vector<bool> &chevronRows);
   void renderMenuWithAccent(const char *const *items, size_t itemCount, size_t selectedIndex,
                             size_t accentRow, const String &accentText,
-                            const std::vector<String> &accentChips = std::vector<String>());
+                            const std::vector<String> &accentChips = std::vector<String>(),
+                            const std::vector<bool> &chevronRows = std::vector<bool>());
   void renderLibrary(const std::vector<LibraryItem> &items, size_t selectedIndex,
-                     const std::vector<char> &letterAnchors = std::vector<char>());
+                     const std::vector<char> &letterAnchors = std::vector<char>(),
+                     int focusedLetterIdx = -1);
 
   static constexpr int kLibraryLetterStripWidth = 22;
+  static constexpr int kLibraryLetterScrubWidth = 140;
+  static constexpr int kLibraryScrubVisibleLetters = 9;
   static int libraryLetterAtY(const std::vector<char> &letterAnchors, int y);
+  static int libraryScrubLetterAtY(const std::vector<char> &letterAnchors, int y, int focusIdx);
   void renderStatus(const String &title, const String &line1 = "", const String &line2 = "");
   void renderProgress(const String &title, const String &line1 = "", const String &line2 = "",
                       int progressPercent = -1);

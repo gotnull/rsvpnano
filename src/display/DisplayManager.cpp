@@ -1261,8 +1261,8 @@ int DisplayManager::drawScrollingChipText(const String &text, int leftX, int tex
   const int contentRight = leftX + chipW - chipPadX;
   const int charPitch = (kTinyGlyphWidth + kTinyGlyphSpacing) * kTinyScale;
   const int charBodyWidth = kTinyGlyphWidth * kTinyScale;
-  const int cycleWidth = textW + 32;
-  const int offsetPx = static_cast<int>((millis() / 30) % cycleWidth);
+  const int maxOffset = textW - (contentRight - contentLeft);
+  const int offsetPx = marqueePingPongOffset(maxOffset);
   for (size_t i = 0; i < text.length(); ++i) {
     const int charX = contentLeft - offsetPx + static_cast<int>(i) * charPitch;
     const int charRight = charX + charBodyWidth;
@@ -2022,7 +2022,8 @@ void DisplayManager::renderMenu(const char *const *items, size_t itemCount, size
 void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemCount,
                                           size_t selectedIndex, size_t accentRow,
                                           const String &accentText,
-                                          const std::vector<String> &accentChips) {
+                                          const std::vector<String> &accentChips,
+                                          const std::vector<bool> &chevronRows) {
   if (items == nullptr || itemCount == 0) {
     renderCenteredWord("MENU");
     return;
@@ -2083,7 +2084,9 @@ void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemC
 
   clearVirtualBuffer(virtualWidth, virtualHeight);
 
-  const int accentRightInset = kFooterMarginX + kLibraryLetterStripWidth + 36;
+  const int chevronWidth = measureTinyTextWidth(">", kTinyScale);
+  const int chevronReserve = chevronWidth + 8;
+  const int accentRightInset = kFooterMarginX + kLibraryLetterStripWidth + 36 + chevronReserve;
   const uint16_t accentColor = darkMode_ ? 0xFFE0 : 0xFB00;
 
   for (size_t row = 0; row < visibleCount; ++row) {
@@ -2099,9 +2102,15 @@ void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemC
     const int itemWidth = measureTinyTextWidth(itemText, kTinyScale);
     const bool hasAccent = itemIndex == accentRow &&
                            (!accentText.isEmpty() || !accentChips.empty());
-    const int maxItemWidth = virtualWidth - textX - 16 - (hasAccent ? 4 : 0);
+    const bool hasChevron = itemIndex < chevronRows.size() && chevronRows[itemIndex];
+    const int rightReserve = (hasChevron ? chevronReserve : 16);
+    const int maxItemWidth =
+        virtualWidth - textX - rightReserve - (hasAccent ? 4 : 0);
     const String fittedItem = fitTinyText(itemText, maxItemWidth, kTinyScale);
     drawTinyTextAt(fittedItem, textX, y + 3, color, kTinyScale);
+    if (hasChevron) {
+      drawTinyTextAt(">", virtualWidth - kFooterMarginX - chevronWidth, y + 3, color, kTinyScale);
+    }
 
     if (hasAccent) {
       const int chipPadX = 5;
@@ -2156,8 +2165,8 @@ void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemC
         } else {
           const int charPitch = (kTinyGlyphWidth + kTinyGlyphSpacing) * kTinyScale;
           const int charBodyWidth = kTinyGlyphWidth * kTinyScale;
-          const int cycleWidth = titleW + 48;
-          const int offsetPx = static_cast<int>((millis() / 30) % cycleWidth);
+          const int maxOffset = titleW - (titleEndX - titleStartX);
+          const int offsetPx = marqueePingPongOffset(maxOffset);
           for (size_t ci = 0; ci < accentText.length(); ++ci) {
             const int charX = titleStartX - offsetPx + static_cast<int>(ci) * charPitch;
             const int charRight = charX + charBodyWidth;
@@ -2177,6 +2186,11 @@ void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemC
 }
 
 void DisplayManager::renderMenu(const std::vector<String> &items, size_t selectedIndex) {
+  renderMenu(items, selectedIndex, std::vector<bool>());
+}
+
+void DisplayManager::renderMenu(const std::vector<String> &items, size_t selectedIndex,
+                                const std::vector<bool> &chevronRows) {
   if (items.empty()) {
     renderCenteredWord("MENU");
     return;
@@ -2197,6 +2211,12 @@ void DisplayManager::renderMenu(const std::vector<String> &items, size_t selecte
   for (const String &item : items) {
     renderKey += "|";
     renderKey += item;
+  }
+  for (size_t i = 0; i < chevronRows.size(); ++i) {
+    if (chevronRows[i]) {
+      renderKey += "|cr";
+      renderKey += String(static_cast<unsigned int>(i));
+    }
   }
 
   if (!initialized_ || renderKey == lastRenderKey_) {
@@ -2225,22 +2245,57 @@ void DisplayManager::renderMenu(const std::vector<String> &items, size_t selecte
 
   clearVirtualBuffer(virtualWidth, virtualHeight);
 
+  const int chevronRightX = virtualWidth - kFooterMarginX;
+  const int chevronWidth = measureTinyTextWidth(">", kTinyScale);
+
   for (size_t row = 0; row < visibleCount; ++row) {
     const size_t itemIndex = firstVisible + row;
     const bool selected = itemIndex == selectedIndex;
     const uint16_t color = selected ? focusColor() : dimColor();
-    const int maxWidth = virtualWidth - kCompactMenuX - 16;
+    const bool hasChevron = itemIndex < chevronRows.size() && chevronRows[itemIndex];
+    const int rightReserve = hasChevron ? (chevronWidth + 12) : 16;
+    const int maxWidth = virtualWidth - kCompactMenuX - rightReserve;
     if (selected) {
       fillVirtualRect(10, y + 2, 5, kTinyGlyphHeight * kTinyScale + 2, selectedBarColor());
     }
     drawTinyTextAt(fitTinyText(items[itemIndex], maxWidth, kTinyScale), kCompactMenuX, y + 3, color,
                    kTinyScale);
+    if (hasChevron) {
+      drawTinyTextAt(">", chevronRightX - chevronWidth, y + 3, color, kTinyScale);
+    }
     y += rowHeight;
   }
 
   drawBatteryBadge();
   flushScaledFrame(scale, virtualWidth, virtualHeight);
 }
+
+namespace {
+
+int marqueePingPongOffset(int maxOffset) {
+  if (maxOffset <= 0) return 0;
+  constexpr int kPxPerSec = 60;
+  constexpr uint32_t kPauseMs = 1200;
+  const uint32_t slideMs =
+      static_cast<uint32_t>((maxOffset * 1000) / kPxPerSec);
+  const uint32_t cycleMs = (slideMs + kPauseMs) * 2;
+  const uint32_t phase = millis() % cycleMs;
+  if (phase < kPauseMs) {
+    return 0;
+  }
+  if (phase < kPauseMs + slideMs) {
+    const uint32_t t = phase - kPauseMs;
+    return static_cast<int>((t * maxOffset) / std::max<uint32_t>(1, slideMs));
+  }
+  if (phase < kPauseMs + slideMs + kPauseMs) {
+    return maxOffset;
+  }
+  const uint32_t t = phase - kPauseMs - slideMs - kPauseMs;
+  return maxOffset -
+         static_cast<int>((t * maxOffset) / std::max<uint32_t>(1, slideMs));
+}
+
+}  // namespace
 
 int DisplayManager::libraryLetterAtY(const std::vector<char> &letterAnchors, int y) {
   if (letterAnchors.empty()) {
@@ -2251,8 +2306,24 @@ int DisplayManager::libraryLetterAtY(const std::vector<char> &letterAnchors, int
   return std::max(0, std::min(n - 1, slot));
 }
 
+int DisplayManager::libraryScrubLetterAtY(const std::vector<char> &letterAnchors, int y,
+                                          int focusIdx) {
+  if (letterAnchors.empty()) {
+    return -1;
+  }
+  const int n = static_cast<int>(letterAnchors.size());
+  const int visible = std::min(n, kLibraryScrubVisibleLetters);
+  const int slotHeight = std::max(1, kDisplayHeight / visible);
+  const int slot = std::max(0, std::min(visible - 1, y / slotHeight));
+  int windowStart = focusIdx - visible / 2;
+  if (windowStart < 0) windowStart = 0;
+  if (windowStart + visible > n) windowStart = n - visible;
+  return std::max(0, std::min(n - 1, windowStart + slot));
+}
+
 void DisplayManager::renderLibrary(const std::vector<LibraryItem> &items, size_t selectedIndex,
-                                   const std::vector<char> &letterAnchors) {
+                                   const std::vector<char> &letterAnchors,
+                                   int focusedLetterIdx) {
   if (items.empty()) {
     renderCenteredWord("LIBRARY");
     return;
@@ -2290,6 +2361,10 @@ void DisplayManager::renderLibrary(const std::vector<LibraryItem> &items, size_t
     renderKey += "|L";
     for (char c : letterAnchors) {
       renderKey += c;
+    }
+    if (focusedLetterIdx >= 0) {
+      renderKey += "|F";
+      renderKey += String(focusedLetterIdx);
     }
   }
 
@@ -2380,14 +2455,52 @@ void DisplayManager::renderLibrary(const std::vector<LibraryItem> &items, size_t
   }
 
   if (!letterAnchors.empty()) {
+    const bool scrubbing = focusedLetterIdx >= 0;
+    const int stripWidth = scrubbing ? kLibraryLetterScrubWidth : kLibraryLetterStripWidth;
+    const int stripX = virtualWidth - stripWidth;
     const int n = static_cast<int>(letterAnchors.size());
-    const int slotHeight = std::max(1, virtualHeight / std::max(1, n));
-    const int stripX = virtualWidth - kLibraryLetterStripWidth + 4;
     const uint16_t letterColor = blendOverBackground(wordColor(), 200);
-    for (int i = 0; i < n; ++i) {
-      const int slotY = (slotHeight * i) + (slotHeight - kTinyGlyphHeight) / 2;
-      const String label = String(letterAnchors[i]);
-      drawTinyTextAt(label, stripX, slotY, letterColor, 1);
+    const uint16_t focusColor = wordColor();
+
+    if (scrubbing) {
+      const uint16_t panelBg = blendOverBackground(wordColor(), 40);
+      fillVirtualRect(stripX, 0, stripWidth, virtualHeight, panelBg);
+      const int visible = std::min(n, kLibraryScrubVisibleLetters);
+      const int slotHeight = std::max(1, virtualHeight / visible);
+      int windowStart = focusedLetterIdx - visible / 2;
+      if (windowStart < 0) windowStart = 0;
+      if (windowStart + visible > n) windowStart = n - visible;
+      const int letterScale = kTinyScale;
+      const int innerX = stripX + 12;
+      for (int slot = 0; slot < visible; ++slot) {
+        const int letterIdx = windowStart + slot;
+        if (letterIdx < 0 || letterIdx >= n) continue;
+        const int slotY = slotHeight * slot + (slotHeight - kTinyGlyphHeight * letterScale) / 2;
+        const String label = String(letterAnchors[letterIdx]);
+        const bool isFocus = letterIdx == focusedLetterIdx;
+        if (isFocus) {
+          const int textW = measureTinyTextWidth(label, letterScale);
+          const int padX = 10;
+          const int padY = 4;
+          const int boxW = textW + padX * 2;
+          const int boxH = kTinyGlyphHeight * letterScale + padY * 2;
+          const int boxX = stripX + (stripWidth - boxW) / 2;
+          const int boxY = slotY - padY;
+          fillRoundedRect(boxX, boxY, boxW, boxH, std::min(10, boxH / 2),
+                          blendOverBackground(focusColor, 110));
+          drawTinyTextAt(label, boxX + padX, slotY, focusColor, letterScale);
+        } else {
+          drawTinyTextAt(label, innerX, slotY, letterColor, letterScale);
+        }
+      }
+    } else {
+      const int slotHeight = std::max(1, virtualHeight / std::max(1, n));
+      const int innerX = stripX + 6;
+      for (int i = 0; i < n; ++i) {
+        const int slotY = (slotHeight * i) + (slotHeight - kTinyGlyphHeight) / 2;
+        const String label = String(letterAnchors[i]);
+        drawTinyTextAt(label, innerX, slotY, letterColor, 1);
+      }
     }
   }
 
