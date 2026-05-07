@@ -57,6 +57,8 @@ bool OtaManager::loadConfigFromSd(const char *path) {
   config_.ssid = extractJsonString(contents, "ssid");
   config_.password = extractJsonString(contents, "password");
   config_.firmwareUrl = extractJsonString(contents, "url");
+  config_.notificationsUrl = extractJsonString(contents, "notifications_url");
+  config_.notificationsToken = extractJsonString(contents, "notifications_token");
   if (config_.ssid.isEmpty() || config_.firmwareUrl.isEmpty()) {
     lastError_ = "wifi.json missing ssid or url";
     return false;

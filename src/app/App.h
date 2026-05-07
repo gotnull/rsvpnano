@@ -8,6 +8,7 @@
 #include "display/DisplayManager.h"
 #include "input/ButtonHandler.h"
 #include "input/TouchHandler.h"
+#include "network/NotificationsManager.h"
 #include "network/OtaManager.h"
 #include "reader/ReadingLoop.h"
 #include "storage/StorageManager.h"
@@ -103,6 +104,10 @@ class App {
   void updateUsbTransfer(uint32_t nowMs);
   void exitUsbTransfer(uint32_t nowMs);
   void runOtaUpdate(uint32_t nowMs);
+  void toggleNotificationsEnabled(uint32_t nowMs);
+  void pollNotifications(uint32_t nowMs);
+  void showNotificationBanner(uint32_t nowMs, const String &title, const String &body);
+  void renderNotificationBanner();
   void enterPowerOff(uint32_t nowMs);
   void enterSleep(uint32_t nowMs);
   void wakeFromSleep();
@@ -174,6 +179,7 @@ class App {
   StorageManager storage_;
   UsbMassStorageManager usbTransfer_;
   OtaManager ota_;
+  NotificationsManager notifications_;
   Preferences preferences_;
   PausedTouchSession pausedTouch_;
   TouchIntent pausedTouchIntent_ = TouchIntent::None;
@@ -184,6 +190,10 @@ class App {
   bool firmwarePendingVerify_ = false;
   uint32_t lastMenuRefreshMs_ = 0;
   uint32_t lastReaderRefreshMs_ = 0;
+  uint32_t nextNotificationPollMs_ = 0;
+  uint32_t notificationBannerUntilMs_ = 0;
+  String notificationBannerTitle_;
+  String notificationBannerBody_;
   uint32_t wpmFeedbackUntilMs_ = 0;
   uint32_t lastProgressSaveMs_ = 0;
   uint32_t lastBatterySampleMs_ = 0;
@@ -239,5 +249,6 @@ class App {
   bool darkMode_ = true;
   bool nightMode_ = false;
   bool displayFlipped_ = true;
+  bool notificationsEnabled_ = true;
   DisplayManager::TypographyConfig typographyConfig_;
 };

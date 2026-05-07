@@ -138,6 +138,7 @@ constexpr size_t kSettingsBackIndex = 0;
 constexpr size_t kSettingsHomeDisplayIndex = 1;
 constexpr size_t kSettingsHomeTypographyIndex = 2;
 constexpr size_t kSettingsHomePacingIndex = 3;
+constexpr size_t kSettingsHomeNotificationsIndex = 4;
 constexpr size_t kSettingsDisplayThemeIndex = 1;
 constexpr size_t kSettingsDisplayBrightnessIndex = 2;
 constexpr size_t kSettingsDisplayPhantomWordsIndex = 3;
@@ -165,6 +166,10 @@ constexpr const char *kPrefWpm = "wpm";
 constexpr const char *kPrefBrightness = "bright";
 constexpr const char *kPrefDarkMode = "dark";
 constexpr const char *kPrefDisplayFlip = "flip";
+constexpr const char *kPrefNotifications = "notif";
+constexpr uint32_t kNotificationPollIntervalMs = 5UL * 60UL * 1000UL;
+constexpr uint32_t kNotificationBannerVisibleMs = 6000;
+constexpr uint32_t kNotificationFirstPollDelayMs = 30UL * 1000UL;
 constexpr const char *kPrefNightMode = "night";
 constexpr const char *kPrefPhantomWords = "phantom_on";
 constexpr const char *kPrefReaderFontSize = "font_size";
@@ -269,6 +274,7 @@ void App::begin() {
   powerButtonLongPressHandled_ = false;
   storage_.setStatusCallback(&App::handleStorageStatus, this);
   ota_.setStatusCallback(&App::handleStorageStatus, this);
+  notifications_.setStatusCallback(&App::handleStorageStatus, this);
   preferences_.begin(kPrefsNamespace, false);
   brightnessLevelIndex_ = preferences_.getUChar(kPrefBrightness, brightnessLevelIndex_);
   if (brightnessLevelIndex_ >= kBrightnessLevelCount) {
@@ -312,6 +318,8 @@ void App::begin() {
   displayFlipped_ = preferences_.getBool(kPrefDisplayFlip, BoardConfig::UI_ROTATED_180);
   display_.setUiRotated(displayFlipped_);
   touch_.setUiRotated(displayFlipped_);
+  notificationsEnabled_ = preferences_.getBool(kPrefNotifications, true);
+  notifications_.setEnabled(notificationsEnabled_);
   applyDisplayPreferences(0, false);
   applyTypographySettings(0, false);
   applyPacingSettings();
@@ -342,6 +350,13 @@ void App::begin() {
   display_.renderProgress("SD", "Loading books", "Use SD converter for EPUB", 0);
   const bool storageReady = storage_.begin();
   storage_.listBooks();
+
+  if (storageReady && ota_.loadConfigFromSd()) {
+    const auto &cfg = ota_.config();
+    notifications_.configure(cfg.ssid, cfg.password, cfg.notificationsUrl,
+                             cfg.notificationsToken);
+  }
+  nextNotificationPollMs_ = millis() + kNotificationFirstPollDelayMs;
   const uint16_t savedWpm = preferences_.getUShort(kPrefWpm, reader_.wpm());
   reader_.setWpm(savedWpm);
   display_.setCurrentWpm(savedWpm);
@@ -424,6 +439,23 @@ void App::update(uint32_t nowMs) {
   if (state_ == AppState::Paused && (nowMs - lastReaderRefreshMs_) >= 33) {
     renderReaderWord();
     lastReaderRefreshMs_ = nowMs;
+  }
+
+  if (notificationsEnabled_ && nowMs >= nextNotificationPollMs_ &&
+      (state_ == AppState::Paused || state_ == AppState::Menu)) {
+    pollNotifications(nowMs);
+    nextNotificationPollMs_ = nowMs + kNotificationPollIntervalMs;
+  }
+
+  if (notificationBannerUntilMs_ != 0 && nowMs >= notificationBannerUntilMs_) {
+    notificationBannerUntilMs_ = 0;
+    notificationBannerTitle_ = "";
+    notificationBannerBody_ = "";
+    if (state_ == AppState::Paused) {
+      renderReaderWord();
+    } else if (state_ == AppState::Menu) {
+      renderMenu();
+    }
   }
 
   const bool batteryChanged = updateBatteryStatus(nowMs);
@@ -1308,6 +1340,9 @@ void App::selectSettingsItem(uint32_t nowMs) {
         rebuildSettingsMenuItems();
         renderSettings();
         return;
+      case kSettingsHomeNotificationsIndex:
+        toggleNotificationsEnabled(nowMs);
+        return;
       default:
         return;
     }
@@ -1467,6 +1502,8 @@ void App::rebuildSettingsMenuItems() {
     settingsMenuItems_.push_back("Display");
     settingsMenuItems_.push_back("Typography tune");
     settingsMenuItems_.push_back("Word pacing");
+    settingsMenuItems_.push_back(String("Notifications: ") +
+                                 (notificationsEnabled_ ? "On" : "Off"));
   } else if (menuScreen_ == MenuScreen::SettingsDisplay) {
     settingsMenuItems_.push_back("Back");
     settingsMenuItems_.push_back("Theme: " + themeModeLabel());
@@ -1962,6 +1999,43 @@ void App::exitUsbTransfer(uint32_t nowMs) {
 
   menuScreen_ = MenuScreen::Main;
   setState(AppState::Paused, nowMs);
+}
+
+void App::pollNotifications(uint32_t nowMs) {
+  if (!notifications_.poll()) {
+    return;
+  }
+  auto pending = notifications_.drainPending();
+  if (pending.empty()) return;
+  // Show only the most recent one as a banner (queue collapses to most-recent so
+  // the user always sees the freshest news).
+  const auto &latest = pending.back();
+  showNotificationBanner(nowMs, latest.title, latest.body);
+}
+
+void App::showNotificationBanner(uint32_t nowMs, const String &title, const String &body) {
+  notificationBannerTitle_ = title;
+  notificationBannerBody_ = body;
+  notificationBannerUntilMs_ = nowMs + kNotificationBannerVisibleMs;
+  display_.renderStatus(title.isEmpty() ? "Notification" : title,
+                        body, "Tap to dismiss");
+}
+
+void App::toggleNotificationsEnabled(uint32_t nowMs) {
+  (void)nowMs;
+  notificationsEnabled_ = !notificationsEnabled_;
+  preferences_.putBool(kPrefNotifications, notificationsEnabled_);
+  notifications_.setEnabled(notificationsEnabled_);
+  rebuildSettingsMenuItems();
+  renderSettings();
+  Serial.printf("[notif] enabled=%d\n", notificationsEnabled_ ? 1 : 0);
+}
+
+void App::renderNotificationBanner() {
+  if (notificationBannerUntilMs_ == 0) return;
+  display_.renderStatus(
+      notificationBannerTitle_.isEmpty() ? "Notification" : notificationBannerTitle_,
+      notificationBannerBody_, "");
 }
 
 void App::runOtaUpdate(uint32_t nowMs) {

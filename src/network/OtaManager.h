@@ -11,6 +11,8 @@ class OtaManager {
     String ssid;
     String password;
     String firmwareUrl;
+    String notificationsUrl;
+    String notificationsToken;
   };
 
   void setStatusCallback(StatusCallback callback, void *context);
