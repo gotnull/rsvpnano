@@ -2113,8 +2113,8 @@ void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemC
   clearVirtualBuffer(virtualWidth, virtualHeight);
 
   const int chevronWidth = measureTinyTextWidth(">", kTinyScale);
-  const int chevronReserve = chevronWidth + 8;
-  const int accentRightInset = kFooterMarginX + kLibraryLetterStripWidth + 36 + chevronReserve;
+  const int chevronSpacingPx = (kTinyGlyphWidth + kTinyGlyphSpacing) * kTinyScale;
+  const int accentRightInset = kFooterMarginX + kLibraryLetterStripWidth + 36;
   const uint16_t accentColor = darkMode_ ? 0xFFE0 : 0xFB00;
 
   for (size_t row = 0; row < visibleCount; ++row) {
@@ -2131,13 +2131,14 @@ void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemC
     const bool hasAccent = itemIndex == accentRow &&
                            (!accentText.isEmpty() || !accentChips.empty());
     const bool hasChevron = itemIndex < chevronRows.size() && chevronRows[itemIndex];
-    const int rightReserve = (hasChevron ? chevronReserve : 16);
+    const int chevronTotalWidth = hasChevron ? (chevronSpacingPx + chevronWidth) : 0;
     const int maxItemWidth =
-        virtualWidth - textX - rightReserve - (hasAccent ? 4 : 0);
+        virtualWidth - textX - kFooterMarginX - chevronTotalWidth - (hasAccent ? 4 : 0);
     const String fittedItem = fitTinyText(itemText, maxItemWidth, kTinyScale);
     drawTinyTextAt(fittedItem, textX, y + 3, color, kTinyScale);
     if (hasChevron) {
-      drawTinyTextAt(">", virtualWidth - kFooterMarginX - chevronWidth, y + 3, color, kTinyScale);
+      const int fittedItemWidth = measureTinyTextWidth(fittedItem, kTinyScale);
+      drawTinyTextAt(">", textX + fittedItemWidth + chevronSpacingPx, y + 3, color, kTinyScale);
     }
 
     if (hasAccent) {
@@ -2273,23 +2274,25 @@ void DisplayManager::renderMenu(const std::vector<String> &items, size_t selecte
 
   clearVirtualBuffer(virtualWidth, virtualHeight);
 
-  const int chevronRightX = virtualWidth - kFooterMarginX;
   const int chevronWidth = measureTinyTextWidth(">", kTinyScale);
+  const int spaceWidth = (kTinyGlyphWidth + kTinyGlyphSpacing) * kTinyScale;
 
   for (size_t row = 0; row < visibleCount; ++row) {
     const size_t itemIndex = firstVisible + row;
     const bool selected = itemIndex == selectedIndex;
     const uint16_t color = selected ? focusColor() : dimColor();
     const bool hasChevron = itemIndex < chevronRows.size() && chevronRows[itemIndex];
-    const int rightReserve = hasChevron ? (chevronWidth + 12) : 16;
-    const int maxWidth = virtualWidth - kCompactMenuX - rightReserve;
+    const int chevronTotalWidth = hasChevron ? spaceWidth + chevronWidth : 0;
+    const int maxWidth =
+        virtualWidth - kCompactMenuX - chevronTotalWidth - kFooterMarginX;
     if (selected) {
       fillVirtualRect(10, y + 2, 5, kTinyGlyphHeight * kTinyScale + 2, selectedBarColor());
     }
-    drawTinyTextAt(fitTinyText(items[itemIndex], maxWidth, kTinyScale), kCompactMenuX, y + 3, color,
-                   kTinyScale);
+    const String fittedItem = fitTinyText(items[itemIndex], maxWidth, kTinyScale);
+    drawTinyTextAt(fittedItem, kCompactMenuX, y + 3, color, kTinyScale);
     if (hasChevron) {
-      drawTinyTextAt(">", chevronRightX - chevronWidth, y + 3, color, kTinyScale);
+      const int itemWidth = measureTinyTextWidth(fittedItem, kTinyScale);
+      drawTinyTextAt(">", kCompactMenuX + itemWidth + spaceWidth, y + 3, color, kTinyScale);
     }
     y += rowHeight;
   }

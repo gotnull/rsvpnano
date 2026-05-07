@@ -66,53 +66,6 @@ void computeLetterAnchors(const std::vector<DisplayManager::LibraryItem> &items,
   }
 }
 
-// Build a full A-Z scrubber strip. Each letter snaps to the matching item if
-// present, otherwise the nearest later letter (or # bucket / last item as
-// fallback). User can drag through every letter even when the library lacks
-// some buckets.
-void computeScrubLetterStrip(const std::vector<char> &compactLetters,
-                             const std::vector<size_t> &compactTargets,
-                             std::vector<char> &scrubLetters,
-                             std::vector<size_t> &scrubTargets) {
-  scrubLetters.clear();
-  scrubTargets.clear();
-  if (compactLetters.empty()) return;
-
-  size_t hashTarget = SIZE_MAX;
-  size_t letterTarget[26];
-  for (size_t i = 0; i < 26; ++i) letterTarget[i] = SIZE_MAX;
-  for (size_t i = 0; i < compactLetters.size(); ++i) {
-    const char c = compactLetters[i];
-    if (c == '#') {
-      hashTarget = compactTargets[i];
-    } else if (c >= 'A' && c <= 'Z') {
-      letterTarget[c - 'A'] = compactTargets[i];
-    }
-  }
-
-  if (hashTarget != SIZE_MAX) {
-    scrubLetters.push_back('#');
-    scrubTargets.push_back(hashTarget);
-  }
-  size_t fallback = compactTargets.back();
-  for (int i = 0; i < 26; ++i) {
-    size_t target = letterTarget[i];
-    if (target == SIZE_MAX) {
-      for (int j = i + 1; j < 26; ++j) {
-        if (letterTarget[j] != SIZE_MAX) {
-          target = letterTarget[j];
-          break;
-        }
-      }
-      if (target == SIZE_MAX) target = fallback;
-    } else {
-      fallback = target;
-    }
-    scrubLetters.push_back(static_cast<char>('A' + i));
-    scrubTargets.push_back(target);
-  }
-}
-
 enum MenuItem : size_t {
   MenuResume,
   MenuResumeFrom,
@@ -1100,19 +1053,19 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs) {
         (nowMs - pausedTouch_.startMs) >= 350) {
       letterScrubActive_ = true;
       const std::vector<char> &lettersInit =
-          (menuScreen_ == MenuScreen::AuthorPicker) ? authorPickerScrubLetters_
-                                                    : bookPickerScrubLetters_;
+          (menuScreen_ == MenuScreen::AuthorPicker) ? authorPickerLetterAnchors_
+                                                    : bookPickerLetterAnchors_;
       letterScrubFocusIdx_ =
           DisplayManager::libraryLetterAtY(lettersInit, pausedTouch_.startY);
       if (letterScrubFocusIdx_ < 0) letterScrubFocusIdx_ = 0;
     }
     if (letterScrubActive_) {
       const std::vector<char> &letters =
-          (menuScreen_ == MenuScreen::AuthorPicker) ? authorPickerScrubLetters_
-                                                    : bookPickerScrubLetters_;
+          (menuScreen_ == MenuScreen::AuthorPicker) ? authorPickerLetterAnchors_
+                                                    : bookPickerLetterAnchors_;
       const std::vector<size_t> &targets =
-          (menuScreen_ == MenuScreen::AuthorPicker) ? authorPickerScrubTargets_
-                                                    : bookPickerScrubTargets_;
+          (menuScreen_ == MenuScreen::AuthorPicker) ? authorPickerLetterTargets_
+                                                    : bookPickerLetterTargets_;
       const int currentFocus =
           letterScrubFocusIdx_ >= 0 ? letterScrubFocusIdx_ : 0;
       const int idx =
@@ -1689,8 +1642,6 @@ void App::openAuthorPicker() {
   }
   computeLetterAnchors(authorMenuItems_, kAuthorPickerFirstAuthorIndex,
                        authorPickerLetterAnchors_, authorPickerLetterTargets_);
-  computeScrubLetterStrip(authorPickerLetterAnchors_, authorPickerLetterTargets_,
-                          authorPickerScrubLetters_, authorPickerScrubTargets_);
   renderAuthorPicker();
 }
 
@@ -1699,7 +1650,7 @@ void App::renderAuthorPicker() {
                         ? letterScrubFocusIdx_
                         : -1;
   display_.renderLibrary(authorMenuItems_, authorPickerSelectedIndex_,
-                         authorPickerLetterAnchors_, focus, authorPickerScrubLetters_);
+                         authorPickerLetterAnchors_, focus);
 }
 
 void App::selectAuthorPickerItem(uint32_t nowMs) {
@@ -1803,8 +1754,6 @@ void App::openBookPicker() {
     }
   }
   computeLetterAnchors(bookMenuItems_, 1, bookPickerLetterAnchors_, bookPickerLetterTargets_);
-  computeScrubLetterStrip(bookPickerLetterAnchors_, bookPickerLetterTargets_,
-                          bookPickerScrubLetters_, bookPickerScrubTargets_);
   renderBookPicker();
 }
 
@@ -2528,8 +2477,8 @@ void App::renderBookPicker() {
   const int focus = (letterScrubActive_ && menuScreen_ == MenuScreen::BookPicker)
                         ? letterScrubFocusIdx_
                         : -1;
-  display_.renderLibrary(bookMenuItems_, bookPickerSelectedIndex_, bookPickerLetterAnchors_, focus,
-                         bookPickerScrubLetters_);
+  display_.renderLibrary(bookMenuItems_, bookPickerSelectedIndex_, bookPickerLetterAnchors_,
+                         focus);
 }
 
 void App::renderChapterPicker() {

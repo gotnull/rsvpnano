@@ -213,12 +213,8 @@ class App {
   bool recentOnlyFilter_ = false;
   std::vector<char> bookPickerLetterAnchors_;
   std::vector<size_t> bookPickerLetterTargets_;
-  std::vector<char> bookPickerScrubLetters_;
-  std::vector<size_t> bookPickerScrubTargets_;
   std::vector<char> authorPickerLetterAnchors_;
   std::vector<size_t> authorPickerLetterTargets_;
-  std::vector<char> authorPickerScrubLetters_;
-  std::vector<size_t> authorPickerScrubTargets_;
   bool letterScrubActive_ = false;
   int letterScrubFocusIdx_ = -1;
   std::vector<String> chapterMenuItems_;
