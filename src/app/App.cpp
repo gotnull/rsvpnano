@@ -66,6 +66,7 @@ void computeLetterAnchors(const std::vector<DisplayManager::LibraryItem> &items,
 
 enum MenuItem : size_t {
   MenuResume,
+  MenuResumeFrom,
   MenuChapters,
   MenuChangeBook,
   MenuSettings,
@@ -79,6 +80,7 @@ enum MenuItem : size_t {
 
 constexpr const char *kMenuItems[] = {
     "Resume",
+    "Resume from",
     "Chapters",
     "Library",
     "Settings",
@@ -1117,7 +1119,13 @@ void App::selectMenuItem(uint32_t nowMs) {
       return;
     case MenuChangeBook:
       activeAuthorFilter_ = "";
+      recentOnlyFilter_ = false;
       openAuthorPicker();
+      return;
+    case MenuResumeFrom:
+      activeAuthorFilter_ = "";
+      recentOnlyFilter_ = true;
+      openBookPicker();
       return;
     case MenuSettings:
       openSettings();
@@ -1535,7 +1543,11 @@ void App::openBookPicker() {
   std::vector<size_t> sortedBookIndices;
   sortedBookIndices.reserve(count);
   for (size_t i = 0; i < count; ++i) {
-    if (!activeAuthorFilter_.isEmpty()) {
+    if (recentOnlyFilter_) {
+      if (bookRecentSequenceByIndex(i) == 0) {
+        continue;
+      }
+    } else if (!activeAuthorFilter_.isEmpty()) {
       String authorName = storage_.bookAuthorName(i);
       authorName.trim();
       if (authorName.isEmpty()) {
@@ -1605,6 +1617,9 @@ void App::selectBookPickerItem(uint32_t nowMs) {
       activeAuthorFilter_ = "";
       openAuthorPicker();
       return;
+    }
+    if (recentOnlyFilter_) {
+      recentOnlyFilter_ = false;
     }
     menuScreen_ = MenuScreen::Main;
     renderMainMenu();
@@ -2144,7 +2159,36 @@ void App::renderMenu() {
 }
 
 void App::renderMainMenu() {
-  display_.renderMenu(kMenuItems, MenuItemCount, menuSelectedIndex_);
+  String accent;
+  if (usingStorageBook_ && !currentBookTitle_.isEmpty()) {
+    accent = currentBookTitle_;
+    const uint8_t pct = readingProgressPercent();
+    if (pct > 0) {
+      accent += " - ";
+      accent += String(pct) + "%";
+    }
+    const size_t total = reader_.wordCount();
+    const size_t cur = reader_.currentIndex();
+    const uint16_t wpm = reader_.wpm();
+    if (total > cur && wpm > 0) {
+      const uint32_t remainingWords = static_cast<uint32_t>(total - cur);
+      const uint32_t totalMin = (remainingWords + wpm / 2) / wpm;
+      const uint32_t hours = totalMin / 60;
+      const uint32_t mins = totalMin % 60;
+      String t = "~";
+      if (hours > 0) {
+        t += String(hours) + "h";
+        if (hours < 10 && mins > 0) {
+          t += String(mins) + "m";
+        }
+      } else {
+        t += String(std::max<uint32_t>(1, mins)) + "m";
+      }
+      accent += " - ";
+      accent += t;
+    }
+  }
+  display_.renderMenuWithAccent(kMenuItems, MenuItemCount, menuSelectedIndex_, MenuResume, accent);
 }
 
 void App::renderSettings() {

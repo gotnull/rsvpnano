@@ -1467,42 +1467,49 @@ bool StorageManager::parseFile(File &file, BookContent &book, bool rsvpFormat,
     notifyStatus("Loading", progressLabel.c_str(), "Reading from SD", 0);
   }
 
-  while (file.available()) {
-    const char c = static_cast<char>(file.read());
-    if ((++bytesRead & 0x0FFF) == 0) {
-      yield();
-      if (emitProgress) {
-        const uint32_t now = millis();
-        if (now - lastProgressMs >= 200) {
-          const int percent =
-              static_cast<int>((static_cast<uint64_t>(bytesRead) * 100ULL) / totalBytes);
-          notifyStatus("Loading", progressLabel.c_str(), "Reading from SD",
-                       std::min(percent, 99));
-          lastProgressMs = now;
+  constexpr size_t kReadBufferBytes = 4096;
+  uint8_t buffer[kReadBufferBytes];
+  bool stopRequested = false;
+  while (!stopRequested && file.available()) {
+    const int got = file.read(buffer, sizeof(buffer));
+    if (got <= 0) {
+      break;
+    }
+    for (int i = 0; i < got; ++i) {
+      const char c = static_cast<char>(buffer[i]);
+      if (c == '\r') {
+        continue;
+      }
+      if (c == '\n') {
+        const bool keepReading =
+            rsvpFormat ? processRsvpLine(line, book, paragraphPending)
+                       : processBookLine(line, book, paragraphPending);
+        if (!keepReading) {
+          if (hasBookWordLimit()) {
+            Serial.printf("[storage] Reached %lu word limit, truncating book\n",
+                          static_cast<unsigned long>(kMaxBookWords));
+          }
+          stopRequested = true;
+          break;
         }
+        line = "";
+        continue;
+      }
+      line += c;
+    }
+
+    bytesRead += static_cast<size_t>(got);
+    yield();
+    if (emitProgress) {
+      const uint32_t now = millis();
+      if (now - lastProgressMs >= 200) {
+        const int percent =
+            static_cast<int>((static_cast<uint64_t>(bytesRead) * 100ULL) / totalBytes);
+        notifyStatus("Loading", progressLabel.c_str(), "Reading from SD",
+                     std::min(percent, 99));
+        lastProgressMs = now;
       }
     }
-
-    if (c == '\r') {
-      continue;
-    }
-
-    if (c == '\n') {
-      const bool keepReading =
-          rsvpFormat ? processRsvpLine(line, book, paragraphPending)
-                     : processBookLine(line, book, paragraphPending);
-      if (!keepReading) {
-        if (hasBookWordLimit()) {
-          Serial.printf("[storage] Reached %lu word limit, truncating book\n",
-                        static_cast<unsigned long>(kMaxBookWords));
-        }
-        break;
-      }
-      line = "";
-      continue;
-    }
-
-    line += c;
   }
 
   if (!line.isEmpty() && !reachedBookWordLimit(book.words.size())) {

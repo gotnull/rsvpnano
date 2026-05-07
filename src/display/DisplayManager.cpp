@@ -1900,23 +1900,103 @@ void DisplayManager::renderContextView(const std::vector<ContextWord> &words,
   }
 
   drawFooter(chapterLabel, progressPercent);
-  drawBatteryBadge(true);
+  drawBatteryBadge();
   flushScaledFrame(scale, virtualWidth, virtualHeight);
 }
 
 void DisplayManager::renderMenu(const char *const *items, size_t itemCount, size_t selectedIndex) {
+  renderMenuWithAccent(items, itemCount, selectedIndex, SIZE_MAX, "");
+}
+
+void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemCount,
+                                          size_t selectedIndex, size_t accentRow,
+                                          const String &accentText) {
   if (items == nullptr || itemCount == 0) {
     renderCenteredWord("MENU");
     return;
   }
 
-  std::vector<String> menuItems;
-  menuItems.reserve(itemCount);
-  for (size_t i = 0; i < itemCount; ++i) {
-    menuItems.push_back(items[i] == nullptr ? "" : items[i]);
+  if (selectedIndex >= itemCount) {
+    selectedIndex = itemCount - 1;
   }
 
-  renderMenu(menuItems, selectedIndex);
+  String renderKey = "menua|";
+  renderKey += String(selectedIndex);
+  renderKey += "|b:";
+  renderKey += batteryLabel_;
+  renderKey += "|d:";
+  renderKey += String(darkMode_ ? 1 : 0);
+  renderKey += "|n:";
+  renderKey += String(nightMode_ ? 1 : 0);
+  for (size_t i = 0; i < itemCount; ++i) {
+    renderKey += "|";
+    renderKey += (items[i] == nullptr ? "" : items[i]);
+  }
+  if (accentRow < itemCount && !accentText.isEmpty()) {
+    renderKey += "|a:";
+    renderKey += String(accentRow);
+    renderKey += ":";
+    renderKey += accentText;
+  }
+
+  if (!initialized_ || renderKey == lastRenderKey_) {
+    return;
+  }
+  lastRenderKey_ = renderKey;
+
+  const int scale = 1;
+  const int virtualWidth = kDisplayWidth;
+  const int virtualHeight = kDisplayHeight;
+  const size_t visibleCount =
+      std::min(itemCount, static_cast<size_t>(std::max(1, virtualHeight / kCompactMenuRowHeight)));
+  size_t firstVisible = 0;
+  if (selectedIndex >= visibleCount / 2) {
+    firstVisible = selectedIndex - visibleCount / 2;
+  }
+  if (firstVisible + visibleCount > itemCount) {
+    firstVisible = itemCount - visibleCount;
+  }
+
+  const int rowHeight = kCompactMenuRowHeight;
+  const int totalHeight = rowHeight * static_cast<int>(visibleCount);
+  int y = std::max(0, (virtualHeight - totalHeight) / 2);
+
+  clearVirtualBuffer(virtualWidth, virtualHeight);
+
+  const int accentRightInset = kFooterMarginX + kLibraryLetterStripWidth + 36;
+  const uint16_t accentColor = darkMode_ ? 0xFFE0 : 0xFB00;
+
+  for (size_t row = 0; row < visibleCount; ++row) {
+    const size_t itemIndex = firstVisible + row;
+    const bool selected = itemIndex == selectedIndex;
+    const uint16_t color = selected ? focusColor() : dimColor();
+    const String &itemText = items[itemIndex] == nullptr ? String("") : String(items[itemIndex]);
+
+    const int textX = kCompactMenuX;
+    if (selected) {
+      fillVirtualRect(10, y + 2, 5, kTinyGlyphHeight * kTinyScale + 2, selectedBarColor());
+    }
+    const int itemWidth = measureTinyTextWidth(itemText, kTinyScale);
+    const bool hasAccent =
+        itemIndex == accentRow && !accentText.isEmpty();
+    const int maxItemWidth = virtualWidth - textX - 16 - (hasAccent ? 4 : 0);
+    const String fittedItem = fitTinyText(itemText, maxItemWidth, kTinyScale);
+    drawTinyTextAt(fittedItem, textX, y + 3, color, kTinyScale);
+
+    if (hasAccent) {
+      const int accentStartX = textX + std::max(itemWidth, 0) + 14;
+      const int accentMaxWidth =
+          std::max(0, virtualWidth - accentStartX - accentRightInset);
+      const String fittedAccent = fitTinyText(accentText, accentMaxWidth, kTinyScale);
+      if (!fittedAccent.isEmpty()) {
+        drawTinyTextAt(fittedAccent, accentStartX, y + 3, accentColor, kTinyScale);
+      }
+    }
+    y += rowHeight;
+  }
+
+  drawBatteryBadge();
+  flushScaledFrame(scale, virtualWidth, virtualHeight);
 }
 
 void DisplayManager::renderMenu(const std::vector<String> &items, size_t selectedIndex) {

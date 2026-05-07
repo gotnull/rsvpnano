@@ -200,6 +200,7 @@ class App {
   std::vector<DisplayManager::LibraryItem> authorMenuItems_;
   std::vector<String> authorPickerNames_;
   String activeAuthorFilter_;
+  bool recentOnlyFilter_ = false;
   std::vector<char> bookPickerLetterAnchors_;
   std::vector<size_t> bookPickerLetterTargets_;
   std::vector<char> authorPickerLetterAnchors_;

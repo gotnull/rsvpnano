@@ -60,6 +60,8 @@ class DisplayManager {
                          uint8_t progressPercent = 0);
   void renderMenu(const char *const *items, size_t itemCount, size_t selectedIndex);
   void renderMenu(const std::vector<String> &items, size_t selectedIndex);
+  void renderMenuWithAccent(const char *const *items, size_t itemCount, size_t selectedIndex,
+                            size_t accentRow, const String &accentText);
   void renderLibrary(const std::vector<LibraryItem> &items, size_t selectedIndex,
                      const std::vector<char> &letterAnchors = std::vector<char>());
 
