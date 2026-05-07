@@ -1382,12 +1382,18 @@ void DisplayManager::drawFooter(const String &chapterLabel, uint8_t progressPerc
 
   if (currentWpm_ > 0) {
     const String wpmLabel = String(currentWpm_) + "wpm";
-    const bool highlighted = millis() < wpmHighlightUntilMs_;
-    const uint16_t wpmTextColor = highlighted ? focusColor() : footerColor();
-    const uint16_t wpmChipBg =
-        highlighted ? blendOverBackground(focusColor(), kWpmHighlightBgAlpha) : chipBg;
+    const uint32_t now = millis();
+    const bool highlighted = now < wpmHighlightUntilMs_;
+    // Inverted-pill look while highlighted: solid focus colour fill + background
+    // colour text so it pops against any other chip on screen.
+    const uint16_t wpmTextColor = highlighted ? backgroundColor() : footerColor();
+    const uint16_t wpmChipBg = highlighted ? focusColor() : chipBg;
     drawChipText(wpmLabel, 0, textY, wpmTextColor, wpmChipBg, true,
                  kDisplayWidth - kFooterMarginX);
+    if (highlighted) {
+      // Force the next render to redraw so we revert when the deadline lapses.
+      lastRenderKey_ = "";
+    }
   }
 
   const int batteryWidth =
