@@ -6,7 +6,7 @@
 
 namespace {
 
-constexpr uint32_t kWifiConnectTimeoutMs = 12000;
+constexpr uint32_t kWifiConnectTimeoutMs = 20000;
 constexpr uint32_t kHttpTimeoutMs = 8000;
 
 String extractJsonString(const String &json, const char *key) {
@@ -73,10 +73,9 @@ void NotificationsManager::setStatusCallback(StatusCallback callback, void *cont
   statusContext_ = context;
 }
 
-void NotificationsManager::configure(const String &ssid, const String &password, const String &url,
-                                     const String &token) {
-  ssid_ = ssid;
-  password_ = password;
+void NotificationsManager::configure(const std::vector<OtaManager::Network> &networks,
+                                     const String &url, const String &token) {
+  networks_ = networks;
   url_ = url;
   token_ = token;
 }
@@ -93,22 +92,30 @@ void NotificationsManager::notifyStatus(const char *title, const char *line1, co
 }
 
 bool NotificationsManager::poll() {
-  if (!enabled_ || ssid_.isEmpty() || url_.isEmpty()) {
+  if (!enabled_ || networks_.empty() || url_.isEmpty()) {
     return false;
   }
 
   WiFi.mode(WIFI_STA);
-  WiFi.disconnect(true);
-  delay(50);
-  WiFi.begin(ssid_.c_str(), password_.c_str());
-
-  const uint32_t deadline = millis() + kWifiConnectTimeoutMs;
-  while (WiFi.status() != WL_CONNECTED && millis() < deadline) {
-    delay(150);
-    yield();
+  bool connected = false;
+  for (const auto &net : networks_) {
+    WiFi.disconnect(true);
+    delay(50);
+    WiFi.begin(net.ssid.c_str(), net.password.c_str());
+    const uint32_t deadline = millis() + kWifiConnectTimeoutMs;
+    while (WiFi.status() != WL_CONNECTED && millis() < deadline) {
+      delay(150);
+      yield();
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+      connected = true;
+      Serial.printf("[notif] WiFi connected: %s\n", net.ssid.c_str());
+      break;
+    }
+    Serial.printf("[notif] WiFi %s timed out\n", net.ssid.c_str());
   }
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[notif] WiFi connect timed out");
+  if (!connected) {
+    Serial.println("[notif] all WiFi networks failed");
     WiFi.disconnect(true);
     return false;
   }

@@ -4,6 +4,8 @@
 
 #include <vector>
 
+#include "network/OtaManager.h"
+
 class NotificationsManager {
  public:
   struct Notification {
@@ -20,7 +22,7 @@ class NotificationsManager {
   // Configures the network endpoint and (optional) bearer token. Polling is a no-op
   // when ssid/url is empty, so the feature gracefully degrades if wifi.json doesn't
   // include notification config.
-  void configure(const String &ssid, const String &password, const String &url,
+  void configure(const std::vector<OtaManager::Network> &networks, const String &url,
                  const String &token);
   bool enabled() const { return enabled_; }
   void setEnabled(bool enabled);
@@ -42,8 +44,7 @@ class NotificationsManager {
   void notifyStatus(const char *title, const char *line1 = "", const char *line2 = "",
                     int progressPercent = -1);
 
-  String ssid_;
-  String password_;
+  std::vector<OtaManager::Network> networks_;
   String url_;
   String token_;
   bool enabled_ = true;

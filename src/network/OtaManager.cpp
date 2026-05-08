@@ -42,6 +42,54 @@ void OtaManager::notifyStatus(const char *title, const char *line1, const char *
   }
 }
 
+namespace {
+
+// Walks the "networks" array (if present) pulling out per-entry ssid+password.
+void parseNetworksArray(const String &json, std::vector<OtaManager::Network> &out) {
+  const int arrKey = json.indexOf("\"networks\"");
+  if (arrKey < 0) return;
+  const int arrStart = json.indexOf('[', arrKey);
+  if (arrStart < 0) return;
+  // Find matching ]
+  int depth = 0;
+  int arrEnd = -1;
+  for (int i = arrStart; i < static_cast<int>(json.length()); ++i) {
+    if (json[i] == '[') ++depth;
+    else if (json[i] == ']') {
+      --depth;
+      if (depth == 0) { arrEnd = i; break; }
+    }
+  }
+  if (arrEnd < 0) return;
+
+  // Each object {"ssid": "...", "password": "..."}
+  int cursor = arrStart + 1;
+  while (cursor < arrEnd) {
+    const int objStart = json.indexOf('{', cursor);
+    if (objStart < 0 || objStart >= arrEnd) break;
+    int objDepth = 0;
+    int objEnd = -1;
+    for (int i = objStart; i < arrEnd; ++i) {
+      if (json[i] == '{') ++objDepth;
+      else if (json[i] == '}') {
+        --objDepth;
+        if (objDepth == 0) { objEnd = i; break; }
+      }
+    }
+    if (objEnd < 0) break;
+    const String obj = json.substring(objStart, objEnd + 1);
+    OtaManager::Network n;
+    n.ssid = extractJsonString(obj, "ssid");
+    n.password = extractJsonString(obj, "password");
+    if (!n.ssid.isEmpty()) {
+      out.push_back(n);
+    }
+    cursor = objEnd + 1;
+  }
+}
+
+}  // namespace
+
 bool OtaManager::loadConfigFromSd(const char *path) {
   File f = SD_MMC.open(path);
   if (!f || f.isDirectory()) {
@@ -56,43 +104,64 @@ bool OtaManager::loadConfigFromSd(const char *path) {
   }
   f.close();
 
-  config_.ssid = extractJsonString(contents, "ssid");
-  config_.password = extractJsonString(contents, "password");
+  config_.networks.clear();
+  parseNetworksArray(contents, config_.networks);
+  // Legacy single-network fallback: top-level "ssid"/"password".
+  const String legacySsid = extractJsonString(contents, "ssid");
+  const String legacyPass = extractJsonString(contents, "password");
+  if (!legacySsid.isEmpty()) {
+    Network n;
+    n.ssid = legacySsid;
+    n.password = legacyPass;
+    config_.networks.push_back(n);
+  }
   config_.firmwareUrl = extractJsonString(contents, "url");
   config_.notificationsUrl = extractJsonString(contents, "notifications_url");
   config_.notificationsToken = extractJsonString(contents, "notifications_token");
-  if (config_.ssid.isEmpty() || config_.firmwareUrl.isEmpty()) {
-    lastError_ = "wifi.json missing ssid or url";
+  if (config_.networks.empty() || config_.firmwareUrl.isEmpty()) {
+    lastError_ = "wifi.json missing networks or url";
     return false;
   }
   return true;
 }
 
 bool OtaManager::connectWifi() {
-  notifyStatus("OTA", "Connecting WiFi", config_.ssid.c_str(), 5);
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect(true);
-  delay(100);
-  WiFi.begin(config_.ssid.c_str(), config_.password.c_str());
-
-  const uint32_t deadline = millis() + 20000;
-  while (WiFi.status() != WL_CONNECTED && millis() < deadline) {
-    delay(250);
-    yield();
-  }
-  if (WiFi.status() != WL_CONNECTED) {
-    lastError_ = "WiFi connect timeout";
-    notifyStatus("OTA", "WiFi failed", "Check wifi.json", 100);
+  if (config_.networks.empty()) {
+    lastError_ = "No networks configured";
+    notifyStatus("OTA", "No WiFi", "Check wifi.json", 100);
     return false;
   }
-  Serial.printf("[ota] WiFi connected, IP=%s RSSI=%d\n", WiFi.localIP().toString().c_str(),
-                WiFi.RSSI());
-  return true;
+  WiFi.mode(WIFI_STA);
+  for (size_t i = 0; i < config_.networks.size(); ++i) {
+    const Network &net = config_.networks[i];
+    Serial.printf("[ota] WiFi try %u/%u: %s\n", static_cast<unsigned>(i + 1),
+                  static_cast<unsigned>(config_.networks.size()), net.ssid.c_str());
+    notifyStatus("OTA", "Connecting WiFi", net.ssid.c_str(), 5);
+    WiFi.disconnect(true);
+    delay(100);
+    WiFi.begin(net.ssid.c_str(), net.password.c_str());
+    // 20 s per network — iPhone Personal Hotspot can take that long to wake
+    // the radio and hand out DHCP after the device opens the password chooser.
+    const uint32_t deadline = millis() + 20000;
+    while (WiFi.status() != WL_CONNECTED && millis() < deadline) {
+      delay(250);
+      yield();
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.printf("[ota] WiFi connected to %s, IP=%s RSSI=%d\n", net.ssid.c_str(),
+                    WiFi.localIP().toString().c_str(), WiFi.RSSI());
+      return true;
+    }
+    Serial.printf("[ota] WiFi %s timed out\n", net.ssid.c_str());
+  }
+  lastError_ = "All WiFi networks failed";
+  notifyStatus("OTA", "WiFi failed", "All networks tried", 100);
+  return false;
 }
 
 bool OtaManager::runUpdate() {
   lastError_ = "";
-  if (config_.ssid.isEmpty() || config_.firmwareUrl.isEmpty()) {
+  if (config_.networks.empty() || config_.firmwareUrl.isEmpty()) {
     if (!loadConfigFromSd()) {
       notifyStatus("OTA", "No config", "Add /wifi.json on SD", 100);
       return false;

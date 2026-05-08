@@ -166,6 +166,7 @@ namespace
   constexpr size_t kSettingsHomeVolumeIndex = 7;
   constexpr size_t kSettingsHomeReadingSoundsIndex = 8;
   constexpr size_t kSettingsHomeRemountSdIndex = 9;
+  constexpr size_t kSettingsHomeNetworkIndex = 10;
   constexpr size_t kSettingsReadingSoundsChapterIndex = 1;
   constexpr size_t kSettingsReadingSoundsParagraphIndex = 2;
   constexpr size_t kSettingsReadingSoundsPageIndex = 3;
@@ -206,6 +207,7 @@ namespace
   constexpr const char *kPrefParagraphChime = "pgchm";
   constexpr const char *kPrefPageChime = "pgnchm";
   constexpr const char *kPrefAutoPowerOff = "apoff";
+  constexpr const char *kPrefPreferredWifi = "wifipref";
   // Index 0 disables auto-off; rest are minute-thresholds. Bumping the cycle
   // is one-tap, and Off is in the cycle so the user can disable from the
   // Settings menu without a separate toggle.
@@ -412,6 +414,7 @@ void App::begin()
   pageChimeEnabled_ = preferences_.getBool(kPrefPageChime, pageChimeEnabled_);
   autoPowerOffIndex_ = preferences_.getUChar(kPrefAutoPowerOff, autoPowerOffIndex_);
   if (autoPowerOffIndex_ >= kAutoPowerOffOptionCount) autoPowerOffIndex_ = 0;
+  preferredWifiSsid_ = preferences_.getString(kPrefPreferredWifi, "");
   lastActivityMs_ = millis();
   applyDisplayPreferences(0, false);
   applyTypographySettings(0, false);
@@ -447,21 +450,51 @@ void App::begin()
   const bool storageReady = storage_.begin();
   storage_.listBooks();
 
-  // WiFi/OTA config: prefer the SD's wifi.json (so updates to credentials are
-  // easy), but persist a cached copy in NVS so the network features still
-  // work after the SD has been pulled out (typical recovery path = "boot
-  // without SD, hit OTA Update, then re-insert SD on next boot").
-  constexpr const char *kPrefWifiSsid = "wifissid";
-  constexpr const char *kPrefWifiPass = "wifipass";
+  // WiFi/OTA config: prefer SD's wifi.json (single source of truth), persist a
+  // cached copy in NVS so OTA / Notifications / Downloads still work when the
+  // SD is missing. Networks are stored as a single delimited string —
+  // ssid<US>password<RS>ssid<US>password... — so an arbitrary list survives
+  // reboots without juggling numbered keys.
+  constexpr const char *kPrefWifiNetworks = "wifinets";
   constexpr const char *kPrefFirmwareUrl = "fwurl";
   constexpr const char *kPrefNotifUrl = "nfurl";
   constexpr const char *kPrefNotifTok = "nftok";
+  constexpr char kNetFieldSep = '\x1F';   // unit separator
+  constexpr char kNetRecordSep = '\x1E';  // record separator
+  auto serializeNetworks = [&](const std::vector<OtaManager::Network> &nets) {
+    String out;
+    for (size_t i = 0; i < nets.size(); ++i) {
+      if (i > 0) out += kNetRecordSep;
+      out += nets[i].ssid;
+      out += kNetFieldSep;
+      out += nets[i].password;
+    }
+    return out;
+  };
+  auto deserializeNetworks = [&](const String &s) {
+    std::vector<OtaManager::Network> out;
+    int cursor = 0;
+    while (cursor <= static_cast<int>(s.length())) {
+      int rec = s.indexOf(kNetRecordSep, cursor);
+      if (rec < 0) rec = s.length();
+      const String entry = s.substring(cursor, rec);
+      const int sep = entry.indexOf(kNetFieldSep);
+      if (sep > 0) {
+        OtaManager::Network n;
+        n.ssid = entry.substring(0, sep);
+        n.password = entry.substring(sep + 1);
+        if (!n.ssid.isEmpty()) out.push_back(n);
+      }
+      if (rec >= static_cast<int>(s.length())) break;
+      cursor = rec + 1;
+    }
+    return out;
+  };
   bool haveNetConfig = false;
   if (storageReady && ota_.loadConfigFromSd())
   {
     const auto &cfg = ota_.config();
-    preferences_.putString(kPrefWifiSsid, cfg.ssid);
-    preferences_.putString(kPrefWifiPass, cfg.password);
+    preferences_.putString(kPrefWifiNetworks, serializeNetworks(cfg.networks));
     preferences_.putString(kPrefFirmwareUrl, cfg.firmwareUrl);
     preferences_.putString(kPrefNotifUrl, cfg.notificationsUrl);
     preferences_.putString(kPrefNotifTok, cfg.notificationsToken);
@@ -470,24 +503,21 @@ void App::begin()
   else
   {
     OtaManager::Config cached;
-    cached.ssid = preferences_.getString(kPrefWifiSsid, "");
-    cached.password = preferences_.getString(kPrefWifiPass, "");
+    cached.networks = deserializeNetworks(preferences_.getString(kPrefWifiNetworks, ""));
     cached.firmwareUrl = preferences_.getString(kPrefFirmwareUrl, "");
     cached.notificationsUrl = preferences_.getString(kPrefNotifUrl, "");
     cached.notificationsToken = preferences_.getString(kPrefNotifTok, "");
-    if (!cached.ssid.isEmpty() && !cached.firmwareUrl.isEmpty())
+    if (!cached.networks.empty() && !cached.firmwareUrl.isEmpty())
     {
       ota_.setConfig(cached);
-      Serial.println("[app] using cached WiFi/OTA config from NVS");
+      Serial.printf("[app] using cached WiFi config from NVS (%u networks)\n",
+                    static_cast<unsigned>(cached.networks.size()));
       haveNetConfig = true;
     }
   }
   if (haveNetConfig)
   {
-    const auto &cfg = ota_.config();
-    notifications_.configure(cfg.ssid, cfg.password, cfg.notificationsUrl,
-                             cfg.notificationsToken);
-    bookDownloader_.configure(cfg.ssid, cfg.password, "ccpaging", "books");
+    applyDefaultNetwork();
   }
   if (storageReady)
   {
@@ -1456,8 +1486,14 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs)
 
   // Long-press on a book row in the BookPicker opens the delete-confirm screen.
   // Threshold is 800 ms with little movement so it doesn't fire on a slow swipe.
+  // Skip if the touch started in (or has activated) the right-edge letter
+  // strip — that's the alphabet scrubber, not a row hold.
+  const int letterStripStartX =
+      BoardConfig::DISPLAY_WIDTH - DisplayManager::kLibraryLetterStripWidth;
+  const bool touchInLetterStrip = pausedTouch_.startX >= letterStripStartX;
   if (!bookLongPressFired_ && menuScreen_ == MenuScreen::BookPicker &&
-      event.phase != TouchPhase::End && (nowMs - pausedTouch_.startMs) >= 800)
+      event.phase != TouchPhase::End && (nowMs - pausedTouch_.startMs) >= 800 &&
+      !letterScrubActive_ && !touchInLetterStrip)
   {
     const int dx = abs(static_cast<int>(event.x) - static_cast<int>(pausedTouch_.startX));
     const int dy = abs(static_cast<int>(event.y) - static_cast<int>(pausedTouch_.startY));
@@ -1634,6 +1670,11 @@ void App::moveMenuSelection(int direction)
     selectedIndex = &remoteBookSelectedIndex_;
     itemCount = remoteBookMenuItems_.size();
   }
+  else if (menuScreen_ == MenuScreen::NetworkPicker)
+  {
+    selectedIndex = &networkSelectedIndex_;
+    itemCount = networkMenuItems_.size();
+  }
   else if (menuScreen_ == MenuScreen::BookDeleteConfirm)
   {
     selectedIndex = &bookDeleteSelectedIndex_;
@@ -1736,6 +1777,11 @@ void App::selectMenuItem(uint32_t nowMs)
   if (menuScreen_ == MenuScreen::RemoteBookPicker)
   {
     selectRemoteBookPickerItem(nowMs);
+    return;
+  }
+  if (menuScreen_ == MenuScreen::NetworkPicker)
+  {
+    selectNetworkPickerItem(nowMs);
     return;
   }
   if (menuScreen_ == MenuScreen::BookDeleteConfirm)
@@ -1855,6 +1901,9 @@ void App::selectSettingsItem(uint32_t nowMs)
       menuScreen_ = MenuScreen::SettingsReadingSounds;
       rebuildSettingsMenuItems();
       renderSettings();
+      return;
+    case kSettingsHomeNetworkIndex:
+      openNetworkPicker();
       return;
     case kSettingsHomeRemountSdIndex:
     {
@@ -2100,6 +2149,7 @@ void App::rebuildSettingsMenuItems()
     settingsMenuItems_.push_back(String("Volume: ") + String(notificationVolume_) + "%");
     settingsMenuItems_.push_back("Reading sounds");
     settingsMenuItems_.push_back("Remount SD");
+    settingsMenuItems_.push_back("Network");
   }
   else if (menuScreen_ == MenuScreen::SettingsReadingSounds)
   {
@@ -2900,6 +2950,85 @@ constexpr size_t kRemoteBookPickerBackIndex = 0;
 constexpr size_t kRemoteBookPickerFirstBookIndex = 1;
 }  // namespace
 
+void App::applyDefaultNetwork()
+{
+  // Reorder ota_.config().networks so the user's preferred SSID is index 0,
+  // then push the new order into the other managers. WiFi connect attempts
+  // walk the list head-first, so this is what makes "default" mean default.
+  OtaManager::Config cfg = ota_.config();
+  if (!preferredWifiSsid_.isEmpty())
+  {
+    auto it = std::find_if(cfg.networks.begin(), cfg.networks.end(),
+                           [this](const OtaManager::Network &n) {
+                             return n.ssid == preferredWifiSsid_;
+                           });
+    if (it != cfg.networks.end() && it != cfg.networks.begin())
+    {
+      OtaManager::Network preferred = *it;
+      cfg.networks.erase(it);
+      cfg.networks.insert(cfg.networks.begin(), preferred);
+      ota_.setConfig(cfg);
+    }
+  }
+  notifications_.configure(cfg.networks, cfg.notificationsUrl, cfg.notificationsToken);
+  bookDownloader_.configure(cfg.networks, "ccpaging", "books");
+}
+
+void App::openNetworkPicker()
+{
+  networkMenuItems_.clear();
+  const auto &cfg = ota_.config();
+  DisplayManager::LibraryItem backItem;
+  backItem.title = "Back";
+  networkMenuItems_.push_back(backItem);
+  size_t selectedAt = 0;
+  for (size_t i = 0; i < cfg.networks.size(); ++i)
+  {
+    DisplayManager::LibraryItem item;
+    item.title = cfg.networks[i].ssid;
+    if (cfg.networks[i].ssid == preferredWifiSsid_ ||
+        (preferredWifiSsid_.isEmpty() && i == 0))
+    {
+      item.badges.push_back("DEFAULT");
+      selectedAt = i + 1;  // +1 for the Back row
+    }
+    networkMenuItems_.push_back(item);
+  }
+  networkSelectedIndex_ = selectedAt > 0 ? selectedAt : 0;
+  menuScreen_ = MenuScreen::NetworkPicker;
+  renderNetworkPicker();
+}
+
+void App::renderNetworkPicker()
+{
+  display_.renderLibrary(networkMenuItems_, networkSelectedIndex_);
+}
+
+void App::selectNetworkPickerItem(uint32_t nowMs)
+{
+  (void)nowMs;
+  if (networkSelectedIndex_ == 0)
+  {
+    settingsSelectedIndex_ = kSettingsHomeNetworkIndex;
+    menuScreen_ = MenuScreen::SettingsHome;
+    rebuildSettingsMenuItems();
+    renderSettings();
+    return;
+  }
+  const auto &cfg = ota_.config();
+  const size_t netIdx = networkSelectedIndex_ - 1;
+  if (netIdx >= cfg.networks.size()) return;
+  preferredWifiSsid_ = cfg.networks[netIdx].ssid;
+  preferences_.putString(kPrefPreferredWifi, preferredWifiSsid_);
+  applyDefaultNetwork();
+  // Rebuild the picker so the DEFAULT badge reflects the new pick, then bounce
+  // back to Settings so the user sees it land.
+  settingsSelectedIndex_ = kSettingsHomeNetworkIndex;
+  menuScreen_ = MenuScreen::SettingsHome;
+  rebuildSettingsMenuItems();
+  renderSettings();
+}
+
 void App::openRemoteBookPicker(uint32_t nowMs)
 {
   (void)nowMs;
@@ -3595,6 +3724,10 @@ void App::renderMenu()
   {
     renderRemoteBookPicker();
   }
+  else if (menuScreen_ == MenuScreen::NetworkPicker)
+  {
+    renderNetworkPicker();
+  }
   else if (menuScreen_ == MenuScreen::BookDeleteConfirm)
   {
     renderBookDeleteConfirm();
@@ -3702,6 +3835,10 @@ void App::renderSettings()
     if (settingsMenuItems_.size() > kSettingsHomeReadingSoundsIndex)
     {
       chevrons[kSettingsHomeReadingSoundsIndex] = true;
+    }
+    if (settingsMenuItems_.size() > kSettingsHomeNetworkIndex)
+    {
+      chevrons[kSettingsHomeNetworkIndex] = true;
     }
   }
   else if (menuScreen_ == MenuScreen::SettingsDisplay)

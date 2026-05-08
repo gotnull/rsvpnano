@@ -4,6 +4,8 @@
 
 #include <vector>
 
+#include "network/OtaManager.h"
+
 class BookDownloadManager {
  public:
   struct RemoteBook {
@@ -16,7 +18,7 @@ class BookDownloadManager {
                                   const char *line2, int progressPercent);
 
   void setStatusCallback(StatusCallback callback, void *context);
-  void configure(const String &ssid, const String &password, const String &owner,
+  void configure(const std::vector<OtaManager::Network> &networks, const String &owner,
                  const String &repo, const String &branch = "HEAD");
 
   // Connects WiFi, queries the GitHub tree API, fills `out` with every .epub
@@ -38,8 +40,7 @@ class BookDownloadManager {
   // proper encoding for non-ASCII characters in filenames.
   static String urlEncodePath(const String &path);
 
-  String ssid_;
-  String password_;
+  std::vector<OtaManager::Network> networks_;
   String owner_;
   String repo_;
   String branch_ = "HEAD";

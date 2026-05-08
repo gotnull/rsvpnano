@@ -49,6 +49,7 @@ class App {
     SettingsDisplay,
     SettingsPacing,
     SettingsReadingSounds,
+    NetworkPicker,
     TypographyTuning,
     AuthorPicker,
     BookPicker,
@@ -117,6 +118,12 @@ class App {
   void openRemoteBookPicker(uint32_t nowMs);
   void selectRemoteBookPickerItem(uint32_t nowMs);
   void renderRemoteBookPicker();
+  void openNetworkPicker();
+  void selectNetworkPickerItem(uint32_t nowMs);
+  void renderNetworkPicker();
+  // Reorders ota_.config().networks so the user-selected default SSID is at
+  // index 0, then re-pushes into NotificationsManager + BookDownloadManager.
+  void applyDefaultNetwork();
   void openBookDeleteConfirm(size_t bookIndex);
   void selectBookDeleteConfirmItem(uint32_t nowMs);
   void renderBookDeleteConfirm();
@@ -203,6 +210,9 @@ class App {
   std::vector<BookDownloadManager::RemoteBook> remoteBooks_;
   size_t remoteBookSelectedIndex_ = 0;
   std::vector<DisplayManager::LibraryItem> remoteBookMenuItems_;
+  std::vector<DisplayManager::LibraryItem> networkMenuItems_;
+  size_t networkSelectedIndex_ = 0;
+  String preferredWifiSsid_;
   Preferences preferences_;
   PausedTouchSession pausedTouch_;
   TouchIntent pausedTouchIntent_ = TouchIntent::None;

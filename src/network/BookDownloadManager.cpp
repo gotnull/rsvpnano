@@ -7,7 +7,7 @@
 
 namespace {
 
-constexpr uint32_t kWifiConnectTimeoutMs = 15000;
+constexpr uint32_t kWifiConnectTimeoutMs = 20000;
 constexpr uint32_t kHttpTimeoutMs = 15000;
 
 // Manual scan for tree entries with type=blob and path ending in .epub. The
@@ -74,11 +74,10 @@ void BookDownloadManager::setStatusCallback(StatusCallback callback, void *conte
   statusContext_ = context;
 }
 
-void BookDownloadManager::configure(const String &ssid, const String &password,
+void BookDownloadManager::configure(const std::vector<OtaManager::Network> &networks,
                                     const String &owner, const String &repo,
                                     const String &branch) {
-  ssid_ = ssid;
-  password_ = password;
+  networks_ = networks;
   owner_ = owner;
   repo_ = repo;
   branch_ = branch.isEmpty() ? String("HEAD") : branch;
@@ -94,28 +93,33 @@ void BookDownloadManager::notifyStatus(const char *title, const char *line1,
 }
 
 bool BookDownloadManager::connectWifi() {
-  if (ssid_.isEmpty()) {
-    lastError_ = "No WiFi SSID configured";
-    notifyStatus("Books", "WiFi not set", "Add ssid to /wifi.json", 100);
+  if (networks_.empty()) {
+    lastError_ = "No WiFi networks configured";
+    notifyStatus("Books", "WiFi not set", "Add networks to /wifi.json", 100);
     return false;
   }
   WiFi.mode(WIFI_STA);
-  WiFi.disconnect(true);
-  delay(50);
-  WiFi.begin(ssid_.c_str(), password_.c_str());
-  notifyStatus("Books", "Connecting WiFi", ssid_.c_str(), 5);
-  const uint32_t deadline = millis() + kWifiConnectTimeoutMs;
-  while (WiFi.status() != WL_CONNECTED && millis() < deadline) {
-    delay(150);
-    yield();
-  }
-  if (WiFi.status() != WL_CONNECTED) {
-    lastError_ = "WiFi connect timed out";
-    notifyStatus("Books", "WiFi failed", ssid_.c_str(), 100);
+  for (size_t i = 0; i < networks_.size(); ++i) {
+    const auto &net = networks_[i];
+    notifyStatus("Books", "Connecting WiFi", net.ssid.c_str(), 5);
     WiFi.disconnect(true);
-    return false;
+    delay(50);
+    WiFi.begin(net.ssid.c_str(), net.password.c_str());
+    const uint32_t deadline = millis() + kWifiConnectTimeoutMs;
+    while (WiFi.status() != WL_CONNECTED && millis() < deadline) {
+      delay(150);
+      yield();
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.printf("[booksdl] WiFi connected: %s\n", net.ssid.c_str());
+      return true;
+    }
+    Serial.printf("[booksdl] WiFi %s timed out\n", net.ssid.c_str());
   }
-  return true;
+  lastError_ = "All WiFi networks failed";
+  notifyStatus("Books", "WiFi failed", "All networks tried", 100);
+  WiFi.disconnect(true);
+  return false;
 }
 
 bool BookDownloadManager::listAvailable(std::vector<RemoteBook> &out) {

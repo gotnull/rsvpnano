@@ -2,14 +2,23 @@
 
 #include <Arduino.h>
 
+#include <vector>
+
 class OtaManager {
  public:
   using StatusCallback = void (*)(void *context, const char *title, const char *line1,
                                   const char *line2, int progressPercent);
 
-  struct Config {
+  struct Network {
     String ssid;
     String password;
+  };
+
+  struct Config {
+    // Networks tried in order until one connects. Single-network legacy
+    // wifi.json (top-level "ssid" / "password") still works — the loader
+    // pushes that into networks[0].
+    std::vector<Network> networks;
     String firmwareUrl;
     String notificationsUrl;
     String notificationsToken;
