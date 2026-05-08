@@ -4,6 +4,8 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 
+#include "network/WifiConnector.h"
+
 namespace {
 
 constexpr uint32_t kWifiConnectTimeoutMs = 20000;
@@ -96,27 +98,7 @@ bool NotificationsManager::poll() {
     return false;
   }
 
-  WiFi.mode(WIFI_STA);
-  bool connected = false;
-  for (const auto &net : networks_) {
-    WiFi.disconnect(true);
-    delay(50);
-    WiFi.begin(net.ssid.c_str(), net.password.c_str());
-    const uint32_t deadline = millis() + kWifiConnectTimeoutMs;
-    while (WiFi.status() != WL_CONNECTED && millis() < deadline) {
-      delay(150);
-      yield();
-    }
-    if (WiFi.status() == WL_CONNECTED) {
-      connected = true;
-      Serial.printf("[notif] WiFi connected: %s\n", net.ssid.c_str());
-      break;
-    }
-    Serial.printf("[notif] WiFi %s timed out\n", net.ssid.c_str());
-  }
-  if (!connected) {
-    Serial.println("[notif] all WiFi networks failed");
-    WiFi.disconnect(true);
+  if (!WifiConnector::connect(networks_, kWifiConnectTimeoutMs, "notif")) {
     return false;
   }
 

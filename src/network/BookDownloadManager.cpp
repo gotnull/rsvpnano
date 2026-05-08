@@ -5,6 +5,8 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 
+#include "network/WifiConnector.h"
+
 namespace {
 
 constexpr uint32_t kWifiConnectTimeoutMs = 20000;
@@ -98,28 +100,13 @@ bool BookDownloadManager::connectWifi() {
     notifyStatus("Books", "WiFi not set", "Add networks to /wifi.json", 100);
     return false;
   }
-  WiFi.mode(WIFI_STA);
-  for (size_t i = 0; i < networks_.size(); ++i) {
-    const auto &net = networks_[i];
-    notifyStatus("Books", "Connecting WiFi", net.ssid.c_str(), 5);
-    WiFi.disconnect(true);
-    delay(50);
-    WiFi.begin(net.ssid.c_str(), net.password.c_str());
-    const uint32_t deadline = millis() + kWifiConnectTimeoutMs;
-    while (WiFi.status() != WL_CONNECTED && millis() < deadline) {
-      delay(150);
-      yield();
-    }
-    if (WiFi.status() == WL_CONNECTED) {
-      Serial.printf("[booksdl] WiFi connected: %s\n", net.ssid.c_str());
-      return true;
-    }
-    Serial.printf("[booksdl] WiFi %s timed out\n", net.ssid.c_str());
+  notifyStatus("Books", "Connecting WiFi", networks_.front().ssid.c_str(), 5);
+  if (!WifiConnector::connect(networks_, kWifiConnectTimeoutMs, "booksdl")) {
+    lastError_ = "All WiFi networks failed";
+    notifyStatus("Books", "WiFi failed", "All networks tried", 100);
+    return false;
   }
-  lastError_ = "All WiFi networks failed";
-  notifyStatus("Books", "WiFi failed", "All networks tried", 100);
-  WiFi.disconnect(true);
-  return false;
+  return true;
 }
 
 bool BookDownloadManager::listAvailable(std::vector<RemoteBook> &out) {

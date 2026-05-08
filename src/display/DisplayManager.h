@@ -128,6 +128,12 @@ class DisplayManager {
   void drawTinyGlyphFaded(int x, int y, char c, uint16_t color, int scale, int clipLeftX,
                           int clipRightX, int fadeWidth, uint16_t fadeColor);
   void drawTinyTextAt(const String &text, int x, int y, uint16_t color, int scale);
+  // Renders `text` at tiny scale inside [leftX, rightX). When the text is wider
+  // than that band, slides it ping-pong with a soft edge fade toward fadeColor.
+  // Single source of truth — every overflowing tiny-text label should call this
+  // instead of re-implementing the offset+per-glyph loop.
+  void drawTinyMarquee(const String &text, int leftX, int rightX, int textY,
+                       uint16_t color, uint16_t fadeColor);
   void drawTinyTextCentered(const String &text, int y, uint16_t color, int scale);
   void drawBatteryBadge(bool leftAlign = false);
   void drawFooter(const String &chapterLabel, uint8_t progressPercent);

@@ -2149,7 +2149,16 @@ void App::rebuildSettingsMenuItems()
     settingsMenuItems_.push_back(String("Volume: ") + String(notificationVolume_) + "%");
     settingsMenuItems_.push_back("Reading sounds");
     settingsMenuItems_.push_back("Remount SD");
-    settingsMenuItems_.push_back("Network");
+    String netLabel = "Network";
+    if (!preferredWifiSsid_.isEmpty())
+    {
+      netLabel += ": " + preferredWifiSsid_;
+    }
+    else if (!ota_.config().networks.empty())
+    {
+      netLabel += ": " + ota_.config().networks.front().ssid;
+    }
+    settingsMenuItems_.push_back(netLabel);
   }
   else if (menuScreen_ == MenuScreen::SettingsReadingSounds)
   {

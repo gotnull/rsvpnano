@@ -1246,6 +1246,30 @@ uint16_t blendRgb565(uint16_t fg, uint16_t bg, uint8_t alpha) {
 
 }  // namespace
 
+void DisplayManager::drawTinyMarquee(const String &text, int leftX, int rightX, int textY,
+                                     uint16_t color, uint16_t fadeColor) {
+  if (text.isEmpty() || rightX <= leftX) return;
+  const int maxWidth = rightX - leftX;
+  const int textWidth = measureTinyTextWidth(text, kTinyScale);
+  if (textWidth <= maxWidth) {
+    drawTinyTextAt(text, leftX, textY, color, kTinyScale);
+    return;
+  }
+  const int charPitch = (kTinyGlyphWidth + kTinyGlyphSpacing) * kTinyScale;
+  const int charBodyWidth = kTinyGlyphWidth * kTinyScale;
+  const int maxOffset = textWidth - maxWidth;
+  const int offsetPx = marqueePingPongOffset(maxOffset);
+  const int fadeWidthPx = std::min<int>(10, maxWidth / 5);
+  for (size_t ci = 0; ci < text.length(); ++ci) {
+    const int charX = leftX - offsetPx + static_cast<int>(ci) * charPitch;
+    const int charRight = charX + charBodyWidth;
+    if (charX >= rightX) break;
+    if (charRight <= leftX) continue;
+    drawTinyGlyphFaded(charX, textY, text[ci], color, kTinyScale,
+                       leftX, rightX, fadeWidthPx, fadeColor);
+  }
+}
+
 void DisplayManager::drawTinyGlyphFaded(int x, int y, char c, uint16_t color, int scale,
                                         int clipLeftX, int clipRightX, int fadeWidth,
                                         uint16_t fadeColor) {
@@ -2305,25 +2329,8 @@ void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemC
 
       const int titleMaxWidth = std::max(0, titleEndX - titleStartX);
       if (titleMaxWidth > 0 && !accentText.isEmpty()) {
-        const bool shouldMarquee = titleW > titleMaxWidth;
-        if (!shouldMarquee) {
-          drawTinyTextAt(accentText, titleStartX, y + 3, accentColor, kTinyScale);
-        } else {
-          const int charPitch = (kTinyGlyphWidth + kTinyGlyphSpacing) * kTinyScale;
-          const int charBodyWidth = kTinyGlyphWidth * kTinyScale;
-          const int maxOffset = titleW - (titleEndX - titleStartX);
-          const int offsetPx = marqueePingPongOffset(maxOffset);
-          const int fadeWidthPx = std::min<int>(10, (titleEndX - titleStartX) / 5);
-          const uint16_t menuFadeColor = backgroundColor();
-          for (size_t ci = 0; ci < accentText.length(); ++ci) {
-            const int charX = titleStartX - offsetPx + static_cast<int>(ci) * charPitch;
-            const int charRight = charX + charBodyWidth;
-            if (charX >= titleEndX) break;
-            if (charRight <= titleStartX) continue;
-            drawTinyGlyphFaded(charX, y + 3, accentText[ci], accentColor, kTinyScale,
-                               titleStartX, titleEndX, fadeWidthPx, menuFadeColor);
-          }
-        }
+        drawTinyMarquee(accentText, titleStartX, titleEndX, y + 3, accentColor,
+                        backgroundColor());
       }
     }
     y += rowHeight;
@@ -2415,10 +2422,23 @@ void DisplayManager::renderMenu(const std::vector<String> &items, size_t selecte
     if (selected) {
       fillVirtualRect(10, y + 2, 5, kTinyGlyphHeight * kTinyScale + 2, selectedBarColor());
     }
-    const String fittedItem = fitTinyText(items[itemIndex], maxWidth, kTinyScale);
-    drawTinyTextAt(fittedItem, kCompactMenuX, y + 3, color, kTinyScale);
+    const String &itemText = items[itemIndex];
+    const int itemTextWidth = measureTinyTextWidth(itemText, kTinyScale);
+    const int textY = y + 3;
+    const int leftX = kCompactMenuX;
+    const int rightX = leftX + maxWidth;
+    if (itemTextWidth <= maxWidth) {
+      drawTinyTextAt(itemText, leftX, textY, color, kTinyScale);
+    } else if (selected) {
+      // Selected row scrolls; unselected rows truncate (multiple simultaneous
+      // marquees would be visual chaos).
+      drawTinyMarquee(itemText, leftX, rightX, textY, color, backgroundColor());
+    } else {
+      const String fittedItem = fitTinyText(itemText, maxWidth, kTinyScale);
+      drawTinyTextAt(fittedItem, leftX, textY, color, kTinyScale);
+    }
     if (hasChevron) {
-      drawTinyTextAt(">", chevronColumnX, y + 3, color, kTinyScale);
+      drawTinyTextAt(">", chevronColumnX, textY, color, kTinyScale);
     }
     y += rowHeight;
   }

@@ -6,6 +6,8 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 
+#include "network/WifiConnector.h"
+
 namespace {
 
 String extractJsonString(const String &json, const char *key) {
@@ -131,28 +133,18 @@ bool OtaManager::connectWifi() {
     notifyStatus("OTA", "No WiFi", "Check wifi.json", 100);
     return false;
   }
-  WiFi.mode(WIFI_STA);
-  for (size_t i = 0; i < config_.networks.size(); ++i) {
-    const Network &net = config_.networks[i];
-    Serial.printf("[ota] WiFi try %u/%u: %s\n", static_cast<unsigned>(i + 1),
-                  static_cast<unsigned>(config_.networks.size()), net.ssid.c_str());
-    notifyStatus("OTA", "Connecting WiFi", net.ssid.c_str(), 5);
-    WiFi.disconnect(true);
-    delay(100);
-    WiFi.begin(net.ssid.c_str(), net.password.c_str());
-    // 20 s per network — iPhone Personal Hotspot can take that long to wake
-    // the radio and hand out DHCP after the device opens the password chooser.
-    const uint32_t deadline = millis() + 20000;
-    while (WiFi.status() != WL_CONNECTED && millis() < deadline) {
-      delay(250);
-      yield();
-    }
-    if (WiFi.status() == WL_CONNECTED) {
-      Serial.printf("[ota] WiFi connected to %s, IP=%s RSSI=%d\n", net.ssid.c_str(),
-                    WiFi.localIP().toString().c_str(), WiFi.RSSI());
-      return true;
-    }
-    Serial.printf("[ota] WiFi %s timed out\n", net.ssid.c_str());
+  notifyStatus("OTA", "Connecting WiFi", config_.networks.front().ssid.c_str(), 5);
+  if (WifiConnector::connect(
+          config_.networks, 20000, "ota",
+          +[](void *ctx, const String &ssid, size_t i, size_t total, bool connected) {
+            auto *self = static_cast<OtaManager *>(ctx);
+            if (!connected) {
+              const String line2 = String("Trying ") + ssid;
+              self->notifyStatus("OTA", "Connecting WiFi", line2.c_str(), 5);
+            }
+          },
+          this)) {
+    return true;
   }
   lastError_ = "All WiFi networks failed";
   notifyStatus("OTA", "WiFi failed", "All networks tried", 100);
