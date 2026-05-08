@@ -1090,45 +1090,21 @@ void StorageManager::listBooks() {
     return;
   }
 
+  Serial.println("[storage] listBooks: starting refreshBookPaths");
   if (bookPaths_.empty()) {
     refreshBookPaths();
   }
+  Serial.printf("[storage] listBooks: refresh complete, %u paths\n",
+                static_cast<unsigned>(bookPaths_.size()));
   if (bookPaths_.empty()) {
     Serial.println("[storage] No readable .rsvp, .txt, or .epub books found under /books");
     return;
   }
 
-  // One-time pass: any pre-existing oversized .rsvp files (e.g. a previously
-  // converted GEB-sized book) get split into sibling .partN.rsvp files now so
-  // they can actually load without OOM. Heuristic threshold by raw byte size:
-  // ~1.8 MB ≈ 200k+ words at our average word length, which is the max we want
-  // to load in one piece.
-  constexpr size_t kSplitByteThreshold = 1800000;
-  std::vector<String> oversized;
-  for (const String &path : bookPaths_) {
-    String lowered = path;
-    lowered.toLowerCase();
-    if (!lowered.endsWith(".rsvp")) continue;
-    if (path.indexOf(".part") >= 0) continue;  // already a part file
-    File f = SD_MMC.open(path);
-    if (!f || f.isDirectory()) {
-      if (f) f.close();
-      continue;
-    }
-    if (f.size() > kSplitByteThreshold) {
-      oversized.push_back(path);
-    }
-    f.close();
-  }
-  if (!oversized.empty()) {
-    Serial.printf("[storage] %u oversized .rsvp file(s) need splitting\n",
-                  static_cast<unsigned int>(oversized.size()));
-    for (const String &p : oversized) {
-      splitOversizedRsvp(p);
-    }
-    refreshBookPaths();
-  }
-
+  // Oversized .rsvp files are split LAZILY — at the moment the user opens the
+  // book — so boot doesn't sit on a multi-minute "Indexing" screen. See
+  // App::loadBookAtIndex which calls splitOversizedRsvp() before loading if
+  // the .rsvp exceeds the per-part word budget.
   Serial.printf("[storage] Library has %u books under /books\n",
                 static_cast<unsigned int>(bookPaths_.size()));
 }
@@ -1151,9 +1127,15 @@ String StorageManager::bookPath(size_t index) const {
 }
 
 bool StorageManager::wasConvertedFromEpub(size_t index) const {
+  // Two signals, in order of cost: the BookMeta header read (already cached
+  // from refreshBookPaths) is cheapest; falls back to checking for an .epub
+  // sibling on disk for legacy books that were converted before @source was
+  // a durable marker.
   if (index >= bookPaths_.size()) {
     return false;
   }
+  const BookMeta &meta = bookMeta(index);
+  if (meta.fromEpub) return true;
   if (epubSiblingCache_.size() != bookPaths_.size()) {
     epubSiblingCache_.assign(bookPaths_.size(), 0);
   }
@@ -1421,6 +1403,11 @@ void readRsvpHeader(const String &path, StorageManager::BookMeta &meta) {
       meta.title = directiveValue(trimmed, "@title");
     } else if (prefixHasBoundary(lowered, "@author")) {
       meta.author = directiveValue(trimmed, "@author");
+    } else if (prefixHasBoundary(lowered, "@source")) {
+      // The converter writes "@source <path-to-epub>" — its presence is a
+      // durable marker that this .rsvp originated from an EPUB. Lets us drop
+      // the .epub from the SD without losing the "filter by EPUB" behaviour.
+      meta.fromEpub = true;
     } else if (prefixHasBoundary(lowered, "@stats")) {
       const String value = directiveValue(trimmed, "@stats");
       int start = 0;
@@ -1743,12 +1730,20 @@ void StorageManager::refreshBookPaths() {
     return;
   }
 
+  Serial.println("[storage] refreshBookPaths: collectBookPaths begin");
+  const uint32_t collectStartMs = millis();
   notifyStatus("SD", "Reading library", "", 50);
   bookPaths_ = collectBookPaths();
+  Serial.printf("[storage] refreshBookPaths: collectBookPaths done in %lu ms, %u paths\n",
+                static_cast<unsigned long>(millis() - collectStartMs),
+                static_cast<unsigned>(bookPaths_.size()));
   bookMeta_.assign(bookPaths_.size(), BookMeta{});
   epubSiblingCache_.assign(bookPaths_.size(), 0);  // invalidate sibling cache
 
   const size_t count = bookPaths_.size();
+  Serial.printf("[storage] refreshBookPaths: header read loop begin (%u files)\n",
+                static_cast<unsigned>(count));
+  const uint32_t headerLoopStartMs = millis();
   uint32_t lastStatusMs = millis();
   for (size_t i = 0; i < count; ++i) {
     if (hasRsvpExtension(bookPaths_[i])) {
@@ -1761,6 +1756,10 @@ void StorageManager::refreshBookPaths() {
     if ((i & 0x07) == 0) {
       yield();
     }
+    if ((i & 0x1F) == 0x1F) {
+      Serial.printf("[storage]   headers %u/%u\n", static_cast<unsigned>(i + 1),
+                    static_cast<unsigned>(count));
+    }
     const uint32_t now = millis();
     if (now - lastStatusMs >= 200) {
       const int percent = static_cast<int>(((i + 1) * 50ULL) / std::max<size_t>(1, count)) + 50;
@@ -1768,12 +1767,16 @@ void StorageManager::refreshBookPaths() {
       lastStatusMs = now;
     }
   }
+  Serial.printf("[storage] refreshBookPaths: header loop done in %lu ms\n",
+                static_cast<unsigned long>(millis() - headerLoopStartMs));
 
   // Walk /books/ once and harvest the set of .epub basenames present, then
   // fan that out to populate the sibling-EPUB cache in O(N) hash lookups
   // instead of O(N) SD stats. This is what makes Library/Resume-from/Author
   // pickers feel snappy on first open after boot.
   {
+    Serial.println("[storage] refreshBookPaths: epub stem walk begin");
+    const uint32_t walkStartMs = millis();
     std::vector<String> epubStems;
     File dir = SD_MMC.open(kBooksPath);
     if (dir && dir.isDirectory()) {
@@ -1820,6 +1823,9 @@ void StorageManager::refreshBookPaths() {
       const bool found = std::binary_search(epubStems.begin(), epubStems.end(), stem);
       epubSiblingCache_[i] = found ? 1 : 2;
     }
+    Serial.printf("[storage] refreshBookPaths: epub stem walk done in %lu ms (%u stems)\n",
+                  static_cast<unsigned long>(millis() - walkStartMs),
+                  static_cast<unsigned>(epubStems.size()));
   }
 
   size_t rsvpCount = 0;

@@ -1,5 +1,7 @@
 #include "app/App.h"
 
+#include <SD_MMC.h>
+
 #include <esp_sleep.h>
 #include <esp_log.h>
 #include <algorithm>
@@ -3301,6 +3303,41 @@ void App::saveReadingPosition(bool force)
 
 bool App::loadBookAtIndex(size_t index, uint32_t nowMs, bool allowLegacyPositionFallback)
 {
+  // Lazy split — if the .rsvp at this index is too big to load whole, run
+  // splitOversizedRsvp now (with progress UI) and reindex so the user sees
+  // the part files in the library. Threshold matches the splitter's internal
+  // byte-size heuristic (~1.8 MB ≈ 200k words).
+  constexpr size_t kSplitByteThreshold = 1800000;
+  const String pathAtIndex = storage_.bookPath(index);
+  if (!pathAtIndex.isEmpty() && pathAtIndex.indexOf(".part") < 0)
+  {
+    File probe = SD_MMC.open(pathAtIndex);
+    if (probe && !probe.isDirectory() && probe.size() > kSplitByteThreshold)
+    {
+      probe.close();
+      display_.renderProgress("Book", "Too big — splitting", "this may take a minute", 5);
+      storage_.splitOversizedRsvp(pathAtIndex);
+      storage_.refreshBooks();
+      bookProgressInfo_.clear();
+      // After split the original is gone; locate part 1 by name.
+      String basePath = pathAtIndex;
+      if (basePath.endsWith(".rsvp")) basePath = basePath.substring(0, basePath.length() - 5);
+      const String part1Path = basePath + ".part1.rsvp";
+      const int newIndex = findBookIndexByPath(part1Path);
+      if (newIndex < 0)
+      {
+        display_.renderStatus("Book", "Split failed", pathAtIndex.c_str());
+        delay(1500);
+        return false;
+      }
+      index = static_cast<size_t>(newIndex);
+    }
+    else if (probe)
+    {
+      probe.close();
+    }
+  }
+
   BookContent book;
   String loadedPath;
   size_t loadedIndex = index;

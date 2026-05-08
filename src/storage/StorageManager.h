@@ -17,6 +17,7 @@ class StorageManager {
     uint32_t words = 0;
     uint32_t chapters = 0;
     bool loaded = false;
+    bool fromEpub = false;  // @source directive seen in the .rsvp header
   };
 
   void setStatusCallback(StatusCallback callback, void *context);
