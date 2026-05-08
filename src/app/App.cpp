@@ -856,6 +856,33 @@ void App::updateReader(uint32_t nowMs)
   const size_t previousWordIndex = reader_.currentIndex();
   if (!reader_.update(nowMs))
   {
+    // Reader didn't advance. If it's parked on the last word of the current
+    // file AND this is part N of a multi-part book, auto-chain to part N+1.
+    if (reader_.isAtEnd() && currentBookPath_.indexOf(".part") > 0)
+    {
+      String basePath = currentBookPath_;
+      const int partAt = basePath.lastIndexOf(".part");
+      const int dotRsvp = basePath.lastIndexOf(".rsvp");
+      if (partAt > 0 && dotRsvp > partAt)
+      {
+        int currentPart = 0;
+        for (int i = partAt + 5; i < dotRsvp && isDigit(basePath[i]); ++i)
+        {
+          currentPart = currentPart * 10 + (basePath[i] - '0');
+        }
+        const String nextPath = basePath.substring(0, partAt) + ".part" +
+                                String(currentPart + 1) + ".rsvp";
+        const int nextIndex = findBookIndexByPath(nextPath);
+        if (nextIndex >= 0)
+        {
+          Serial.printf("[reader] end of part %d, chaining to %s\n", currentPart,
+                        nextPath.c_str());
+          loadBookAtIndex(static_cast<size_t>(nextIndex), nowMs, false);
+          // Loading the next part resets currentIndex_ to 0; let the normal
+          // advance machinery take it from there.
+        }
+      }
+    }
     return;
   }
 
@@ -2572,9 +2599,17 @@ void App::selectBookPickerItem(uint32_t nowMs)
     return;
   }
 
+  Serial.printf("[book-picker] loaded ok: title=%s words=%u currentIndex=%u currentWord=\"%s\"\n",
+                currentBookTitle_.c_str(), static_cast<unsigned>(reader_.wordCount()),
+                static_cast<unsigned>(reader_.currentIndex()), reader_.currentWord().c_str());
   menuScreen_ = MenuScreen::Main;
   setState(AppState::Paused, nowMs);
   saveReadingPosition(true);
+  // Force an immediate reader render rather than waiting for the next periodic
+  // tick — without this the picker UI stays on screen until the next 33 ms
+  // refresh, and any guard inside renderReaderWord (empty word, banner, etc.)
+  // leaves the screen showing whatever was last drawn.
+  renderReaderWord();
 }
 
 void App::openChapterPicker()
@@ -3452,20 +3487,41 @@ bool App::loadBookAtIndex(size_t index, uint32_t nowMs, bool allowLegacyPosition
     File probe = SD_MMC.open(pathAtIndex);
     if (probe && !probe.isDirectory() && probe.size() > kSplitByteThreshold)
     {
+      const uint32_t origSize = probe.size();
       probe.close();
+      Serial.printf("[lazy-split] %s is %lu bytes, splitting...\n",
+                    pathAtIndex.c_str(), static_cast<unsigned long>(origSize));
       display_.renderProgress("Book", "Too big — splitting", "this may take a minute", 5);
-      storage_.splitOversizedRsvp(pathAtIndex);
+      const bool splitOk = storage_.splitOversizedRsvp(pathAtIndex);
+      Serial.printf("[lazy-split] splitOversizedRsvp returned %d\n", splitOk ? 1 : 0);
+      Serial.printf("[lazy-split] original still exists? %d\n",
+                    SD_MMC.exists(pathAtIndex) ? 1 : 0);
       storage_.refreshBooks();
       bookProgressInfo_.clear();
       // After split the original is gone; locate part 1 by name.
       String basePath = pathAtIndex;
       if (basePath.endsWith(".rsvp")) basePath = basePath.substring(0, basePath.length() - 5);
       const String part1Path = basePath + ".part1.rsvp";
-      const int newIndex = findBookIndexByPath(part1Path);
+      Serial.printf("[lazy-split] looking for %s\n", part1Path.c_str());
+      Serial.printf("[lazy-split] part1 exists on SD? %d\n",
+                    SD_MMC.exists(part1Path) ? 1 : 0);
+      int newIndex = findBookIndexByPath(part1Path);
+      Serial.printf("[lazy-split] findBookIndexByPath returned %d\n", newIndex);
       if (newIndex < 0)
       {
-        display_.renderStatus("Book", "Split failed", pathAtIndex.c_str());
-        delay(1500);
+        // List all paths in storage for diagnostics
+        for (size_t i = 0; i < storage_.bookCount(); ++i)
+        {
+          const String p = storage_.bookPath(i);
+          if (p.indexOf("part") >= 0 || p.indexOf("odel") >= 0 || p.indexOf("scher") >= 0)
+          {
+            Serial.printf("[lazy-split]   storage[%u]: %s\n",
+                          static_cast<unsigned>(i), p.c_str());
+          }
+        }
+        display_.renderStatus("Book", "Split failed",
+                              splitOk ? "part1 not indexed" : "splitter returned false");
+        delay(2500);
         return false;
       }
       index = static_cast<size_t>(newIndex);
@@ -4159,6 +4215,9 @@ void App::renderReaderWord()
   // between them on certain menu→reader transitions.
   if (currentWord.isEmpty())
   {
+    Serial.printf("[reader] renderReaderWord SKIP: currentWord is empty (idx=%u count=%u)\n",
+                  static_cast<unsigned>(reader_.currentIndex()),
+                  static_cast<unsigned>(reader_.wordCount()));
     return;
   }
   const bool showFooter = state_ != AppState::Playing;

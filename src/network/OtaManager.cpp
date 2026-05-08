@@ -93,6 +93,8 @@ void parseNetworksArray(const String &json, std::vector<OtaManager::Network> &ou
 }  // namespace
 
 bool OtaManager::loadConfigFromSd(const char *path) {
+  // Parse into a LOCAL config first so a missing SD or partial parse never
+  // wipes whatever's already in config_ (NVS-restored fallback, etc.).
   File f = SD_MMC.open(path);
   if (!f || f.isDirectory()) {
     if (f) f.close();
@@ -106,24 +108,24 @@ bool OtaManager::loadConfigFromSd(const char *path) {
   }
   f.close();
 
-  config_.networks.clear();
-  parseNetworksArray(contents, config_.networks);
-  // Legacy single-network fallback: top-level "ssid"/"password".
+  Config parsed;
+  parseNetworksArray(contents, parsed.networks);
   const String legacySsid = extractJsonString(contents, "ssid");
   const String legacyPass = extractJsonString(contents, "password");
   if (!legacySsid.isEmpty()) {
     Network n;
     n.ssid = legacySsid;
     n.password = legacyPass;
-    config_.networks.push_back(n);
+    parsed.networks.push_back(n);
   }
-  config_.firmwareUrl = extractJsonString(contents, "url");
-  config_.notificationsUrl = extractJsonString(contents, "notifications_url");
-  config_.notificationsToken = extractJsonString(contents, "notifications_token");
-  if (config_.networks.empty() || config_.firmwareUrl.isEmpty()) {
+  parsed.firmwareUrl = extractJsonString(contents, "url");
+  parsed.notificationsUrl = extractJsonString(contents, "notifications_url");
+  parsed.notificationsToken = extractJsonString(contents, "notifications_token");
+  if (parsed.networks.empty() || parsed.firmwareUrl.isEmpty()) {
     lastError_ = "wifi.json missing networks or url";
     return false;
   }
+  config_ = parsed;
   return true;
 }
 
@@ -153,11 +155,12 @@ bool OtaManager::connectWifi() {
 
 bool OtaManager::runUpdate() {
   lastError_ = "";
+  // App::begin already populated config_ from SD or NVS fallback. Don't try to
+  // re-read SD here — if the user pulled the card out since boot, that read
+  // would fail and (used to) wipe the in-memory config we still need to OTA.
   if (config_.networks.empty() || config_.firmwareUrl.isEmpty()) {
-    if (!loadConfigFromSd()) {
-      notifyStatus("OTA", "No config", "Add /wifi.json on SD", 100);
-      return false;
-    }
+    notifyStatus("OTA", "No config", "Re-insert SD or fix wifi.json", 100);
+    return false;
   }
   if (!connectWifi()) {
     return false;

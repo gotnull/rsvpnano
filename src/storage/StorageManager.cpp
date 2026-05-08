@@ -261,7 +261,31 @@ std::vector<String> collectBookPaths() {
       const bool readableText = hasTextExtension(path) && !hasRsvpSibling(path);
       const bool pendingEpub =
           RSVP_ON_DEVICE_EPUB_CONVERSION && hasEpubExtension(path) && !hasCurrentEpubCache(path);
-      if ((!staleGeneratedRsvp && hasRsvpExtension(path)) || readableText || pendingEpub) {
+      // Hide the original .rsvp if a .part1.rsvp sibling exists; also hide
+      // .partN.rsvp for N >= 2 so a multi-part book shows up as a single
+      // library entry (part1 is the canonical "open this book" handle, and
+      // the reader auto-chains to subsequent parts).
+      bool obsoletedByParts = false;
+      bool isHigherPart = false;
+      if (hasRsvpExtension(path)) {
+        const int partAt = path.lastIndexOf(".part");
+        if (partAt > 0) {
+          const int dotRsvp = path.lastIndexOf(".rsvp");
+          // .partN where N is a positive integer; hide if N != 1.
+          int partNum = 0;
+          for (int i = partAt + 5; i < dotRsvp && isDigit(path[i]); ++i) {
+            partNum = partNum * 10 + (path[i] - '0');
+          }
+          if (partNum >= 2) isHigherPart = true;
+        } else {
+          String stem = path;
+          if (stem.endsWith(".rsvp")) stem = stem.substring(0, stem.length() - 5);
+          const String part1 = stem + ".part1.rsvp";
+          if (fileExistsAndHasBytes(part1)) obsoletedByParts = true;
+        }
+      }
+      if (!obsoletedByParts && !isHigherPart &&
+          ((!staleGeneratedRsvp && hasRsvpExtension(path)) || readableText || pendingEpub)) {
         bookPaths.push_back(path);
       }
     }
@@ -1193,6 +1217,30 @@ bool StorageManager::deleteBookAtIndex(size_t index) {
   return removed > 0;
 }
 
+namespace {
+
+// Number of whitespace-delimited words in a single .rsvp body line. The
+// reading loop expands each line into individual words at parse time, so the
+// splitter must count actual words (not lines) to stay under the per-part
+// budget — otherwise multi-word lines blow past the cap.
+size_t countWordsInLine(const String &line) {
+  size_t count = 0;
+  bool inWord = false;
+  for (size_t i = 0; i < line.length(); ++i) {
+    const char c = line[i];
+    const bool isWs = (c == ' ' || c == '\t');
+    if (!isWs && !inWord) {
+      inWord = true;
+      ++count;
+    } else if (isWs) {
+      inWord = false;
+    }
+  }
+  return count;
+}
+
+}  // namespace
+
 bool StorageManager::splitOversizedRsvp(const String &path) {
   // Stay safely under the configured RAM cap. 200k words per part leaves
   // headroom under RSVP_MAX_BOOK_WORDS=250000 for system overhead.
@@ -1205,42 +1253,73 @@ bool StorageManager::splitOversizedRsvp(const String &path) {
   }
 
   // Pass 1 — accumulate the original header (lines starting with @ plus any
-  // blank lines before the first word) and count total body words to decide
-  // whether splitting is even needed and how many parts we'll write.
+  // blank lines before the first word; @chapter / @para inside the body do
+  // NOT extend the header — the first non-blank non-@ line ends it) and
+  // count total body words. Buffered read; `src.available()` proved
+  // unreliable on this SD/FAT driver and was returning 0 immediately,
+  // skipping the whole loop.
+  const uint32_t srcSize = src.size();
   String header;
   String originalTitle;
   size_t totalWords = 0;
   size_t bodyStartPos = 0;
   bool inHeader = true;
   String line;
-  while (src.available()) {
-    const int c = src.read();
-    if (c < 0) break;
-    if (c == '\n') {
-      String trimmed = line;
-      trimmed.trim();
-      if (inHeader) {
-        if (trimmed.isEmpty() || trimmed.startsWith("@")) {
-          header += line;
-          header += '\n';
-          if (trimmed.startsWith("@title ")) {
-            originalTitle = trimmed.substring(7);
-            originalTitle.trim();
+  constexpr size_t kReadBuf = 4096;
+  uint8_t readBuf[kReadBuf];
+  uint32_t totalRead = 0;
+  while (totalRead < srcSize) {
+    const int got = src.read(readBuf, std::min<size_t>(kReadBuf, srcSize - totalRead));
+    if (got <= 0) break;
+    for (int i = 0; i < got; ++i) {
+      const char c = static_cast<char>(readBuf[i]);
+      if (c == '\n') {
+        String trimmed = line;
+        trimmed.trim();
+        if (inHeader) {
+          if (trimmed.isEmpty() || trimmed.startsWith("@")) {
+            // Inside the header block, @chapter / @para shouldn't extend it
+            // forever — the moment we see a known body-only directive we flip
+            // out of header mode but still pass that directive through to the
+            // pass-2 emit. The handful of known body directives:
+            const bool isBodyOnlyDirective =
+                trimmed.startsWith("@chapter") || trimmed.startsWith("@para");
+            if (isBodyOnlyDirective) {
+              inHeader = false;
+              // bodyStartPos already points just after the previous header
+              // line; we want the body to include this directive line, so
+              // step back by line.length() + 1 (newline).
+              bodyStartPos -= (line.length() + 1);
+              // not a word — don't count
+            } else {
+              header += line;
+              header += '\n';
+              if (trimmed.startsWith("@title ")) {
+                originalTitle = trimmed.substring(7);
+                originalTitle.trim();
+              }
+              bodyStartPos = totalRead + i + 1;  // byte offset just past '\n'
+            }
+          } else {
+            inHeader = false;
+            if (!trimmed.isEmpty()) totalWords += countWordsInLine(trimmed);
           }
-          bodyStartPos = src.position();
-        } else {
-          // First non-directive, non-blank line — body has begun.
-          inHeader = false;
-          if (!trimmed.isEmpty() && !trimmed.startsWith("@")) ++totalWords;
+        } else if (!trimmed.isEmpty() && !trimmed.startsWith("@")) {
+          totalWords += countWordsInLine(trimmed);
         }
-      } else if (!trimmed.isEmpty() && !trimmed.startsWith("@")) {
-        ++totalWords;
+        line = "";
+      } else if (c != '\r') {
+        line += c;
       }
-      line = "";
-    } else if (c != '\r') {
-      line += static_cast<char>(c);
     }
+    totalRead += static_cast<uint32_t>(got);
+    yield();
   }
+  Serial.printf("[storage] split pass1: read %lu/%lu bytes, %u words, header %u bytes\n",
+                static_cast<unsigned long>(totalRead),
+                static_cast<unsigned long>(srcSize),
+                static_cast<unsigned>(totalWords),
+                static_cast<unsigned>(header.length()));
   if (!line.isEmpty()) {
     String trimmed = line;
     trimmed.trim();
@@ -1270,9 +1349,11 @@ bool StorageManager::splitOversizedRsvp(const String &path) {
   bool eofReached = false;
   for (size_t partIdx = 1; partIdx <= numParts && !eofReached; ++partIdx) {
     const String partPath = basename + ".part" + String(static_cast<unsigned>(partIdx)) + ".rsvp";
+    Serial.printf("[storage] split: writing %s\n", partPath.c_str());
     SD_MMC.remove(partPath);
     File out = SD_MMC.open(partPath, FILE_WRITE);
     if (!out) {
+      Serial.printf("[storage] split: SD_MMC.open(%s, FILE_WRITE) FAILED\n", partPath.c_str());
       src.close();
       return false;
     }
@@ -1320,7 +1401,7 @@ bool StorageManager::splitOversizedRsvp(const String &path) {
         return false;
       }
       out.println(raw);
-      ++partWords;
+      partWords += countWordsInLine(t);  // count actual whitespace-delimited words
       return true;
     };
 
@@ -1342,6 +1423,14 @@ bool StorageManager::splitOversizedRsvp(const String &path) {
       pending = "";
     }
     out.close();
+    const bool partExists = SD_MMC.exists(partPath);
+    File checkPart = SD_MMC.open(partPath);
+    const uint32_t partFileSize = checkPart ? checkPart.size() : 0;
+    if (checkPart) checkPart.close();
+    Serial.printf("[storage] split: %s closed, exists=%d size=%lu words=%u\n",
+                  partPath.c_str(), partExists ? 1 : 0,
+                  static_cast<unsigned long>(partFileSize),
+                  static_cast<unsigned>(partWords));
     yield();
     notifyStatus("Book", "Splitting",
                  (String("Part ") + partIdx + "/" + numParts).c_str(),
@@ -1349,7 +1438,14 @@ bool StorageManager::splitOversizedRsvp(const String &path) {
   }
 
   src.close();
-  SD_MMC.remove(path);
+  const bool removed = SD_MMC.remove(path);
+  Serial.printf("[storage] split: removed original %s = %d\n", path.c_str(), removed ? 1 : 0);
+  if (!removed) {
+    // If we couldn't delete the source, leave the parts in place but report
+    // failure so the caller doesn't loop trying again on next open.
+    notifyStatus("Book", "Split partial", "Couldn't remove original", 100);
+    return false;
+  }
   notifyStatus("Book", "Split done",
                (String(numParts) + " parts").c_str(), 100);
   return true;
@@ -1401,6 +1497,16 @@ void readRsvpHeader(const String &path, StorageManager::BookMeta &meta) {
     lowered.toLowerCase();
     if (prefixHasBoundary(lowered, "@title")) {
       meta.title = directiveValue(trimmed, "@title");
+      // Strip "(Part N of M)" suffix so the picker shows the clean book title
+      // — multi-part books are a single library entry.
+      const int partAt = meta.title.indexOf(" (Part ");
+      if (partAt > 0) {
+        const int closeParen = meta.title.indexOf(')', partAt);
+        if (closeParen > partAt) {
+          meta.title = meta.title.substring(0, partAt) + meta.title.substring(closeParen + 1);
+          meta.title.trim();
+        }
+      }
     } else if (prefixHasBoundary(lowered, "@author")) {
       meta.author = directiveValue(trimmed, "@author");
     } else if (prefixHasBoundary(lowered, "@source")) {
@@ -1849,19 +1955,67 @@ void StorageManager::refreshBookPaths() {
 
 bool StorageManager::parseFile(File &file, BookContent &book, bool rsvpFormat,
                                const String &progressLabel) {
+  Serial.printf("[parse] begin: rsvp=%d size=%lu free8=%lu freeInt=%lu freePsram=%lu\n",
+                rsvpFormat ? 1 : 0,
+                static_cast<unsigned long>(file.size()),
+                static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_8BIT)),
+                static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+                static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
   book.clear();
+  // Peek the @stats words=N header up front so we can reserve vector capacity
+  // and avoid the doubling realloc churn — at ~128k elements vector::push_back
+  // needs to allocate the NEW buffer while the OLD is still live, which
+  // briefly needs ~9 MB of PSRAM and OOM-crashes on the 8 MB chip.
+  if (rsvpFormat) {
+    const uint32_t savedPos = file.position();
+    String headerLine;
+    int linesRead = 0;
+    while (file.available() && linesRead < 32) {
+      const int c = file.read();
+      if (c < 0) break;
+      if (c == '\n') {
+        ++linesRead;
+        String trimmed = headerLine;
+        trimmed.trim();
+        if (trimmed.startsWith("@stats")) {
+          const int wordsKeyAt = trimmed.indexOf("words=");
+          if (wordsKeyAt >= 0) {
+            int p = wordsKeyAt + 6;
+            int q = p;
+            while (q < static_cast<int>(trimmed.length()) && isDigit(trimmed[q])) ++q;
+            const uint32_t n = trimmed.substring(p, q).toInt();
+            if (n > 0 && n < 5000000) {
+              book.words.reserve(n + 1000);
+              Serial.printf("[parse] reserved %u words from @stats\n",
+                            static_cast<unsigned>(n + 1000));
+            }
+          }
+          break;
+        }
+        if (!trimmed.startsWith("@") && !trimmed.isEmpty()) break;
+        headerLine = "";
+      } else if (c != '\r') {
+        headerLine += static_cast<char>(c);
+      }
+    }
+    file.seek(savedPos);
+  }
   String line;
   bool paragraphPending = true;
   size_t bytesRead = 0;
   const size_t totalBytes = static_cast<size_t>(file.size());
   const bool emitProgress = totalBytes > 0 && !progressLabel.isEmpty();
   uint32_t lastProgressMs = millis();
+  uint32_t lastHeapLogMs = millis();
   if (emitProgress) {
     notifyStatus("Loading", progressLabel.c_str(), "Reading from SD", 0);
   }
 
   constexpr size_t kReadBufferBytes = 4096;
-  uint8_t buffer[kReadBufferBytes];
+  // Off the loop task's 8 KB stack — a 4 KB local buffer + nested call frames
+  // (processRsvpLine → appendLineWords → normalizeDisplayText → ...) was
+  // tipping us into stack overflow somewhere mid-parse. Static lives in .bss.
+  static uint8_t buffer[kReadBufferBytes];
   bool stopRequested = false;
   while (!stopRequested && file.available()) {
     const int got = file.read(buffer, sizeof(buffer));
@@ -1906,8 +2060,24 @@ bool StorageManager::parseFile(File &file, BookContent &book, bool rsvpFormat,
                      std::min(percent, 99));
         lastProgressMs = now;
       }
+      if (now - lastHeapLogMs >= 500) {
+        Serial.printf("[parse] %lu/%lu bytes  words=%u  free8=%lu freeInt=%lu freePsram=%lu  largestInt=%lu\n",
+                      static_cast<unsigned long>(bytesRead),
+                      static_cast<unsigned long>(totalBytes),
+                      static_cast<unsigned>(book.words.size()),
+                      static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_8BIT)),
+                      static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+                      static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
+                      static_cast<unsigned long>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)));
+        lastHeapLogMs = now;
+      }
     }
   }
+  Serial.printf("[parse] done: bytesRead=%lu words=%u free8=%lu freePsram=%lu\n",
+                static_cast<unsigned long>(bytesRead),
+                static_cast<unsigned>(book.words.size()),
+                static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_8BIT)),
+                static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
 
   if (!line.isEmpty() && !reachedBookWordLimit(book.words.size())) {
     if (rsvpFormat) {

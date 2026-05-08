@@ -503,6 +503,11 @@ bool ReadingLoop::update(uint32_t nowMs) {
   return changed;
 }
 
+bool ReadingLoop::isAtEnd() const {
+  const size_t total = wordCount();
+  return total > 0 && currentIndex_ >= total - 1;
+}
+
 const String &ReadingLoop::currentWord() const { return currentWord_; }
 
 size_t ReadingLoop::currentIndex() const { return currentIndex_; }

@@ -14,6 +14,8 @@ class ReadingLoop {
   void begin(uint32_t nowMs);
   void start(uint32_t nowMs);
   bool update(uint32_t nowMs);
+  // True when the cursor is parked on the last word of the loaded book.
+  bool isAtEnd() const;
   void setWords(std::vector<String> words, uint32_t nowMs);
   void scrub(int steps);
   void seekTo(size_t wordIndex);
