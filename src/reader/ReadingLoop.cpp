@@ -482,6 +482,12 @@ void ReadingLoop::setWords(std::vector<String> words, uint32_t nowMs) {
   setCurrentWordFromIndex();
 }
 
+void ReadingLoop::releaseWords() {
+  std::vector<String>().swap(loadedWords_);
+  currentIndex_ = 0;
+  currentWord_ = "";
+}
+
 void ReadingLoop::start(uint32_t nowMs) { lastAdvanceMs_ = nowMs; }
 
 bool ReadingLoop::update(uint32_t nowMs) {

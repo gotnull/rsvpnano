@@ -17,6 +17,10 @@ class ReadingLoop {
   // True when the cursor is parked on the last word of the loaded book.
   bool isAtEnd() const;
   void setWords(std::vector<String> words, uint32_t nowMs);
+  // Frees the loaded-words vector immediately so the next book parse has the
+  // full PSRAM budget — without this, both old and new vectors coexist while
+  // parseFile populates the new one, OOM-crashing on the second large book.
+  void releaseWords();
   void scrub(int steps);
   void seekTo(size_t wordIndex);
   void seekRelative(size_t baseIndex, int steps);

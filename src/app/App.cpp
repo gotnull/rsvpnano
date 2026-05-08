@@ -3476,6 +3476,10 @@ void App::saveReadingPosition(bool force)
 
 bool App::loadBookAtIndex(size_t index, uint32_t nowMs, bool allowLegacyPositionFallback)
 {
+  // Free the previous book's word vector NOW so parseFile has the full PSRAM
+  // budget. Otherwise both old and new vectors coexist during parse, and a
+  // second large-book load OOM-crashes mid-parse (PSRAM tops out at 8 MB).
+  reader_.releaseWords();
   // Lazy split — if the .rsvp at this index is too big to load whole, run
   // splitOversizedRsvp now (with progress UI) and reindex so the user sees
   // the part files in the library. Threshold matches the splitter's internal

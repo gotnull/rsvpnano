@@ -1984,10 +1984,15 @@ bool StorageManager::parseFile(File &file, BookContent &book, bool rsvpFormat,
             int q = p;
             while (q < static_cast<int>(trimmed.length()) && isDigit(trimmed[q])) ++q;
             const uint32_t n = trimmed.substring(p, q).toInt();
-            if (n > 0 && n < 5000000) {
-              book.words.reserve(n + 1000);
-              Serial.printf("[parse] reserved %u words from @stats\n",
-                            static_cast<unsigned>(n + 1000));
+            // Cap at the per-load ceiling — @stats reflects the *whole* book
+            // even when this file is a .partN slice, so the raw value
+            // over-allocates by total/part.
+            constexpr uint32_t kReserveCap = 220000;
+            const uint32_t target = n > 0 ? std::min<uint32_t>(n, kReserveCap) : 0;
+            if (target > 0) {
+              book.words.reserve(target);
+              Serial.printf("[parse] reserved %u words (stats=%u)\n",
+                            static_cast<unsigned>(target), static_cast<unsigned>(n));
             }
           }
           break;
@@ -2001,6 +2006,7 @@ bool StorageManager::parseFile(File &file, BookContent &book, bool rsvpFormat,
     file.seek(savedPos);
   }
   String line;
+  line.reserve(4096);  // most .rsvp lines fit; prevents per-char heap churn
   bool paragraphPending = true;
   size_t bytesRead = 0;
   const size_t totalBytes = static_cast<size_t>(file.size());
