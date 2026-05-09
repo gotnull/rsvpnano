@@ -7,4 +7,5 @@ enum class AppState {
   Menu,
   UsbTransfer,
   Sleeping,
+  Screensaver,
 };

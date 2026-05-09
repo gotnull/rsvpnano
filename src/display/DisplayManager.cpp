@@ -1,5 +1,7 @@
 #include "display/DisplayManager.h"
 
+#include "screensaver/Screensaver.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -2785,5 +2787,88 @@ void DisplayManager::renderProgress(const String &title, const String &line1, co
   }
 
   drawBatteryBadge();
+  flushScaledFrame(scale, virtualWidth, virtualHeight);
+}
+
+namespace {
+
+inline void putPixel(uint16_t *buf, int bufW, int bufH, int x, int y, uint16_t color) {
+  if (x < 0 || x >= bufW || y < 0 || y >= bufH) return;
+  buf[y * bufW + x] = color;
+}
+
+void fillCircleSolid(uint16_t *buf, int bufW, int bufH, int cx, int cy, int r,
+                     uint16_t color) {
+  if (r <= 0) {
+    putPixel(buf, bufW, bufH, cx, cy, color);
+    return;
+  }
+  const int r2 = r * r;
+  for (int dy = -r; dy <= r; ++dy) {
+    const int y = cy + dy;
+    if (y < 0 || y >= bufH) continue;
+    const int dy2 = dy * dy;
+    for (int dx = -r; dx <= r; ++dx) {
+      if (dx * dx + dy2 > r2) continue;
+      const int x = cx + dx;
+      if (x < 0 || x >= bufW) continue;
+      buf[y * bufW + x] = color;
+    }
+  }
+}
+
+}  // namespace
+
+void DisplayManager::renderScreensaverFrame(Screensaver &saver) {
+  if (!initialized_) return;
+  // Animation forces a full repaint each frame.
+  lastRenderKey_ = "";
+  saver.tick();
+  saver.sortPoints();
+
+  const int scale = 1;
+  const int virtualWidth = kDisplayWidth;
+  const int virtualHeight = kDisplayHeight;
+  clearVirtualBuffer(virtualWidth, virtualHeight);
+
+  // Stars first — small white pixels behind the dots.
+  const auto *stars = saver.stars();
+  for (size_t i = 0; i < saver.starCount(); ++i) {
+    const auto &s = stars[i];
+    if (s.z <= 0.0f) continue;
+    const int sx = virtualWidth / 2 + static_cast<int>(s.x * (virtualWidth / 2) / s.z);
+    const int sy = virtualHeight / 2 + static_cast<int>(s.y * (virtualHeight / 2) / s.z);
+    int b = static_cast<int>(255.0f * (1.0f - s.z));
+    if (b < 0) b = 0;
+    if (b > 255) b = 255;
+    const uint16_t c5 = static_cast<uint16_t>(b) >> 3;
+    const uint16_t c6 = static_cast<uint16_t>(b) >> 2;
+    const uint16_t color = panelColor(static_cast<uint16_t>((c5 << 11) | (c6 << 5) | c5));
+    putPixel(virtualFrame_, kVirtualBufferWidth, virtualHeight, sx, sy, color);
+  }
+
+  // Dots in painters'-algorithm order set by saver.sortPoints().
+  const uint16_t *palette = Screensaver::palette();
+  // Tuned for the 640×172 landscape panel — wider FOV than the original
+  // 170×320 portrait sketch.
+  constexpr float kFocal = 110.0f;
+  for (size_t i = 0; i < saver.pointCount(); ++i) {
+    const auto &p = saver.points()[i];
+    if (p.cz <= 0.1f) continue;
+    const float invCz = 1.0f / p.cz;
+    const int sx = virtualWidth / 2 + static_cast<int>(p.cx * kFocal * invCz);
+    const int sy = virtualHeight / 2 + static_cast<int>(p.cy * kFocal * invCz);
+    int radius = static_cast<int>(6.0f * invCz);
+    if (radius < 1) radius = 1;
+    if (radius > 12) radius = 12;
+    const uint16_t base = panelColor(palette[p.colorIndex % Screensaver::kPaletteSize]);
+    fillCircleSolid(virtualFrame_, kVirtualBufferWidth, virtualHeight, sx, sy, radius, base);
+    const int hr = radius / 3;
+    if (hr > 0) {
+      fillCircleSolid(virtualFrame_, kVirtualBufferWidth, virtualHeight,
+                      sx + hr, sy - hr, hr, panelColor(0xFFFF));
+    }
+  }
+
   flushScaledFrame(scale, virtualWidth, virtualHeight);
 }

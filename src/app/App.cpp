@@ -167,6 +167,7 @@ namespace
   constexpr size_t kSettingsHomeReadingSoundsIndex = 8;
   constexpr size_t kSettingsHomeRemountSdIndex = 9;
   constexpr size_t kSettingsHomeNetworkIndex = 10;
+  constexpr size_t kSettingsHomeScreensaverIndex = 11;
   constexpr size_t kSettingsReadingSoundsChapterIndex = 1;
   constexpr size_t kSettingsReadingSoundsParagraphIndex = 2;
   constexpr size_t kSettingsReadingSoundsPageIndex = 3;
@@ -208,6 +209,12 @@ namespace
   constexpr const char *kPrefPageChime = "pgnchm";
   constexpr const char *kPrefAutoPowerOff = "apoff";
   constexpr const char *kPrefPreferredWifi = "wifipref";
+  constexpr const char *kPrefScreensaver = "scrnsvr";
+  // Index 0 disables; others are minutes of inactivity before the dots
+  // screensaver kicks in. Same cycle pattern as auto-off.
+  constexpr uint16_t kScreensaverMinutes[] = {0, 1, 5, 15, 30};
+  constexpr size_t kScreensaverOptionCount =
+      sizeof(kScreensaverMinutes) / sizeof(kScreensaverMinutes[0]);
   // Index 0 disables auto-off; rest are minute-thresholds. Bumping the cycle
   // is one-tap, and Off is in the cycle so the user can disable from the
   // Settings menu without a separate toggle.
@@ -415,6 +422,8 @@ void App::begin()
   autoPowerOffIndex_ = preferences_.getUChar(kPrefAutoPowerOff, autoPowerOffIndex_);
   if (autoPowerOffIndex_ >= kAutoPowerOffOptionCount) autoPowerOffIndex_ = 0;
   preferredWifiSsid_ = preferences_.getString(kPrefPreferredWifi, "");
+  screensaverIndex_ = preferences_.getUChar(kPrefScreensaver, screensaverIndex_);
+  if (screensaverIndex_ >= kScreensaverOptionCount) screensaverIndex_ = 0;
   lastActivityMs_ = millis();
   applyDisplayPreferences(0, false);
   applyTypographySettings(0, false);
@@ -606,6 +615,30 @@ void App::update(uint32_t nowMs)
     return;
   }
 
+  // Screensaver: enter the dots animation after the configured idle window.
+  // Cheaper than auto-off and the user might just be staring at a single
+  // word — so it gates only on touch / button input, not on Playing state.
+  if (screensaverIndex_ > 0 && screensaverIndex_ < kScreensaverOptionCount &&
+      state_ != AppState::Screensaver && state_ != AppState::Booting &&
+      state_ != AppState::UsbTransfer && state_ != AppState::Sleeping &&
+      !powerOffStarted_)
+  {
+    const uint32_t idleLimitMs =
+        static_cast<uint32_t>(kScreensaverMinutes[screensaverIndex_]) * 60UL * 1000UL;
+    if (idleLimitMs > 0 && (nowMs - lastActivityMs_) >= idleLimitMs)
+    {
+      Serial.printf("[screensaver] idle %lu ms, entering\n",
+                    static_cast<unsigned long>(nowMs - lastActivityMs_));
+      screensaverPreviousState_ = state_;
+      screensaver_.begin(nowMs);
+      setState(AppState::Screensaver, nowMs);
+    }
+  }
+  if (state_ == AppState::Screensaver)
+  {
+    display_.renderScreensaverFrame(screensaver_);
+  }
+
   // Auto-power-off: enterPowerOff after the configured idle window. Active
   // reading (state_ == Playing) and ongoing button holds count as activity, so
   // someone reading slowly never gets cut off mid-paragraph.
@@ -716,6 +749,8 @@ const char *App::stateName(AppState state) const
     return "UsbTransfer";
   case AppState::Sleeping:
     return "Sleeping";
+  case AppState::Screensaver:
+    return "Screensaver";
   }
   return "Unknown";
 }
@@ -784,6 +819,9 @@ void App::setState(AppState nextState, uint32_t nowMs)
   case AppState::Booting:
     display_.renderCenteredWord("READY");
     break;
+  case AppState::Screensaver:
+    // First frame is rendered by the periodic update() tick — don't double-paint.
+    break;
   }
 
   if (state_ == AppState::Paused && previousState == AppState::Playing)
@@ -831,9 +869,11 @@ void App::updateState(uint32_t nowMs)
     return;
   }
 
-  if (state_ == AppState::Menu || state_ == AppState::Sleeping)
+  if (state_ == AppState::Menu || state_ == AppState::Sleeping ||
+      state_ == AppState::Screensaver)
   {
-    // Menu and sleeping state changes are driven by direct input and power events.
+    // These states are exited by direct input only; don't auto-bounce back to
+    // Paused/Playing.
     return;
   }
 
@@ -1304,6 +1344,23 @@ void App::handleTouch(uint32_t nowMs)
   }
   // Any touch counts as activity for the auto-power-off timer.
   lastActivityMs_ = nowMs;
+
+  // Screensaver: any touch dismisses it. Restore the previous state and let
+  // the periodic refresh repaint the underlying screen.
+  if (state_ == AppState::Screensaver)
+  {
+    Serial.println("[screensaver] dismissed by touch");
+    setState(screensaverPreviousState_, nowMs);
+    if (state_ == AppState::Menu)
+    {
+      renderMenu();
+    }
+    else
+    {
+      renderReaderWord();
+    }
+    return;
+  }
 
   Serial.printf("[touch] phase=%s touched=%u x=%u y=%u gesture=%u state=%s\n",
                 touchPhaseName(ev.phase), ev.touched ? 1 : 0, ev.x, ev.y, ev.gesture,
@@ -1932,6 +1989,13 @@ void App::selectSettingsItem(uint32_t nowMs)
     case kSettingsHomeNetworkIndex:
       openNetworkPicker();
       return;
+    case kSettingsHomeScreensaverIndex:
+      screensaverIndex_ =
+          static_cast<uint8_t>((screensaverIndex_ + 1) % kScreensaverOptionCount);
+      preferences_.putUChar(kPrefScreensaver, screensaverIndex_);
+      rebuildSettingsMenuItems();
+      renderSettings();
+      return;
     case kSettingsHomeRemountSdIndex:
     {
       display_.renderStatus("SD", "Unmounting", "");
@@ -2186,6 +2250,14 @@ void App::rebuildSettingsMenuItems()
       netLabel += ": " + ota_.config().networks.front().ssid;
     }
     settingsMenuItems_.push_back(netLabel);
+    String savLabel;
+    if (screensaverIndex_ == 0 || screensaverIndex_ >= kScreensaverOptionCount) {
+      savLabel = "Off";
+    } else {
+      const uint16_t mins = kScreensaverMinutes[screensaverIndex_];
+      savLabel = (mins >= 60) ? (String(mins / 60) + "h") : (String(mins) + "m");
+    }
+    settingsMenuItems_.push_back(String("Screensaver: ") + savLabel);
   }
   else if (menuScreen_ == MenuScreen::SettingsReadingSounds)
   {

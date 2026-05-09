@@ -13,6 +13,7 @@
 #include "network/NotificationsManager.h"
 #include "network/OtaManager.h"
 #include "reader/ReadingLoop.h"
+#include "screensaver/Screensaver.h"
 #include "storage/StorageManager.h"
 #include "usb/UsbMassStorageManager.h"
 
@@ -298,7 +299,10 @@ class App {
   bool pageChimeEnabled_ = false;        // play a tone every kPageWordCount words
   uint8_t notificationVolume_ = 60;
   uint8_t autoPowerOffIndex_ = 0;        // 0=Off; cycles through preset minute values
+  uint8_t screensaverIndex_ = 0;         // 0=Off; otherwise minute threshold from preset table
   uint32_t lastActivityMs_ = 0;
+  AppState screensaverPreviousState_ = AppState::Paused;
+  Screensaver screensaver_;
   String notificationTone_;
   std::vector<String> ringtoneNames_;
   DisplayManager::TypographyConfig typographyConfig_;

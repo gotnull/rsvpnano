@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include <vector>
 
+class Screensaver;
+
 class DisplayManager {
  public:
   struct TypographyConfig {
@@ -83,6 +85,9 @@ class DisplayManager {
   void renderStatus(const String &title, const String &line1 = "", const String &line2 = "");
   void renderProgress(const String &title, const String &line1 = "", const String &line2 = "",
                       int progressPercent = -1);
+  // Renders a single frame of the dots/stars screensaver. Call once per frame
+  // after Screensaver::tick() + sortPoints().
+  void renderScreensaverFrame(Screensaver &saver);
 
  private:
   bool initPanel();
