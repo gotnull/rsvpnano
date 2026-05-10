@@ -2896,6 +2896,19 @@ void fillCircleSolid(uint16_t *buf, int bufW, int bufH, int cx, int cy, int r,
 
 }  // namespace
 
+// Native-stripe screensaver renderer. Bypasses virtualFrame_ and the rotated
+// per-pixel transpose entirely; composes each panel-native stripe directly
+// into txBuffer_ (DMA-capable internal RAM) and pushes it.
+//
+// Coordinate mapping — single source of truth:
+//   The generic UI path renders into virtualFrame_ in logical 640×172 space,
+//   then flushScaledFrame rotates into the panel's 172×640 native memory:
+//       virtualFrame_[(kDisplayHeight - 1 - nativeX) * VW + nativeY]
+//   Inverse (logical → native) is therefore:
+//       nativeY = logicalX
+//       nativeX = (kDisplayHeight - 1) - logicalY     // = 171 - logicalY
+//   We project the screensaver in logical space (sx in [0,640), sy in [0,172))
+//   so we apply that inverse once per primitive, then never transpose again.
 void DisplayManager::renderScreensaverFrame(Screensaver &saver) {
   if (!initialized_) return;
   // Animation forces a full repaint each frame.
@@ -2907,32 +2920,49 @@ void DisplayManager::renderScreensaverFrame(Screensaver &saver) {
   saver.sortPoints();
 #if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
   const uint32_t t1 = micros();
+  uint32_t composeUs = 0;
+  uint32_t spiUs = 0;
 #endif
 
-  const int scale = 1;
-  const int virtualWidth = kDisplayWidth;
-  const int virtualHeight = kDisplayHeight;
-  clearVirtualBuffer(virtualWidth, virtualHeight);
+  // Project once into native space; the stripe loop only does bbox-cull + draw.
+  // 165 sprites × 12 bytes = ~2 KB on stack.
+  struct Sprite {
+    int16_t cnX;        // native X (0..171)
+    int16_t cnY;        // native Y (0..639)
+    int16_t radius;     // 0 for stars, 1..7 for dots
+    int16_t hiOffset;   // 0 unless dot is large enough for a highlight
+    uint16_t color;     // already byte-swapped via panelColor()
+    uint16_t hiColor;   // white highlight if hiOffset > 0
+  };
+  Sprite sprites[Screensaver::kStarCount + Screensaver::kPointCount];
+  int spriteCount = 0;
 
-  // Stars first — small white pixels behind the dots.
+  constexpr int kVirtualWidth = kDisplayWidth;     // 640
+  constexpr int kVirtualHeight = kDisplayHeight;   // 172
+
+  // Stars first → drawn first inside each stripe → behind dots.
   const auto *stars = saver.stars();
   for (size_t i = 0; i < saver.starCount(); ++i) {
     const auto &s = stars[i];
     if (s.z <= 0.0f) continue;
-    const int sx = virtualWidth / 2 + static_cast<int>(s.x * (virtualWidth / 2) / s.z);
-    const int sy = virtualHeight / 2 + static_cast<int>(s.y * (virtualHeight / 2) / s.z);
+    const int sx = kVirtualWidth / 2 + static_cast<int>(s.x * (kVirtualWidth / 2) / s.z);
+    const int sy = kVirtualHeight / 2 + static_cast<int>(s.y * (kVirtualHeight / 2) / s.z);
+    if (sx < 0 || sx >= kVirtualWidth || sy < 0 || sy >= kVirtualHeight) continue;
     int b = static_cast<int>(255.0f * (1.0f - s.z));
     if (b < 0) b = 0;
     if (b > 255) b = 255;
     const uint16_t c5 = static_cast<uint16_t>(b) >> 3;
     const uint16_t c6 = static_cast<uint16_t>(b) >> 2;
-    const uint16_t color = panelColor(static_cast<uint16_t>((c5 << 11) | (c6 << 5) | c5));
-    putPixel(virtualFrame_, kVirtualBufferWidth, virtualHeight, sx, sy, color);
+    Sprite &sp = sprites[spriteCount++];
+    sp.cnX = static_cast<int16_t>((kVirtualHeight - 1) - sy);
+    sp.cnY = static_cast<int16_t>(sx);
+    sp.radius = 0;
+    sp.hiOffset = 0;
+    sp.color = panelColor(static_cast<uint16_t>((c5 << 11) | (c6 << 5) | c5));
+    sp.hiColor = 0;
   }
 
-  // Dots in painters'-algorithm order set by saver.sortPoints(). Iterate via
-  // drawOrder() so the index sort actually controls draw order — points_ is
-  // unsorted by design.
+  // Dots back-to-front (drawOrder() is sorted descending by cz).
   const uint16_t *palette = Screensaver::palette();
   const uint16_t *order = saver.drawOrder();
   const auto *allPoints = saver.points();
@@ -2943,40 +2973,83 @@ void DisplayManager::renderScreensaverFrame(Screensaver &saver) {
     const auto &p = allPoints[order[i]];
     if (p.cz <= 0.1f) continue;
     const float invCz = 1.0f / p.cz;
-    const int sx = virtualWidth / 2 + static_cast<int>(p.cx * kFocal * invCz);
-    const int sy = virtualHeight / 2 + static_cast<int>(p.cy * kFocal * invCz);
-    // Cap radius — far smaller than original (was 12 max) so each dot is at
-    // most ~50 pixels of fill, not ~450.
+    const int sx = kVirtualWidth / 2 + static_cast<int>(p.cx * kFocal * invCz);
+    const int sy = kVirtualHeight / 2 + static_cast<int>(p.cy * kFocal * invCz);
     int radius = static_cast<int>(5.0f * invCz);
     if (radius < 1) radius = 1;
     if (radius > 7) radius = 7;
-    const uint16_t base = panelColor(palette[p.colorIndex % Screensaver::kPaletteSize]);
-    fillCircleSolid(virtualFrame_, kVirtualBufferWidth, virtualHeight, sx, sy, radius, base);
-    // Highlight only for the larger / closer dots — skip on small ones (cost
-    // outweighs visual contribution).
-    if (radius >= 4) {
-      const int hr = radius / 3;
-      fillCircleSolid(virtualFrame_, kVirtualBufferWidth, virtualHeight,
-                      sx + hr, sy - hr, hr, panelColor(0xFFFF));
+    Sprite &sp = sprites[spriteCount++];
+    sp.cnX = static_cast<int16_t>((kVirtualHeight - 1) - sy);
+    sp.cnY = static_cast<int16_t>(sx);
+    sp.radius = static_cast<int16_t>(radius);
+    // Highlight at logical (sx + hr, sy - hr) → native (cnX + hr, cnY + hr).
+    sp.hiOffset = (radius >= 4) ? static_cast<int16_t>(radius / 3) : 0;
+    sp.color = panelColor(palette[p.colorIndex % Screensaver::kPaletteSize]);
+    sp.hiColor = (radius >= 4) ? panelColor(0xFFFF) : 0;
+  }
+
+  // Stripe loop. txBuffer_ is the DMA-capable internal-RAM scratch already
+  // sized for kPanelNativeWidth × kMaxChunkPhysicalRows (172 × ~47 = ~16 KB).
+  // The existing putPixel/fillCircleSolid/hLine helpers take (buf,bufW,bufH)
+  // and clip Y on every span, so calling them with bufH=stripeRows naturally
+  // discards any out-of-stripe rows — no extra per-primitive math needed.
+  for (int stripeStart = 0; stripeStart < kPanelNativeHeight;
+       stripeStart += kMaxChunkPhysicalRows) {
+    const int rows = std::min(kMaxChunkPhysicalRows, kPanelNativeHeight - stripeStart);
+    const size_t bytes = static_cast<size_t>(rows) * kPanelNativeWidth * sizeof(uint16_t);
+
+#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
+    const uint32_t cBegin = micros();
+#endif
+    std::memset(txBuffer_, 0, bytes);
+
+    const int stripeEnd = stripeStart + rows;
+    for (int s = 0; s < spriteCount; ++s) {
+      const Sprite &sp = sprites[s];
+      // Bbox cull on native Y (= stripe axis).
+      if (sp.cnY + sp.radius < stripeStart || sp.cnY - sp.radius >= stripeEnd) continue;
+      const int localCy = sp.cnY - stripeStart;
+      if (sp.radius == 0) {
+        putPixel(txBuffer_, kPanelNativeWidth, rows, sp.cnX, localCy, sp.color);
+      } else {
+        fillCircleSolid(txBuffer_, kPanelNativeWidth, rows, sp.cnX, localCy, sp.radius,
+                        sp.color);
+        if (sp.hiOffset > 0) {
+          fillCircleSolid(txBuffer_, kPanelNativeWidth, rows,
+                          sp.cnX + sp.hiOffset, localCy + sp.hiOffset, sp.hiOffset, sp.hiColor);
+        }
+      }
     }
+
+#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
+    composeUs += micros() - cBegin;
+    const uint32_t sBegin = micros();
+#endif
+    if (!drawBitmap(0, stripeStart, kPanelNativeWidth, stripeStart + rows, txBuffer_)) {
+      return;
+    }
+#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
+    spiUs += micros() - sBegin;
+#endif
   }
 
 #if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
-  const uint32_t t2 = micros();
-#endif
-  flushScaledFrame(scale, virtualWidth, virtualHeight);
-#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
-  const uint32_t t3 = micros();
+  const uint32_t tEnd = micros();
   static uint32_t sFrameLogMs = 0;
   static uint32_t sFrames = 0;
+  static uint32_t sMinHeap = UINT32_MAX;
+  const uint32_t freeNow = ESP.getFreeHeap();
+  if (freeNow < sMinHeap) sMinHeap = freeNow;
   ++sFrames;
   if (millis() - sFrameLogMs >= 1000) {
-    Serial.printf("[saver] tick=%lu fill=%lu flush=%lu total=%lu us  fps=%lu\n",
+    Serial.printf("[saver] tick=%lu compose=%lu spi=%lu total=%lu us fps=%lu free=%u min=%u\n",
                   static_cast<unsigned long>(t1 - t0),
-                  static_cast<unsigned long>(t2 - t1),
-                  static_cast<unsigned long>(t3 - t2),
-                  static_cast<unsigned long>(t3 - t0),
-                  static_cast<unsigned long>(sFrames));
+                  static_cast<unsigned long>(composeUs),
+                  static_cast<unsigned long>(spiUs),
+                  static_cast<unsigned long>(tEnd - t0),
+                  static_cast<unsigned long>(sFrames),
+                  static_cast<unsigned int>(freeNow),
+                  static_cast<unsigned int>(sMinHeap));
     sFrameLogMs = millis();
     sFrames = 0;
   }
