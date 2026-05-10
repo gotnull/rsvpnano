@@ -171,6 +171,11 @@ class App {
   String bookWordCountKey(const String &bookPath) const;
   String bookRecentKey(const String &bookPath) const;
   uint32_t nextRecentSequence();
+  // Records `dtUs` against the named stage; updates the heartbeat's
+  // worst-stage tracker and prints a one-line warning when the stage
+  // exceeds `warnUs`. Used to localise screensaver lockups to the
+  // specific call (touch, battery, render, flash) that wedged the loop.
+  void trackStage(const char *name, uint32_t dtUs, uint32_t warnUs);
   uint32_t bookRecentSequence(const String &bookPath);
   uint32_t bookRecentSequenceByIndex(size_t bookIndex);
   void markBookRecent(const String &bookPath);
@@ -246,6 +251,11 @@ class App {
 
   uint32_t bootStartedMs_ = 0;
   uint32_t lastStateLogMs_ = 0;
+  // Slow-stage tracking — reset every heartbeat (~1.5 s) so the printed
+  // "worst" reflects the most recent interval, not the lifetime peak.
+  uint32_t loopWorstUs_ = 0;
+  const char *loopWorstStage_ = "(none)";
+  uint32_t heapMinSeen_ = UINT32_MAX;
   uint32_t firmwareValidateAtMs_ = 0;
   bool firmwarePendingVerify_ = false;
   uint32_t lastMenuRefreshMs_ = 0;

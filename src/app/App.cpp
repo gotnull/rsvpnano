@@ -661,12 +661,16 @@ void App::update(uint32_t nowMs)
     static uint32_t sLastScreensaverMs = 0;
     if (nowMs - sLastScreensaverMs >= kScreensaverMinIntervalMs) {
       sLastScreensaverMs = nowMs;
+      const uint32_t s = micros();
       display_.renderScreensaverFrame(screensaver_);
+      trackStage("saver", micros() - s, 25000);
     }
   }
   if (state_ == AppState::DemoPlaying)
   {
+    const uint32_t s = micros();
     renderDemoFrame(nowMs);
+    trackStage("demo", micros() - s, 35000);
   }
 
   // Auto-power-off: enterPowerOff after the configured idle window. Active
@@ -738,7 +742,9 @@ void App::update(uint32_t nowMs)
       (state_ == AppState::Paused || state_ == AppState::Menu) &&
       !screensaverImminent)
   {
+    const uint32_t s = micros();
     pollNotifications(nowMs);
+    trackStage("notif", micros() - s, 100000);
     nextNotificationPollMs_ = nowMs + kNotificationPollIntervalMs;
   }
 
@@ -769,12 +775,29 @@ void App::update(uint32_t nowMs)
 
   // Banner now stays up until the user taps to dismiss; no time-based clear.
 
-  const bool batteryChanged = updateBatteryStatus(nowMs);
+  bool batteryChanged;
+  {
+    const uint32_t s = micros();
+    batteryChanged = updateBatteryStatus(nowMs);
+    trackStage("battery", micros() - s, 10000);
+  }
   updateState(nowMs);
-  updateReader(nowMs);
-  handleTouch(nowMs);
+  {
+    const uint32_t s = micros();
+    updateReader(nowMs);
+    trackStage("reader", micros() - s, 10000);
+  }
+  {
+    const uint32_t s = micros();
+    handleTouch(nowMs);
+    trackStage("touch", micros() - s, 10000);
+  }
   updateWpmFeedback(nowMs);
-  maybeSaveReadingPosition(nowMs);
+  {
+    const uint32_t s = micros();
+    maybeSaveReadingPosition(nowMs);
+    trackStage("save", micros() - s, 50000);
+  }
 
   if (batteryChanged && (state_ == AppState::Paused || state_ == AppState::Playing))
   {
@@ -800,8 +823,29 @@ void App::update(uint32_t nowMs)
   {
     lastStateLogMs_ = nowMs;
     ESP_LOGI(kAppTag, "state=%s", stateName(state_));
-    Serial.printf("[app] state=%s ms=%lu\n", stateName(state_),
-                  static_cast<unsigned long>(nowMs));
+    const uint32_t freeNow = ESP.getFreeHeap();
+    if (freeNow < heapMinSeen_) heapMinSeen_ = freeNow;
+    Serial.printf("[app] state=%s ms=%lu heap=%u min=%u worst=%lu us stage=%s\n",
+                  stateName(state_),
+                  static_cast<unsigned long>(nowMs),
+                  static_cast<unsigned int>(freeNow),
+                  static_cast<unsigned int>(heapMinSeen_),
+                  static_cast<unsigned long>(loopWorstUs_),
+                  loopWorstStage_);
+    loopWorstUs_ = 0;
+    loopWorstStage_ = "(none)";
+  }
+}
+
+void App::trackStage(const char *name, uint32_t dtUs, uint32_t warnUs)
+{
+  if (dtUs > loopWorstUs_) {
+    loopWorstUs_ = dtUs;
+    loopWorstStage_ = name;
+  }
+  if (dtUs > warnUs) {
+    Serial.printf("[stage:%s] slow %lu us state=%s\n", name,
+                  static_cast<unsigned long>(dtUs), stateName(state_));
   }
 }
 
