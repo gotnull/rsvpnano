@@ -3284,9 +3284,12 @@ void DisplayManager::renderSineScrollerFrame(const SineScroller &ss) {
         // Iterate the 7 source rows; project each to its native X range.
         for (int gr = 0; gr < kTinyGlyphHeight; ++gr) {
           if ((rows5x7[gr] & bitMask) == 0) continue;
-          // Source row gr → logicalY range [glyphTopLogicalY + gr*kScale,
-          //                                  + (gr+1)*kScale)
-          const int logicalY0 = glyphTopLogicalY + gr * kScale;
+          // Source row gr → logicalY range. Empirical fix: the mapping I
+          // derived from the flush formula visually inverts text on this
+          // panel orientation (uiRotated_=true with the device flipped
+          // 180° per BoardConfig). Inverting gr restores upright glyphs.
+          const int logicalY0 =
+              glyphTopLogicalY + (kTinyGlyphHeight - 1 - gr) * kScale;
           const int logicalY1 = logicalY0 + kScale;  // exclusive
           // Logical Y → native X (mirror).
           const int nxA = (kDisplayHeight - 1) - (logicalY1 - 1);  // top of row in native X
