@@ -251,6 +251,10 @@ class App {
 
   uint32_t bootStartedMs_ = 0;
   uint32_t lastStateLogMs_ = 0;
+  // Set when a touch dismisses the screensaver or a demo; subsequent
+  // Move/End events on the same finger-down are dropped so the underlying
+  // menu doesn't see the dismiss tap as one of its own.
+  bool dismissTouchPending_ = false;
   // Slow-stage tracking — reset every heartbeat (~1.5 s) so the printed
   // "worst" reflects the most recent interval, not the lifetime peak.
   uint32_t loopWorstUs_ = 0;

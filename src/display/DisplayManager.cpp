@@ -2949,21 +2949,19 @@ void DisplayManager::renderScreensaverFrame(Screensaver &saver) {
   constexpr int kVirtualHeight = kDisplayHeight;   // 172
 
   // Stars first → drawn first inside each stripe → behind dots.
+  // Stars now compute their own screen coords + brightness in
+  // Screensaver::tick() so we can support multiple star modes (3D-forward,
+  // parallax-horizontal) without branching here.
   const auto *stars = saver.stars();
   for (size_t i = 0; i < saver.starCount(); ++i) {
     const auto &s = stars[i];
-    if (s.z <= 0.0f) continue;
-    const int sx = kVirtualWidth / 2 + static_cast<int>(s.x * (kVirtualWidth / 2) / s.z);
-    const int sy = kVirtualHeight / 2 + static_cast<int>(s.y * (kVirtualHeight / 2) / s.z);
-    if (sx < 0 || sx >= kVirtualWidth || sy < 0 || sy >= kVirtualHeight) continue;
-    int b = static_cast<int>(255.0f * (1.0f - s.z));
-    if (b < 0) b = 0;
-    if (b > 255) b = 255;
-    const uint16_t c5 = static_cast<uint16_t>(b) >> 3;
-    const uint16_t c6 = static_cast<uint16_t>(b) >> 2;
+    if (s.brightness == 0) continue;  // off-screen / culled
+    if (s.sx < 0 || s.sx >= kVirtualWidth || s.sy < 0 || s.sy >= kVirtualHeight) continue;
+    const uint16_t c5 = static_cast<uint16_t>(s.brightness) >> 3;
+    const uint16_t c6 = static_cast<uint16_t>(s.brightness) >> 2;
     Sprite &sp = sprites[spriteCount++];
-    sp.cnX = static_cast<int16_t>((kVirtualHeight - 1) - sy);
-    sp.cnY = static_cast<int16_t>(sx);
+    sp.cnX = static_cast<int16_t>((kVirtualHeight - 1) - s.sy);
+    sp.cnY = static_cast<int16_t>(s.sx);
     sp.radius = 0;
     sp.hiOffset = 0;
     sp.color = panelColor(static_cast<uint16_t>((c5 << 11) | (c6 << 5) | c5));
@@ -2974,26 +2972,40 @@ void DisplayManager::renderScreensaverFrame(Screensaver &saver) {
   const uint16_t *palette = Screensaver::palette();
   const uint16_t *order = saver.drawOrder();
   const auto *allPoints = saver.points();
-  // Tuned for the 640×172 landscape panel — wider FOV than the original
-  // 170×320 portrait sketch.
-  constexpr float kFocal = 110.0f;
+  // Tuned for the 640×172 landscape panel. Bumped from 110 → 180 so the
+  // cluster fills more of the panel; combined with kCameraZ=3.0 in
+  // Screensaver::tick(), nearest dots project to ~10 px radius.
+  constexpr float kFocal = 180.0f;
+  // Per-dot radius scaler. Cap=13 lets near dots feel substantial; the
+  // 6³ grid spacing (0.6 model units) projects to ≥36 px between adjacent
+  // dots at typical depth, so even max-radius dots don't overlap.
+  constexpr float kRadiusScale = 11.0f;
+  constexpr int kRadiusMax = 13;
   for (size_t i = 0; i < saver.pointCount(); ++i) {
     const auto &p = allPoints[order[i]];
     if (p.cz <= 0.1f) continue;
     const float invCz = 1.0f / p.cz;
     const int sx = kVirtualWidth / 2 + static_cast<int>(p.cx * kFocal * invCz);
     const int sy = kVirtualHeight / 2 + static_cast<int>(p.cy * kFocal * invCz);
-    int radius = static_cast<int>(5.0f * invCz);
+    int radius = static_cast<int>(kRadiusScale * invCz);
     if (radius < 1) radius = 1;
-    if (radius > 7) radius = 7;
+    if (radius > kRadiusMax) radius = kRadiusMax;
+    // Z-brightness depth cue — multiply each RGB565 channel by p.brightness
+    // (0..255). Pre-shifted in fixed-point to avoid a divide per dot.
+    const uint16_t base = palette[p.colorIndex % Screensaver::kPaletteSize];
+    const uint16_t scale = p.brightness;
+    const uint16_t r5 = static_cast<uint16_t>((((base >> 11) & 0x1F) * scale) >> 8);
+    const uint16_t g6 = static_cast<uint16_t>((((base >>  5) & 0x3F) * scale) >> 8);
+    const uint16_t b5 = static_cast<uint16_t>(( (base        & 0x1F) * scale) >> 8);
+    const uint16_t shaded = static_cast<uint16_t>((r5 << 11) | (g6 << 5) | b5);
     Sprite &sp = sprites[spriteCount++];
     sp.cnX = static_cast<int16_t>((kVirtualHeight - 1) - sy);
     sp.cnY = static_cast<int16_t>(sx);
     sp.radius = static_cast<int16_t>(radius);
     // Highlight at logical (sx + hr, sy - hr) → native (cnX + hr, cnY + hr).
-    sp.hiOffset = (radius >= 4) ? static_cast<int16_t>(radius / 3) : 0;
-    sp.color = panelColor(palette[p.colorIndex % Screensaver::kPaletteSize]);
-    sp.hiColor = (radius >= 4) ? panelColor(0xFFFF) : 0;
+    sp.hiOffset = (radius >= 6) ? static_cast<int16_t>(radius / 3) : 0;
+    sp.color = panelColor(shaded);
+    sp.hiColor = (radius >= 6) ? panelColor(0xFFFF) : 0;
   }
 
   // Stripe loop. txBuffer_ is the DMA-capable internal-RAM scratch already

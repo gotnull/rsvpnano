@@ -1481,6 +1481,9 @@ void App::handleTouch(uint32_t nowMs)
     {
       renderReaderWord();
     }
+    // Suppress the rest of this finger-down so the underlying menu doesn't
+    // pick up Move/End events from the dismiss tap as one of its own.
+    dismissTouchPending_ = true;
     return;
   }
   // Demo: same lifecycle. Any touch ends playback and returns to the picker.
@@ -1488,6 +1491,19 @@ void App::handleTouch(uint32_t nowMs)
   {
     Serial.println("[demo] dismissed by touch");
     exitDemoPlayback(nowMs);
+    dismissTouchPending_ = true;
+    return;
+  }
+
+  // Drop continuation events from a dismissing tap until the user truly
+  // releases. The End event itself clears the flag — the next fresh Start
+  // is the menu's first real input.
+  if (dismissTouchPending_)
+  {
+    if (ev.phase == TouchPhase::End)
+    {
+      dismissTouchPending_ = false;
+    }
     return;
   }
 
