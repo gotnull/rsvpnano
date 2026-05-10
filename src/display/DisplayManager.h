@@ -4,6 +4,10 @@
 #include <vector>
 
 class Screensaver;
+class Rasterbars;
+class Starfield;
+class SineScroller;
+class Plasma;
 
 class DisplayManager {
  public:
@@ -88,6 +92,14 @@ class DisplayManager {
   // Renders a single frame of the dots/stars screensaver. Call once per frame
   // after Screensaver::tick() + sortPoints().
   void renderScreensaverFrame(Screensaver &saver);
+
+  // Demoscene-style demos. All use the native-stripe path (no virtualFrame_,
+  // no transpose) for sustained frame rates. Each takes a state object whose
+  // tick() must already have been called for the current frame.
+  void renderRasterbarsFrame(const Rasterbars &rb);
+  void renderStarfieldFrame(const Starfield &sf);
+  void renderSineScrollerFrame(const SineScroller &ss);
+  void renderPlasmaFrame(const Plasma &pl);
 
  private:
   bool initPanel();

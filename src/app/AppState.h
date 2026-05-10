@@ -8,4 +8,5 @@ enum class AppState {
   UsbTransfer,
   Sleeping,
   Screensaver,
+  DemoPlaying,
 };

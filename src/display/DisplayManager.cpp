@@ -1,5 +1,9 @@
 #include "display/DisplayManager.h"
 
+#include "demos/Plasma.h"
+#include "demos/Rasterbars.h"
+#include "demos/SineScroller.h"
+#include "demos/Starfield.h"
 #include "screensaver/Screensaver.h"
 
 #include <algorithm>
@@ -3054,4 +3058,308 @@ void DisplayManager::renderScreensaverFrame(Screensaver &saver) {
     sFrames = 0;
   }
 #endif
+}
+
+// ============================================================================
+// Demoscene-style demos. All follow the native-stripe pattern: bypass
+// virtualFrame_, compose directly into txBuffer_ in panel-native orientation,
+// push each stripe via drawBitmap. Coordinate mapping is the same as the
+// screensaver: nativeY = logicalX, nativeX = (kDisplayHeight − 1) − logicalY.
+// ============================================================================
+
+namespace {
+
+inline IRAM_ATTR void fillStripeRowSpan(uint16_t *dst, int len, uint16_t color) {
+  for (int i = 0; i < len; ++i) dst[i] = color;
+}
+
+// Memcpy the same 172-pixel row into every native row of the chunk. Hot path
+// for column-uniform effects (rasterbars, copper).
+inline void blastColumnsAcrossStripe(uint16_t *stripeBuf, const uint16_t *cols,
+                                     int rows) {
+  for (int r = 0; r < rows; ++r) {
+    std::memcpy(stripeBuf + r * kPanelNativeWidth, cols,
+                kPanelNativeWidth * sizeof(uint16_t));
+  }
+}
+
+}  // namespace
+
+void DisplayManager::renderRasterbarsFrame(const Rasterbars &rb) {
+  if (!initialized_) return;
+  lastRenderKey_ = "";
+
+  // Pre-compute the 172-entry native-column color array for this frame.
+  // Logical bars (constant logical Y) become vertical native columns
+  // (constant nativeX) thanks to the rotation. Background = animated copper
+  // gradient sampled per native column.
+  uint16_t cols[kPanelNativeWidth];
+  for (int nx = 0; nx < kPanelNativeWidth; ++nx) {
+    // Copper: smooth rainbow scrolling through the 172-px height. Use a
+    // fast triangle-wave-ish hue derived from nativeX + phase.
+    const float u = (static_cast<float>(nx) / kPanelNativeWidth) + rb.copperPhase();
+    const float ru = u - floorf(u);  // [0,1)
+    // 3-stop ramp magenta → cyan → yellow then back, gives Amiga copper feel.
+    uint8_t r, g, b;
+    if (ru < 0.333f) {
+      const float t = ru * 3.0f;
+      r = static_cast<uint8_t>(255.0f * (1.0f - t));
+      g = 0;
+      b = static_cast<uint8_t>(255.0f * t);
+    } else if (ru < 0.666f) {
+      const float t = (ru - 0.333f) * 3.0f;
+      r = 0;
+      g = static_cast<uint8_t>(255.0f * t);
+      b = static_cast<uint8_t>(255.0f * (1.0f - t * 0.5f));
+    } else {
+      const float t = (ru - 0.666f) * 3.0f;
+      r = static_cast<uint8_t>(255.0f * t);
+      g = static_cast<uint8_t>(255.0f * (1.0f - t * 0.5f));
+      b = 0;
+    }
+    // Dim the background so bars pop on top.
+    r >>= 2; g >>= 2; b >>= 2;
+    cols[nx] = panelColor(static_cast<uint16_t>(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)));
+  }
+
+  // Now stamp each bar into its native-column range.
+  for (int i = 0; i < Rasterbars::kBarCount; ++i) {
+    const int centerLogicalY = rb.barCenterY(i);
+    const int half = rb.barHalfThickness(i);
+    // logical Y → native X = 171 − logicalY. Symmetric range stays the same.
+    const int centerNativeX = (kDisplayHeight - 1) - centerLogicalY;
+    const int x0 = std::max(0, centerNativeX - half);
+    const int x1 = std::min(kPanelNativeWidth - 1, centerNativeX + half);
+    // Pre-compute full + half-bright variants once per bar.
+    const uint16_t baseRaw = rb.barColor(i);
+    const uint16_t baseR = (baseRaw >> 11) & 0x1F;
+    const uint16_t baseG = (baseRaw >> 5) & 0x3F;
+    const uint16_t baseB = baseRaw & 0x1F;
+    const uint16_t dimRaw = static_cast<uint16_t>(((baseR >> 1) << 11) |
+                                                  ((baseG >> 1) << 5) | (baseB >> 1));
+    const uint16_t baseColor = panelColor(baseRaw);
+    const uint16_t dimColor = panelColor(dimRaw);
+    for (int x = x0; x <= x1; ++x) {
+      const int distFromCenter = std::abs(x - centerNativeX);
+      cols[x] = (distFromCenter >= half - 1) ? dimColor : baseColor;
+    }
+  }
+
+  // Stripe loop — every row of every stripe is the same column array.
+  for (int stripeStart = 0; stripeStart < kPanelNativeHeight;
+       stripeStart += kMaxChunkPhysicalRows) {
+    const int rows = std::min(kMaxChunkPhysicalRows, kPanelNativeHeight - stripeStart);
+    blastColumnsAcrossStripe(txBuffer_, cols, rows);
+    if (!drawBitmap(0, stripeStart, kPanelNativeWidth, stripeStart + rows, txBuffer_)) {
+      return;
+    }
+  }
+}
+
+void DisplayManager::renderStarfieldFrame(const Starfield &sf) {
+  if (!initialized_) return;
+  lastRenderKey_ = "";
+
+  // Project star positions into native space once per frame.
+  struct NativeStar {
+    int16_t cnX;
+    int16_t cnY;
+    uint8_t brightness;
+    uint8_t layer;
+  };
+  NativeStar projected[Starfield::kStarCount];
+  const auto *stars = sf.stars();
+  for (size_t i = 0; i < sf.starCount(); ++i) {
+    const auto &s = stars[i];
+    NativeStar &n = projected[i];
+    const int sx = static_cast<int>(s.x);
+    n.cnX = static_cast<int16_t>((kDisplayHeight - 1) - s.y);
+    n.cnY = static_cast<int16_t>(sx);
+    n.brightness = s.brightness;
+    n.layer = s.layer;
+  }
+
+  for (int stripeStart = 0; stripeStart < kPanelNativeHeight;
+       stripeStart += kMaxChunkPhysicalRows) {
+    const int rows = std::min(kMaxChunkPhysicalRows, kPanelNativeHeight - stripeStart);
+    const size_t bytes = static_cast<size_t>(rows) * kPanelNativeWidth * sizeof(uint16_t);
+    std::memset(txBuffer_, 0, bytes);
+
+    const int stripeEnd = stripeStart + rows;
+    for (int i = 0; i < Starfield::kStarCount; ++i) {
+      const NativeStar &n = projected[i];
+      if (n.cnY < stripeStart || n.cnY >= stripeEnd) continue;
+      const int localY = n.cnY - stripeStart;
+      const uint8_t b = n.brightness;
+      const uint16_t c5 = static_cast<uint16_t>(b) >> 3;
+      const uint16_t c6 = static_cast<uint16_t>(b) >> 2;
+      const uint16_t color =
+          panelColor(static_cast<uint16_t>((c5 << 11) | (c6 << 5) | c5));
+      putPixel(txBuffer_, kPanelNativeWidth, rows, n.cnX, localY, color);
+      // Closer layers get a 2-pixel horizontal streak so they read as
+      // motion against the dim background.
+      if (n.layer >= 2 && n.cnY + 1 < stripeEnd) {
+        putPixel(txBuffer_, kPanelNativeWidth, rows, n.cnX, localY + 1, color);
+      }
+    }
+
+    if (!drawBitmap(0, stripeStart, kPanelNativeWidth, stripeStart + rows, txBuffer_)) {
+      return;
+    }
+  }
+}
+
+void DisplayManager::renderSineScrollerFrame(const SineScroller &ss) {
+  if (!initialized_) return;
+  lastRenderKey_ = "";
+
+  // Scaled tiny font: 5×7 source × 4 → 20×28 logical glyph.
+  constexpr int kScale = 4;
+  constexpr int kGlyphW = kTinyGlyphWidth * kScale;     // 20
+  constexpr int kGlyphH = kTinyGlyphHeight * kScale;    // 28
+  constexpr int kCharPitch = (kTinyGlyphWidth + kTinyGlyphSpacing) * kScale;  // 24
+  constexpr int kBaselineY = (kDisplayHeight - kGlyphH) / 2;  // ~72 → text vertical center
+
+  const char *msg = ss.message();
+  if (msg == nullptr || msg[0] == '\0') return;
+  const int msgLen = static_cast<int>(strlen(msg));
+  const int totalPx = msgLen * kCharPitch;
+
+  // Wrap scroll so the message loops cleanly. scrollPx grows monotonically;
+  // headPx is the X (logical) of the LEFT edge of the first glyph this frame.
+  const float scrollPx = ss.scrollPx();
+  const float wrap = static_cast<float>(totalPx + kDisplayWidth);
+  float wrapped = scrollPx;
+  while (wrapped >= wrap) wrapped -= wrap;
+  // headPx starts at +kDisplayWidth (off-screen right) and decreases.
+  const int headPx = kDisplayWidth - static_cast<int>(wrapped);
+
+  // Per-glyph wave amplitude + color cycle. Use the demo's wave phase
+  // directly so the tick rate matches.
+  const float wave = ss.wavePhase();
+
+  // Cache project per glyph: native (cnX-base, cnY-base) for the glyph's
+  // top-left, then per-pixel shift inside the inner loop. We fill on the
+  // fly per stripe rather than materialising a full bitmap.
+  for (int stripeStart = 0; stripeStart < kPanelNativeHeight;
+       stripeStart += kMaxChunkPhysicalRows) {
+    const int rows = std::min(kMaxChunkPhysicalRows, kPanelNativeHeight - stripeStart);
+    const size_t bytes = static_cast<size_t>(rows) * kPanelNativeWidth * sizeof(uint16_t);
+    std::memset(txBuffer_, 0, bytes);
+
+    const int stripeEnd = stripeStart + rows;
+    for (int gi = 0; gi < msgLen; ++gi) {
+      const int glyphLeftLogicalX = headPx + gi * kCharPitch;
+      // Skip glyphs entirely off-screen on the right (logical X >= 640) or
+      // past the left edge (logicalX + width <= 0).
+      if (glyphLeftLogicalX >= kDisplayWidth) continue;
+      if (glyphLeftLogicalX + kGlyphW <= 0) continue;
+      // Per-glyph vertical sine bounce. Amplitude ~30 px, smooth phase.
+      const float yOff = sinf(wave + static_cast<float>(gi) * 0.4f) * 30.0f;
+      const int glyphTopLogicalY = kBaselineY + static_cast<int>(yOff);
+
+      // A glyph spans logicalX in [glyphLeftLogicalX, +kGlyphW) and logicalY
+      // in [glyphTopLogicalY, +kGlyphH). The glyph maps to native coords:
+      //   nativeY (= logicalX) ∈ [glyphLeftLogicalX, +kGlyphW)
+      //   nativeX (= 171 − logicalY) ∈ [171 − glyphTopLogicalY − kGlyphH + 1,
+      //                                  171 − glyphTopLogicalY]
+      // For this stripe's nativeY range, only some glyph columns may apply.
+      const int nyStart = std::max(stripeStart, glyphLeftLogicalX);
+      const int nyEnd = std::min(stripeEnd, glyphLeftLogicalX + kGlyphW);
+      if (nyStart >= nyEnd) continue;
+
+      const uint8_t *rows5x7 = tinyRowsFor(msg[gi]);
+      // Cycle a punchy color per glyph index + slow phase shift.
+      const float colorWave = wave * 0.5f + static_cast<float>(gi) * 0.2f;
+      const uint8_t r = static_cast<uint8_t>(128 + 127 * sinf(colorWave));
+      const uint8_t g = static_cast<uint8_t>(128 + 127 * sinf(colorWave + 2.094f));
+      const uint8_t b = static_cast<uint8_t>(128 + 127 * sinf(colorWave + 4.188f));
+      const uint16_t color =
+          panelColor(static_cast<uint16_t>(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)));
+
+      for (int ny = nyStart; ny < nyEnd; ++ny) {
+        const int glyphCol = (ny - glyphLeftLogicalX) / kScale;        // 0..4
+        const uint8_t bitMask = static_cast<uint8_t>(0x10 >> glyphCol);  // bit4=col0
+        const int localStripeRow = ny - stripeStart;
+        // Iterate the 7 source rows; project each to its native X range.
+        for (int gr = 0; gr < kTinyGlyphHeight; ++gr) {
+          if ((rows5x7[gr] & bitMask) == 0) continue;
+          // Source row gr → logicalY range [glyphTopLogicalY + gr*kScale,
+          //                                  + (gr+1)*kScale)
+          const int logicalY0 = glyphTopLogicalY + gr * kScale;
+          const int logicalY1 = logicalY0 + kScale;  // exclusive
+          // Logical Y → native X (mirror).
+          const int nxA = (kDisplayHeight - 1) - (logicalY1 - 1);  // top of row in native X
+          const int nxB = (kDisplayHeight - 1) - logicalY0;        // bottom of row in native X
+          int xLo = std::max(0, nxA);
+          int xHi = std::min(kPanelNativeWidth - 1, nxB);
+          if (xLo > xHi) continue;
+          uint16_t *dst = txBuffer_ + localStripeRow * kPanelNativeWidth + xLo;
+          for (int x = xLo; x <= xHi; ++x) *dst++ = color;
+        }
+      }
+    }
+
+    if (!drawBitmap(0, stripeStart, kPanelNativeWidth, stripeStart + rows, txBuffer_)) {
+      return;
+    }
+  }
+}
+
+void DisplayManager::renderPlasmaFrame(const Plasma &pl) {
+  if (!initialized_) return;
+  lastRenderKey_ = "";
+
+  // Per-pixel: combine 4 sin sources at sample point (logicalX, logicalY),
+  // map to palette index, look up RGB565. Hot loop runs ~110 k times per
+  // frame; we hoist the palette + LUT pointers and compute LUT indices with
+  // wrap-around bitmasks.
+  const int8_t *sinLut = Plasma::sinLutPtr();
+  const uint16_t *palette = pl.palette();
+  // Convert phase floats into sin-LUT integer offsets (0..255 wraps).
+  const int paOff = static_cast<int>(pl.pa() * 40.7f) & 0xFF;
+  const int pbOff = static_cast<int>(pl.pb() * 35.3f) & 0xFF;
+  const int pcOff = static_cast<int>(pl.pc() * 28.1f) & 0xFF;
+  const int pdOff = static_cast<int>(pl.pd() * 51.2f) & 0xFF;
+  const uint8_t paletteShift = pl.paletteShift();
+
+  for (int stripeStart = 0; stripeStart < kPanelNativeHeight;
+       stripeStart += kMaxChunkPhysicalRows) {
+    const int rows = std::min(kMaxChunkPhysicalRows, kPanelNativeHeight - stripeStart);
+
+    // Pre-cache the panelColor()-applied palette once per stripe so the
+    // inner loop does only LUT lookup + store.
+    static uint16_t cachedPalette[Plasma::kPaletteSize];
+    static const uint16_t *lastPaletteSrc = nullptr;
+    static uint8_t lastShift = 0xFF;
+    if (palette != lastPaletteSrc || paletteShift != lastShift) {
+      for (int i = 0; i < Plasma::kPaletteSize; ++i) {
+        cachedPalette[i] = panelColor(palette[(i + paletteShift) & 0xFF]);
+      }
+      lastPaletteSrc = palette;
+      lastShift = paletteShift;
+    }
+
+    for (int ny = 0; ny < rows; ++ny) {
+      const int nativeY = stripeStart + ny;          // = logicalX (after rotation)
+      // Pre-compute the two sine contributions that depend only on nativeY.
+      const int8_t sA = sinLut[(nativeY + paOff) & 0xFF];
+      const int8_t sC = sinLut[((nativeY * 2) + pcOff) & 0xFF];
+      uint16_t *row = txBuffer_ + ny * kPanelNativeWidth;
+      for (int nx = 0; nx < kPanelNativeWidth; ++nx) {
+        // logicalY = (kDisplayHeight - 1) - nativeX (we don't even need
+        // logicalY explicitly; just use nx with the mirror baked in).
+        const int8_t sB = sinLut[(nx + pbOff) & 0xFF];
+        const int8_t sD = sinLut[(((nx + nativeY) >> 1) + pdOff) & 0xFF];
+        // Sum is in [-508, 508]; map to [0, 255] as palette index.
+        const int sum = static_cast<int>(sA) + sB + sC + sD;
+        const uint8_t idx = static_cast<uint8_t>((sum + 512) >> 2);  // /4 → 0..255
+        row[nx] = cachedPalette[idx];
+      }
+    }
+
+    if (!drawBitmap(0, stripeStart, kPanelNativeWidth, stripeStart + rows, txBuffer_)) {
+      return;
+    }
+  }
 }

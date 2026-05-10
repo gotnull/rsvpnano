@@ -6,6 +6,10 @@
 
 #include "app/AppState.h"
 #include "audio/AudioManager.h"
+#include "demos/Plasma.h"
+#include "demos/Rasterbars.h"
+#include "demos/SineScroller.h"
+#include "demos/Starfield.h"
 #include "display/DisplayManager.h"
 #include "input/ButtonHandler.h"
 #include "input/TouchHandler.h"
@@ -59,6 +63,15 @@ class App {
     TonePicker,
     RemoteBookPicker,
     BookDeleteConfirm,
+    DemoPicker,
+  };
+
+  enum class DemoKind : uint8_t {
+    None = 0,
+    Rasterbars,
+    Starfield,
+    SineScroller,
+    Plasma,
   };
 
   void setState(AppState nextState, uint32_t nowMs);
@@ -128,6 +141,12 @@ class App {
   void openBookDeleteConfirm(size_t bookIndex);
   void selectBookDeleteConfirmItem(uint32_t nowMs);
   void renderBookDeleteConfirm();
+  void openDemoPicker();
+  void selectDemoPickerItem(uint32_t nowMs);
+  void renderDemoPicker();
+  void enterDemoPlayback(DemoKind kind, uint32_t nowMs);
+  void exitDemoPlayback(uint32_t nowMs);
+  void renderDemoFrame(uint32_t nowMs);
   void cycleNotificationVolume(uint32_t nowMs);
   void pollNotifications(uint32_t nowMs);
   void showNotificationBanner(uint32_t nowMs, const String &title, const String &body);
@@ -214,6 +233,7 @@ class App {
   std::vector<DisplayManager::LibraryItem> networkMenuItems_;
   size_t networkSelectedIndex_ = 0;
   String preferredWifiSsid_;
+  size_t demoSelectedIndex_ = 0;
   Preferences preferences_;
   PausedTouchSession pausedTouch_;
   TouchIntent pausedTouchIntent_ = TouchIntent::None;
@@ -303,6 +323,14 @@ class App {
   uint32_t lastActivityMs_ = 0;
   AppState screensaverPreviousState_ = AppState::Paused;
   Screensaver screensaver_;
+  // All four demos live as stack-resident members so swapping is allocation-free.
+  // Total state cost ~6 KB; cheaper than the screensaver. DemoKind::None means
+  // we are not currently in DemoPlaying state.
+  DemoKind currentDemo_ = DemoKind::None;
+  Rasterbars demoRasterbars_;
+  Starfield demoStarfield_;
+  SineScroller demoSineScroller_;
+  Plasma demoPlasma_;
   String notificationTone_;
   std::vector<String> ringtoneNames_;
   DisplayManager::TypographyConfig typographyConfig_;

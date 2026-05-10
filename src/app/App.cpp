@@ -168,6 +168,15 @@ namespace
   constexpr size_t kSettingsHomeRemountSdIndex = 9;
   constexpr size_t kSettingsHomeNetworkIndex = 10;
   constexpr size_t kSettingsHomeScreensaverIndex = 11;
+  constexpr size_t kSettingsHomeDemosIndex = 12;
+  // Demo picker layout: Back at 0, then one row per demo. Order must match
+  // the dispatch in selectDemoPickerItem.
+  constexpr size_t kDemoPickerBackIndex = 0;
+  constexpr size_t kDemoPickerRasterbarsIndex = 1;
+  constexpr size_t kDemoPickerStarfieldIndex = 2;
+  constexpr size_t kDemoPickerSineScrollerIndex = 3;
+  constexpr size_t kDemoPickerPlasmaIndex = 4;
+  constexpr size_t kDemoPickerItemCount = 5;
   constexpr size_t kSettingsReadingSoundsChapterIndex = 1;
   constexpr size_t kSettingsReadingSoundsParagraphIndex = 2;
   constexpr size_t kSettingsReadingSoundsPageIndex = 3;
@@ -619,9 +628,9 @@ void App::update(uint32_t nowMs)
   // Cheaper than auto-off and the user might just be staring at a single
   // word — so it gates only on touch / button input, not on Playing state.
   if (screensaverIndex_ > 0 && screensaverIndex_ < kScreensaverOptionCount &&
-      state_ != AppState::Screensaver && state_ != AppState::Booting &&
-      state_ != AppState::UsbTransfer && state_ != AppState::Sleeping &&
-      !powerOffStarted_)
+      state_ != AppState::Screensaver && state_ != AppState::DemoPlaying &&
+      state_ != AppState::Booting && state_ != AppState::UsbTransfer &&
+      state_ != AppState::Sleeping && !powerOffStarted_)
   {
     const uint32_t idleLimitMs =
         static_cast<uint32_t>(kScreensaverMinutes[screensaverIndex_]) * 60UL * 1000UL;
@@ -636,17 +645,19 @@ void App::update(uint32_t nowMs)
   }
   if (state_ == AppState::Screensaver)
   {
-    // Min interval = 60fps target. The renderScreensaverFrame call blocks for
-    // the entire compose+SPI flush (~82 ms today), so the natural cap is
-    // ~12 fps and this throttle is currently dead code. Once the flush path
-    // gets fast enough to exceed 60 fps the throttle takes over — no
-    // backlog accumulates because each frame call is synchronous.
+    // Min interval = 60fps target. The renderScreensaverFrame call blocks
+    // for the full SPI flush (~12 ms after native-stripe rewrite), so this
+    // throttle now actually engages and caps real frame rate at 60.
     constexpr uint32_t kScreensaverMinIntervalMs = 16;
     static uint32_t sLastScreensaverMs = 0;
     if (nowMs - sLastScreensaverMs >= kScreensaverMinIntervalMs) {
       sLastScreensaverMs = nowMs;
       display_.renderScreensaverFrame(screensaver_);
     }
+  }
+  if (state_ == AppState::DemoPlaying)
+  {
+    renderDemoFrame(nowMs);
   }
 
   // Auto-power-off: enterPowerOff after the configured idle window. Active
@@ -761,6 +772,8 @@ const char *App::stateName(AppState state) const
     return "Sleeping";
   case AppState::Screensaver:
     return "Screensaver";
+  case AppState::DemoPlaying:
+    return "DemoPlaying";
   }
   return "Unknown";
 }
@@ -831,6 +844,9 @@ void App::setState(AppState nextState, uint32_t nowMs)
     break;
   case AppState::Screensaver:
     // First frame is rendered by the periodic update() tick — don't double-paint.
+    break;
+  case AppState::DemoPlaying:
+    // Same: first frame comes from the next update() tick.
     break;
   }
 
@@ -1371,6 +1387,13 @@ void App::handleTouch(uint32_t nowMs)
     }
     return;
   }
+  // Demo: same lifecycle. Any touch ends playback and returns to the picker.
+  if (state_ == AppState::DemoPlaying)
+  {
+    Serial.println("[demo] dismissed by touch");
+    exitDemoPlayback(nowMs);
+    return;
+  }
 
   Serial.printf("[touch] phase=%s touched=%u x=%u y=%u gesture=%u state=%s\n",
                 touchPhaseName(ev.phase), ev.touched ? 1 : 0, ev.x, ev.y, ev.gesture,
@@ -1779,6 +1802,11 @@ void App::moveMenuSelection(int direction)
     selectedIndex = &restartConfirmSelectedIndex_;
     itemCount = RestartConfirmItemCount;
   }
+  else if (menuScreen_ == MenuScreen::DemoPicker)
+  {
+    selectedIndex = &demoSelectedIndex_;
+    itemCount = kDemoPickerItemCount;
+  }
 
   if (itemCount == 0)
   {
@@ -1886,6 +1914,11 @@ void App::selectMenuItem(uint32_t nowMs)
   if (menuScreen_ == MenuScreen::RestartConfirm)
   {
     selectRestartConfirmItem(nowMs);
+    return;
+  }
+  if (menuScreen_ == MenuScreen::DemoPicker)
+  {
+    selectDemoPickerItem(nowMs);
     return;
   }
 
@@ -2005,6 +2038,9 @@ void App::selectSettingsItem(uint32_t nowMs)
       preferences_.putUChar(kPrefScreensaver, screensaverIndex_);
       rebuildSettingsMenuItems();
       renderSettings();
+      return;
+    case kSettingsHomeDemosIndex:
+      openDemoPicker();
       return;
     case kSettingsHomeRemountSdIndex:
     {
@@ -2268,6 +2304,7 @@ void App::rebuildSettingsMenuItems()
       savLabel = (mins >= 60) ? (String(mins / 60) + "h") : (String(mins) + "m");
     }
     settingsMenuItems_.push_back(String("Screensaver: ") + savLabel);
+    settingsMenuItems_.push_back("Demos");
   }
   else if (menuScreen_ == MenuScreen::SettingsReadingSounds)
   {
@@ -3300,6 +3337,114 @@ void App::selectBookDeleteConfirmItem(uint32_t nowMs)
   }
 }
 
+void App::openDemoPicker()
+{
+  menuScreen_ = MenuScreen::DemoPicker;
+  if (demoSelectedIndex_ >= kDemoPickerItemCount) demoSelectedIndex_ = 0;
+  renderDemoPicker();
+}
+
+void App::renderDemoPicker()
+{
+  std::vector<String> items;
+  items.reserve(kDemoPickerItemCount);
+  items.push_back("Back");
+  items.push_back("Rasterbars");
+  items.push_back("Starfield");
+  items.push_back("Sine-scroller");
+  items.push_back("Plasma");
+  // All demo rows drill in to fullscreen playback; Back returns to settings.
+  std::vector<bool> chevrons(items.size(), true);
+  chevrons[kDemoPickerBackIndex] = false;
+  display_.renderMenu(items, demoSelectedIndex_, chevrons);
+}
+
+void App::selectDemoPickerItem(uint32_t nowMs)
+{
+  switch (demoSelectedIndex_)
+  {
+  case kDemoPickerBackIndex:
+    settingsSelectedIndex_ = kSettingsHomeDemosIndex;
+    menuScreen_ = MenuScreen::SettingsHome;
+    rebuildSettingsMenuItems();
+    renderSettings();
+    return;
+  case kDemoPickerRasterbarsIndex:
+    enterDemoPlayback(DemoKind::Rasterbars, nowMs);
+    return;
+  case kDemoPickerStarfieldIndex:
+    enterDemoPlayback(DemoKind::Starfield, nowMs);
+    return;
+  case kDemoPickerSineScrollerIndex:
+    enterDemoPlayback(DemoKind::SineScroller, nowMs);
+    return;
+  case kDemoPickerPlasmaIndex:
+    enterDemoPlayback(DemoKind::Plasma, nowMs);
+    return;
+  default:
+    return;
+  }
+}
+
+void App::enterDemoPlayback(DemoKind kind, uint32_t nowMs)
+{
+  currentDemo_ = kind;
+  // Re-use screensaver's previous-state plumbing so the touch handler can
+  // restore us to wherever we were (in this case the settings menu picker).
+  screensaverPreviousState_ = AppState::Menu;
+  switch (kind) {
+    case DemoKind::Rasterbars:    demoRasterbars_.begin(nowMs); break;
+    case DemoKind::Starfield:     demoStarfield_.begin(nowMs); break;
+    case DemoKind::SineScroller:  demoSineScroller_.begin(nowMs); break;
+    case DemoKind::Plasma:        demoPlasma_.begin(nowMs); break;
+    case DemoKind::None:          return;
+  }
+  setState(AppState::DemoPlaying, nowMs);
+}
+
+void App::exitDemoPlayback(uint32_t nowMs)
+{
+  currentDemo_ = DemoKind::None;
+  setState(AppState::Menu, nowMs);
+  // Land back on the demo picker so a quick re-tap selects another effect.
+  menuScreen_ = MenuScreen::DemoPicker;
+  renderDemoPicker();
+  (void)nowMs;
+}
+
+void App::renderDemoFrame(uint32_t nowMs)
+{
+  // Per-demo throttle. Demos with heavier compose advertise their cap here
+  // honestly — pretending to target 60 fps when SPI+compose don't fit just
+  // burns CPU.
+  static uint32_t sLastFrameMs = 0;
+  uint32_t minIntervalMs = 16;  // 60 fps default
+  if (currentDemo_ == DemoKind::Plasma) minIntervalMs = 25;  // 40 fps cap
+  if (nowMs - sLastFrameMs < minIntervalMs) return;
+  sLastFrameMs = nowMs;
+
+  switch (currentDemo_) {
+    case DemoKind::Rasterbars:
+      demoRasterbars_.tick(nowMs);
+      display_.renderRasterbarsFrame(demoRasterbars_);
+      break;
+    case DemoKind::Starfield:
+      demoStarfield_.tick(nowMs);
+      display_.renderStarfieldFrame(demoStarfield_);
+      break;
+    case DemoKind::SineScroller:
+      demoSineScroller_.tick(nowMs);
+      display_.renderSineScrollerFrame(demoSineScroller_);
+      break;
+    case DemoKind::Plasma:
+      demoPlasma_.tick(nowMs);
+      display_.renderPlasmaFrame(demoPlasma_);
+      break;
+    case DemoKind::None:
+      break;
+  }
+}
+
 void App::cycleNotificationVolume(uint32_t nowMs)
 {
   (void)nowMs;
@@ -3887,6 +4032,10 @@ void App::renderMenu()
   {
     renderRestartConfirm();
   }
+  else if (menuScreen_ == MenuScreen::DemoPicker)
+  {
+    renderDemoPicker();
+  }
   else
   {
     renderMainMenu();
@@ -3990,6 +4139,10 @@ void App::renderSettings()
     if (settingsMenuItems_.size() > kSettingsHomeNetworkIndex)
     {
       chevrons[kSettingsHomeNetworkIndex] = true;
+    }
+    if (settingsMenuItems_.size() > kSettingsHomeDemosIndex)
+    {
+      chevrons[kSettingsHomeDemosIndex] = true;
     }
   }
   else if (menuScreen_ == MenuScreen::SettingsDisplay)
