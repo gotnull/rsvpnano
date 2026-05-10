@@ -636,7 +636,14 @@ void App::update(uint32_t nowMs)
   }
   if (state_ == AppState::Screensaver)
   {
-    display_.renderScreensaverFrame(screensaver_);
+    // Throttle to ~30 fps. Each frame paints 125 dots + 40 stars to a 640×172
+    // buffer and flushes ~220 KB through SPI; running flat-out from loop()
+    // pegs the CPU and starves the rest of the app.
+    static uint32_t sLastScreensaverMs = 0;
+    if (nowMs - sLastScreensaverMs >= 33) {
+      sLastScreensaverMs = nowMs;
+      display_.renderScreensaverFrame(screensaver_);
+    }
   }
 
   // Auto-power-off: enterPowerOff after the configured idle window. Active

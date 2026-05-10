@@ -7,9 +7,11 @@
 // State lives here; rendering happens in DisplayManager::renderScreensaverFrame.
 class Screensaver {
  public:
-  static constexpr int kPointsPerAxis = 6;
+  // 5×5×5 = 125 dots — keeps the cube/sphere look but cuts the per-frame
+  // O(r²) fill cost roughly in half vs the original 6×6×6.
+  static constexpr int kPointsPerAxis = 5;
   static constexpr int kPointCount = kPointsPerAxis * kPointsPerAxis * kPointsPerAxis;
-  static constexpr int kStarCount = 80;
+  static constexpr int kStarCount = 40;
   static constexpr int kPaletteSize = 15;
 
   struct Point {

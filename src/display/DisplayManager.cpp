@@ -95,7 +95,11 @@ constexpr int kVirtualBufferHeight = (kDisplayHeight + kMinTextScale - 1) / kMin
 
 constexpr size_t kBytesPerPixel = sizeof(uint16_t);
 constexpr size_t kMaxChunkBytes = 16 * 1024;
-constexpr int kTxBufferWidth = kDisplayWidth > kPanelNativeWidth ? kDisplayWidth : kPanelNativeWidth;
+// drawBitmap() always ships kPanelNativeWidth-wide rows, so size the DMA chunk
+// to that width — the previous max(display, native) sizing wasted ~73% of the
+// chunk and limited us to 12 native rows per SPI transaction. With native width
+// (172), the same kMaxChunkBytes fits ~47 rows → ~4× fewer SPI calls per frame.
+constexpr int kTxBufferWidth = kPanelNativeWidth;
 constexpr int kMaxChunkPhysicalRows = kMaxChunkBytes / (kTxBufferWidth * kBytesPerPixel);
 static_assert(kMaxChunkPhysicalRows > 0, "Display chunk buffer must hold at least one row");
 
@@ -1640,33 +1644,73 @@ void DisplayManager::applyBrightness() {
 }
 
 void DisplayManager::flushScaledFrame(int scale, int virtualWidth, int virtualHeight) {
+  // Fast path: rotated panel (the production orientation), scale=1, and the
+  // virtual buffer is the full logical screen. We can hoist the rotation math,
+  // drop the per-pixel bounds check, and reorder the inner loop so each PSRAM
+  // read is sequential along a virtualFrame_ row instead of stepping
+  // kVirtualBufferWidth bytes per pixel.
+  const bool fastPath = (scale == 1 && uiRotated_ &&
+                         virtualWidth == kDisplayWidth && virtualHeight == kDisplayHeight);
+
+  uint32_t composeUs = 0;
+  uint32_t spiUs = 0;
+
   for (int nativeYStart = 0; nativeYStart < kPanelNativeHeight;
        nativeYStart += kMaxChunkPhysicalRows) {
     const int nativeRows = std::min(kMaxChunkPhysicalRows, kPanelNativeHeight - nativeYStart);
-    std::memset(txBuffer_, 0, txBufferBytes_);
+    const size_t chunkBytes = static_cast<size_t>(nativeRows) * kPanelNativeWidth * sizeof(uint16_t);
+    const uint32_t cBegin = micros();
+    std::memset(txBuffer_, 0, chunkBytes);
 
-    for (int localNativeY = 0; localNativeY < nativeRows; ++localNativeY) {
-      const int nativeY = nativeYStart + localNativeY;
-      uint16_t *dstRow = txBuffer_ + localNativeY * kPanelNativeWidth;
-
+    if (fastPath) {
+      // For each native column (= one virtualFrame_ row), copy `nativeRows`
+      // sequential source pixels and stride them out into the chunk's column.
       for (int nativeX = 0; nativeX < kPanelNativeWidth; ++nativeX) {
-        int logicalX = kDisplayWidth - 1 - nativeY;
-        int logicalY = nativeX;
-        if (uiRotated_) {
-          logicalX = nativeY;
-          logicalY = kDisplayHeight - 1 - nativeX;
+        const int logicalY = kDisplayHeight - 1 - nativeX;
+        const uint16_t *src = virtualFrame_ + logicalY * kVirtualBufferWidth + nativeYStart;
+        uint16_t *dst = txBuffer_ + nativeX;
+        for (int localY = 0; localY < nativeRows; ++localY) {
+          dst[localY * kPanelNativeWidth] = src[localY];
         }
-        const int sourceX = logicalX / scale;
-        const int sourceY = logicalY / scale;
+      }
+    } else {
+      for (int localNativeY = 0; localNativeY < nativeRows; ++localNativeY) {
+        const int nativeY = nativeYStart + localNativeY;
+        uint16_t *dstRow = txBuffer_ + localNativeY * kPanelNativeWidth;
 
-        if (sourceX >= 0 && sourceX < virtualWidth && sourceY >= 0 && sourceY < virtualHeight) {
-          dstRow[nativeX] = virtualFrame_[sourceY * kVirtualBufferWidth + sourceX];
+        for (int nativeX = 0; nativeX < kPanelNativeWidth; ++nativeX) {
+          int logicalX = kDisplayWidth - 1 - nativeY;
+          int logicalY = nativeX;
+          if (uiRotated_) {
+            logicalX = nativeY;
+            logicalY = kDisplayHeight - 1 - nativeX;
+          }
+          const int sourceX = logicalX / scale;
+          const int sourceY = logicalY / scale;
+
+          if (sourceX >= 0 && sourceX < virtualWidth && sourceY >= 0 && sourceY < virtualHeight) {
+            dstRow[nativeX] = virtualFrame_[sourceY * kVirtualBufferWidth + sourceX];
+          }
         }
       }
     }
 
+    const uint32_t cEnd = micros();
+    composeUs += cEnd - cBegin;
+    const uint32_t sBegin = micros();
     if (!drawBitmap(0, nativeYStart, kPanelNativeWidth, nativeYStart + nativeRows, txBuffer_)) {
       return;
+    }
+    spiUs += micros() - sBegin;
+  }
+
+  if (fastPath) {
+    static uint32_t sLastLogMs = 0;
+    if (millis() - sLastLogMs >= 2000) {
+      sLastLogMs = millis();
+      Serial.printf("[flush] compose=%lu spi=%lu us\n",
+                    static_cast<unsigned long>(composeUs),
+                    static_cast<unsigned long>(spiUs));
     }
   }
 }
@@ -2797,22 +2841,43 @@ inline void putPixel(uint16_t *buf, int bufW, int bufH, int x, int y, uint16_t c
   buf[y * bufW + x] = color;
 }
 
+// Horizontal span at row y from xStart to xStart+len-1. Tight inner loop —
+// no per-pixel branch, compiler vectorises the store.
+inline IRAM_ATTR void hLine(uint16_t *buf, int bufW, int bufH, int xStart, int y, int len,
+                            uint16_t color) {
+  if (y < 0 || y >= bufH || len <= 0) return;
+  int x1 = xStart;
+  int x2 = xStart + len - 1;
+  if (x1 < 0) x1 = 0;
+  if (x2 >= bufW) x2 = bufW - 1;
+  if (x1 > x2) return;
+  uint16_t *row = buf + y * bufW + x1;
+  const int n = x2 - x1 + 1;
+  for (int i = 0; i < n; ++i) row[i] = color;
+}
+
+// Filled circle via Bresenham — emits 4 horizontal spans per octant step.
+// Replaces the prior O(r²) per-pixel containment loop with O(r) span ops.
 void fillCircleSolid(uint16_t *buf, int bufW, int bufH, int cx, int cy, int r,
                      uint16_t color) {
   if (r <= 0) {
     putPixel(buf, bufW, bufH, cx, cy, color);
     return;
   }
-  const int r2 = r * r;
-  for (int dy = -r; dy <= r; ++dy) {
-    const int y = cy + dy;
-    if (y < 0 || y >= bufH) continue;
-    const int dy2 = dy * dy;
-    for (int dx = -r; dx <= r; ++dx) {
-      if (dx * dx + dy2 > r2) continue;
-      const int x = cx + dx;
-      if (x < 0 || x >= bufW) continue;
-      buf[y * bufW + x] = color;
+  int x = r;
+  int y = 0;
+  int err = 1 - r;
+  while (x >= y) {
+    hLine(buf, bufW, bufH, cx - x, cy + y, 2 * x + 1, color);
+    hLine(buf, bufW, bufH, cx - x, cy - y, 2 * x + 1, color);
+    hLine(buf, bufW, bufH, cx - y, cy + x, 2 * y + 1, color);
+    hLine(buf, bufW, bufH, cx - y, cy - x, 2 * y + 1, color);
+    ++y;
+    if (err < 0) {
+      err += 2 * y + 1;
+    } else {
+      --x;
+      err += 2 * (y - x) + 1;
     }
   }
 }
@@ -2823,8 +2888,10 @@ void DisplayManager::renderScreensaverFrame(Screensaver &saver) {
   if (!initialized_) return;
   // Animation forces a full repaint each frame.
   lastRenderKey_ = "";
+  const uint32_t t0 = micros();
   saver.tick();
   saver.sortPoints();
+  const uint32_t t1 = micros();
 
   const int scale = 1;
   const int virtualWidth = kDisplayWidth;
@@ -2858,17 +2925,36 @@ void DisplayManager::renderScreensaverFrame(Screensaver &saver) {
     const float invCz = 1.0f / p.cz;
     const int sx = virtualWidth / 2 + static_cast<int>(p.cx * kFocal * invCz);
     const int sy = virtualHeight / 2 + static_cast<int>(p.cy * kFocal * invCz);
-    int radius = static_cast<int>(6.0f * invCz);
+    // Cap radius — far smaller than original (was 12 max) so each dot is at
+    // most ~50 pixels of fill, not ~450.
+    int radius = static_cast<int>(5.0f * invCz);
     if (radius < 1) radius = 1;
-    if (radius > 12) radius = 12;
+    if (radius > 7) radius = 7;
     const uint16_t base = panelColor(palette[p.colorIndex % Screensaver::kPaletteSize]);
     fillCircleSolid(virtualFrame_, kVirtualBufferWidth, virtualHeight, sx, sy, radius, base);
-    const int hr = radius / 3;
-    if (hr > 0) {
+    // Highlight only for the larger / closer dots — skip on small ones (cost
+    // outweighs visual contribution).
+    if (radius >= 4) {
+      const int hr = radius / 3;
       fillCircleSolid(virtualFrame_, kVirtualBufferWidth, virtualHeight,
                       sx + hr, sy - hr, hr, panelColor(0xFFFF));
     }
   }
 
+  const uint32_t t2 = micros();
   flushScaledFrame(scale, virtualWidth, virtualHeight);
+  const uint32_t t3 = micros();
+  static uint32_t sFrameLogMs = 0;
+  static uint32_t sFrames = 0;
+  ++sFrames;
+  if (millis() - sFrameLogMs >= 1000) {
+    Serial.printf("[saver] tick=%lu fill=%lu flush=%lu total=%lu us  fps=%lu\n",
+                  static_cast<unsigned long>(t1 - t0),
+                  static_cast<unsigned long>(t2 - t1),
+                  static_cast<unsigned long>(t3 - t2),
+                  static_cast<unsigned long>(t3 - t0),
+                  static_cast<unsigned long>(sFrames));
+    sFrameLogMs = millis();
+    sFrames = 0;
+  }
 }
