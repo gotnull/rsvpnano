@@ -32,12 +32,16 @@ class Screensaver {
   void begin(uint32_t seed = 0);
   // Advances one animation frame; call once per draw at ~30 fps.
   void tick();
-  // Reorders point[] back-to-front along cz (largest first) so painters'
-  // algorithm in the renderer produces correct depth.
+  // Builds drawOrder() back-to-front along cz (largest first) so painters'
+  // algorithm in the renderer produces correct depth. Sorts indices, not
+  // Point structs — points_ stays put so we don't move ~80 bytes per swap.
   void sortPoints();
 
   const Point *points() const { return points_; }
   size_t pointCount() const { return kPointCount; }
+  // Indices into points() in painter's order (back to front). Use this when
+  // iterating, not points() directly, or you'll defeat the depth sort.
+  const uint16_t *drawOrder() const { return drawOrder_; }
   const Star *stars() const { return stars_; }
   size_t starCount() const { return kStarCount; }
   // RGB565 Pico-8 palette (no black). Index by colorIndex % 15.
@@ -48,9 +52,16 @@ class Screensaver {
   void initStars();
   void updateStars();
   void updateMorph();
+  // xorshift32 — keeps the screensaver off the global rand()/srand() so
+  // re-entry is deterministic from the seed and we don't stomp anyone else's
+  // PRNG state.
+  uint32_t nextRandU32();
+  float nextRandFloat();
 
   Point points_[kPointCount];
+  uint16_t drawOrder_[kPointCount];
   Star stars_[kStarCount];
+  uint32_t prng_ = 0x12345678u;  // re-seeded in begin()
   float t_ = 0.0f;
   float t_mod_ = 0.0f;
   float nextChange_ = 0.0f;

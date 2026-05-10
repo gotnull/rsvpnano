@@ -6,8 +6,6 @@ namespace {
 
 constexpr float kSphereRadius = 1.5f;
 
-float randFloat() { return static_cast<float>(rand()) / static_cast<float>(RAND_MAX); }
-
 // Pico-8 palette in RGB565 (black removed — that's the background).
 constexpr uint16_t kPaletteColors[Screensaver::kPaletteSize] = {
     0x18C3, 0x7C09, 0x016A, 0xA9A4, 0x52EA, 0xC618, 0xFFFB, 0xF810,
@@ -20,10 +18,26 @@ float clerp(float a, float b, float p) { return a + p * (b - a); }
 
 const uint16_t *Screensaver::palette() { return kPaletteColors; }
 
+uint32_t Screensaver::nextRandU32() {
+  uint32_t x = prng_;
+  x ^= x << 13;
+  x ^= x >> 17;
+  x ^= x << 5;
+  prng_ = x;
+  return x;
+}
+
+float Screensaver::nextRandFloat() {
+  return static_cast<float>(nextRandU32()) / static_cast<float>(0xFFFFFFFFu);
+}
+
 void Screensaver::begin(uint32_t seed) {
-  if (seed != 0) srand(seed);
+  prng_ = (seed != 0) ? seed : 0x12345678u;
   initPoints();
   initStars();
+  for (int i = 0; i < kPointCount; ++i) {
+    drawOrder_[i] = static_cast<uint16_t>(i);
+  }
   t_ = 0.0f;
   t_mod_ = 0.0f;
   nextChange_ = 0.0f;
@@ -44,8 +58,8 @@ void Screensaver::initPoints() {
         p.cubeY = -1.0f + j * step;
         p.cubeZ = -1.0f + k * step;
 
-        const float u = randFloat();
-        const float v = randFloat();
+        const float u = nextRandFloat();
+        const float v = nextRandFloat();
         const float theta = 2.0f * M_PI * u;
         const float phi = acosf(2.0f * v - 1.0f);
         p.sphereX = kSphereRadius * sinf(phi) * cosf(theta);
@@ -66,9 +80,9 @@ void Screensaver::initPoints() {
 
 void Screensaver::initStars() {
   for (int i = 0; i < kStarCount; ++i) {
-    stars_[i].x = randFloat() * 2.0f - 1.0f;
-    stars_[i].y = randFloat() * 2.0f - 1.0f;
-    stars_[i].z = randFloat();
+    stars_[i].x = nextRandFloat() * 2.0f - 1.0f;
+    stars_[i].y = nextRandFloat() * 2.0f - 1.0f;
+    stars_[i].z = nextRandFloat();
   }
 }
 
@@ -76,8 +90,8 @@ void Screensaver::updateStars() {
   for (int i = 0; i < kStarCount; ++i) {
     stars_[i].z -= 0.02f;
     if (stars_[i].z <= 0.0f) {
-      stars_[i].x = randFloat() * 2.0f - 1.0f;
-      stars_[i].y = randFloat() * 2.0f - 1.0f;
+      stars_[i].x = nextRandFloat() * 2.0f - 1.0f;
+      stars_[i].y = nextRandFloat() * 2.0f - 1.0f;
       stars_[i].z = 1.0f;
     }
   }
@@ -96,7 +110,7 @@ void Screensaver::updateMorph() {
       p.y = clerp(p.cubeY, p.sphereY, morphProgress_);
       p.z = clerp(p.cubeZ, p.sphereZ, morphProgress_);
     }
-  } else if (rand() % 1000 < 10) {
+  } else if ((nextRandU32() % 1000u) < 10u) {
     morphing_ = true;
     morphProgress_ = 0.0f;
     // Swap cube and sphere targets so the next morph reverses direction.
@@ -117,8 +131,8 @@ void Screensaver::tick() {
   // Variable-speed pacing: every few frames, randomly switch between slow and
   // fast playback. Same idea as the original.
   if (t_mod_ >= nextChange_) {
-    nextChange_ = t_mod_ + (200 + (rand() % 800)) / 100.0f;
-    currentSpeed_ = (rand() % 2 == 0) ? 0.5f : 5.0f;
+    nextChange_ = t_mod_ + (200u + (nextRandU32() % 800u)) / 100.0f;
+    currentSpeed_ = ((nextRandU32() & 1u) == 0u) ? 0.5f : 5.0f;
   }
   constexpr float kBaseSpeed = 0.1f;
   t_mod_ += kBaseSpeed;
@@ -149,14 +163,17 @@ void Screensaver::tick() {
 }
 
 void Screensaver::sortPoints() {
-  // Insertion sort (n=216 — small, mostly already-sorted between frames).
+  // Insertion sort over the index array (n=125, mostly already-sorted between
+  // frames). Each swap moves 2 bytes instead of ~80 — eliminates the Point
+  // struct copy that dominated the previous sort. points_ stays put.
   for (int i = 1; i < kPointCount; ++i) {
-    Point key = points_[i];
+    const uint16_t key = drawOrder_[i];
+    const float keyCz = points_[key].cz;
     int j = i - 1;
-    while (j >= 0 && points_[j].cz < key.cz) {
-      points_[j + 1] = points_[j];
+    while (j >= 0 && points_[drawOrder_[j]].cz < keyCz) {
+      drawOrder_[j + 1] = drawOrder_[j];
       --j;
     }
-    points_[j + 1] = key;
+    drawOrder_[j + 1] = key;
   }
 }

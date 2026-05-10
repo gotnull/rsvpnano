@@ -1652,14 +1652,18 @@ void DisplayManager::flushScaledFrame(int scale, int virtualWidth, int virtualHe
   const bool fastPath = (scale == 1 && uiRotated_ &&
                          virtualWidth == kDisplayWidth && virtualHeight == kDisplayHeight);
 
+#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
   uint32_t composeUs = 0;
   uint32_t spiUs = 0;
+#endif
 
   for (int nativeYStart = 0; nativeYStart < kPanelNativeHeight;
        nativeYStart += kMaxChunkPhysicalRows) {
     const int nativeRows = std::min(kMaxChunkPhysicalRows, kPanelNativeHeight - nativeYStart);
     const size_t chunkBytes = static_cast<size_t>(nativeRows) * kPanelNativeWidth * sizeof(uint16_t);
+#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
     const uint32_t cBegin = micros();
+#endif
     std::memset(txBuffer_, 0, chunkBytes);
 
     if (fastPath) {
@@ -1695,15 +1699,20 @@ void DisplayManager::flushScaledFrame(int scale, int virtualWidth, int virtualHe
       }
     }
 
+#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
     const uint32_t cEnd = micros();
     composeUs += cEnd - cBegin;
     const uint32_t sBegin = micros();
+#endif
     if (!drawBitmap(0, nativeYStart, kPanelNativeWidth, nativeYStart + nativeRows, txBuffer_)) {
       return;
     }
+#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
     spiUs += micros() - sBegin;
+#endif
   }
 
+#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
   if (fastPath) {
     static uint32_t sLastLogMs = 0;
     if (millis() - sLastLogMs >= 2000) {
@@ -1713,6 +1722,9 @@ void DisplayManager::flushScaledFrame(int scale, int virtualWidth, int virtualHe
                     static_cast<unsigned long>(spiUs));
     }
   }
+#else
+  (void)fastPath;
+#endif
 }
 
 void DisplayManager::renderCenteredWord(const String &word, uint16_t color) {
@@ -2888,10 +2900,14 @@ void DisplayManager::renderScreensaverFrame(Screensaver &saver) {
   if (!initialized_) return;
   // Animation forces a full repaint each frame.
   lastRenderKey_ = "";
+#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
   const uint32_t t0 = micros();
+#endif
   saver.tick();
   saver.sortPoints();
+#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
   const uint32_t t1 = micros();
+#endif
 
   const int scale = 1;
   const int virtualWidth = kDisplayWidth;
@@ -2914,13 +2930,17 @@ void DisplayManager::renderScreensaverFrame(Screensaver &saver) {
     putPixel(virtualFrame_, kVirtualBufferWidth, virtualHeight, sx, sy, color);
   }
 
-  // Dots in painters'-algorithm order set by saver.sortPoints().
+  // Dots in painters'-algorithm order set by saver.sortPoints(). Iterate via
+  // drawOrder() so the index sort actually controls draw order — points_ is
+  // unsorted by design.
   const uint16_t *palette = Screensaver::palette();
+  const uint16_t *order = saver.drawOrder();
+  const auto *allPoints = saver.points();
   // Tuned for the 640×172 landscape panel — wider FOV than the original
   // 170×320 portrait sketch.
   constexpr float kFocal = 110.0f;
   for (size_t i = 0; i < saver.pointCount(); ++i) {
-    const auto &p = saver.points()[i];
+    const auto &p = allPoints[order[i]];
     if (p.cz <= 0.1f) continue;
     const float invCz = 1.0f / p.cz;
     const int sx = virtualWidth / 2 + static_cast<int>(p.cx * kFocal * invCz);
@@ -2941,8 +2961,11 @@ void DisplayManager::renderScreensaverFrame(Screensaver &saver) {
     }
   }
 
+#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
   const uint32_t t2 = micros();
+#endif
   flushScaledFrame(scale, virtualWidth, virtualHeight);
+#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
   const uint32_t t3 = micros();
   static uint32_t sFrameLogMs = 0;
   static uint32_t sFrames = 0;
@@ -2957,4 +2980,5 @@ void DisplayManager::renderScreensaverFrame(Screensaver &saver) {
     sFrameLogMs = millis();
     sFrames = 0;
   }
+#endif
 }

@@ -636,11 +636,14 @@ void App::update(uint32_t nowMs)
   }
   if (state_ == AppState::Screensaver)
   {
-    // Throttle to ~30 fps. Each frame paints 125 dots + 40 stars to a 640×172
-    // buffer and flushes ~220 KB through SPI; running flat-out from loop()
-    // pegs the CPU and starves the rest of the app.
+    // Min interval = 60fps target. The renderScreensaverFrame call blocks for
+    // the entire compose+SPI flush (~82 ms today), so the natural cap is
+    // ~12 fps and this throttle is currently dead code. Once the flush path
+    // gets fast enough to exceed 60 fps the throttle takes over — no
+    // backlog accumulates because each frame call is synchronous.
+    constexpr uint32_t kScreensaverMinIntervalMs = 16;
     static uint32_t sLastScreensaverMs = 0;
-    if (nowMs - sLastScreensaverMs >= 33) {
+    if (nowMs - sLastScreensaverMs >= kScreensaverMinIntervalMs) {
       sLastScreensaverMs = nowMs;
       display_.renderScreensaverFrame(screensaver_);
     }
