@@ -178,7 +178,8 @@ namespace
   constexpr size_t kDemoPickerPlasmaIndex = 4;
   constexpr size_t kDemoPickerShadeBobsIndex = 5;
   constexpr size_t kDemoPickerVectorballIndex = 6;
-  constexpr size_t kDemoPickerItemCount = 7;
+  constexpr size_t kDemoPickerUnlimitedBobsIndex = 7;
+  constexpr size_t kDemoPickerItemCount = 8;
   constexpr size_t kSettingsReadingSoundsChapterIndex = 1;
   constexpr size_t kSettingsReadingSoundsParagraphIndex = 2;
   constexpr size_t kSettingsReadingSoundsPageIndex = 3;
@@ -3406,6 +3407,7 @@ void App::renderDemoPicker()
   items.push_back("Plasma");
   items.push_back("ShadeBobs");
   items.push_back("Vectorball");
+  items.push_back("Unlimited Bobs");
   // All demo rows drill in to fullscreen playback; Back returns to settings.
   std::vector<bool> chevrons(items.size(), true);
   chevrons[kDemoPickerBackIndex] = false;
@@ -3440,6 +3442,9 @@ void App::selectDemoPickerItem(uint32_t nowMs)
   case kDemoPickerVectorballIndex:
     enterDemoPlayback(DemoKind::Vectorball, nowMs);
     return;
+  case kDemoPickerUnlimitedBobsIndex:
+    enterDemoPlayback(DemoKind::UnlimitedBobs, nowMs);
+    return;
   default:
     return;
   }
@@ -3458,6 +3463,7 @@ void App::enterDemoPlayback(DemoKind kind, uint32_t nowMs)
     case DemoKind::Plasma:        demoPlasma_.begin(nowMs); break;
     case DemoKind::ShadeBobs:     demoShadeBobs_.begin(nowMs); break;
     case DemoKind::Vectorball:    demoVectorball_.begin(nowMs); break;
+    case DemoKind::UnlimitedBobs: demoUnlimitedBobs_.begin(nowMs); break;
     case DemoKind::None:          return;
   }
   setState(AppState::DemoPlaying, nowMs);
@@ -3510,6 +3516,10 @@ void App::renderDemoFrame(uint32_t nowMs)
       demoVectorball_.sortBalls();
       demoVectorball_.paintFramebuffer();
       display_.renderVectorballFrame(demoVectorball_);
+      break;
+    case DemoKind::UnlimitedBobs:
+      demoUnlimitedBobs_.tick(nowMs);
+      display_.renderUnlimitedBobsFrame(demoUnlimitedBobs_);
       break;
     case DemoKind::None:
       break;

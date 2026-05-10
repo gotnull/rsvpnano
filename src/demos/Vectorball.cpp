@@ -251,9 +251,13 @@ void Vectorball::tick(uint32_t nowMs) {
   (void)nowMs;
   updateAngles();
   // Y bias: dive-in for first 160 frames, climb-out for last 160 frames of
-  // the cycle. Per the original a.k().
-  if (frameCounter_ < 160) yBias_ -= 6.0f;
-  if (frameCounter_ > kShapeCycleFrames - 160) yBias_ += 6.0f;
+  // the cycle. Per the original a.k() — but the Java source uses raw `ba`
+  // here which only "loops" by accident in the first cycle. Use the
+  // cycle-relative frame so the +6/-6 nets to zero every loop and we don't
+  // drift the cluster off-screen after the first 52 s.
+  const int cycleFrame = static_cast<int>(frameCounter_ % kShapeCycleFrames);
+  if (cycleFrame < 160) yBias_ -= 6.0f;
+  if (cycleFrame > kShapeCycleFrames - 160) yBias_ += 6.0f;
 
   float ar, aq, ap, ao, an, am, al, ak, aj;
   buildRotationMatrix(ar, aq, ap, ao, an, am, al, ak, aj);

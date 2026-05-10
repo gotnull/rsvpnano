@@ -10,6 +10,7 @@ class SineScroller;
 class Plasma;
 class ShadeBobs;
 class Vectorball;
+class UnlimitedBobs;
 
 class DisplayManager {
  public:
@@ -104,6 +105,7 @@ class DisplayManager {
   void renderPlasmaFrame(const Plasma &pl);
   void renderShadeBobsFrame(const ShadeBobs &sb);
   void renderVectorballFrame(Vectorball &vb);
+  void renderUnlimitedBobsFrame(const UnlimitedBobs &ub);
 
  private:
   bool initPanel();

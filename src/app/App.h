@@ -11,6 +11,7 @@
 #include "demos/ShadeBobs.h"
 #include "demos/SineScroller.h"
 #include "demos/Starfield.h"
+#include "demos/UnlimitedBobs.h"
 #include "demos/Vectorball.h"
 #include "display/DisplayManager.h"
 #include "input/ButtonHandler.h"
@@ -76,6 +77,7 @@ class App {
     Plasma,
     ShadeBobs,
     Vectorball,
+    UnlimitedBobs,
   };
 
   void setState(AppState nextState, uint32_t nowMs);
@@ -341,6 +343,7 @@ class App {
   Plasma demoPlasma_;
   ShadeBobs demoShadeBobs_;
   Vectorball demoVectorball_;
+  UnlimitedBobs demoUnlimitedBobs_;
   String notificationTone_;
   std::vector<String> ringtoneNames_;
   DisplayManager::TypographyConfig typographyConfig_;
