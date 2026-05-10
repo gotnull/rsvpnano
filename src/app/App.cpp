@@ -176,7 +176,9 @@ namespace
   constexpr size_t kDemoPickerStarfieldIndex = 2;
   constexpr size_t kDemoPickerSineScrollerIndex = 3;
   constexpr size_t kDemoPickerPlasmaIndex = 4;
-  constexpr size_t kDemoPickerItemCount = 5;
+  constexpr size_t kDemoPickerShadeBobsIndex = 5;
+  constexpr size_t kDemoPickerVectorballIndex = 6;
+  constexpr size_t kDemoPickerItemCount = 7;
   constexpr size_t kSettingsReadingSoundsChapterIndex = 1;
   constexpr size_t kSettingsReadingSoundsParagraphIndex = 2;
   constexpr size_t kSettingsReadingSoundsPageIndex = 3;
@@ -3402,6 +3404,8 @@ void App::renderDemoPicker()
   items.push_back("Starfield");
   items.push_back("Sine-scroller");
   items.push_back("Plasma");
+  items.push_back("ShadeBobs");
+  items.push_back("Vectorball");
   // All demo rows drill in to fullscreen playback; Back returns to settings.
   std::vector<bool> chevrons(items.size(), true);
   chevrons[kDemoPickerBackIndex] = false;
@@ -3430,6 +3434,12 @@ void App::selectDemoPickerItem(uint32_t nowMs)
   case kDemoPickerPlasmaIndex:
     enterDemoPlayback(DemoKind::Plasma, nowMs);
     return;
+  case kDemoPickerShadeBobsIndex:
+    enterDemoPlayback(DemoKind::ShadeBobs, nowMs);
+    return;
+  case kDemoPickerVectorballIndex:
+    enterDemoPlayback(DemoKind::Vectorball, nowMs);
+    return;
   default:
     return;
   }
@@ -3446,6 +3456,8 @@ void App::enterDemoPlayback(DemoKind kind, uint32_t nowMs)
     case DemoKind::Starfield:     demoStarfield_.begin(nowMs); break;
     case DemoKind::SineScroller:  demoSineScroller_.begin(nowMs); break;
     case DemoKind::Plasma:        demoPlasma_.begin(nowMs); break;
+    case DemoKind::ShadeBobs:     demoShadeBobs_.begin(nowMs); break;
+    case DemoKind::Vectorball:    demoVectorball_.begin(nowMs); break;
     case DemoKind::None:          return;
   }
   setState(AppState::DemoPlaying, nowMs);
@@ -3488,6 +3500,15 @@ void App::renderDemoFrame(uint32_t nowMs)
     case DemoKind::Plasma:
       demoPlasma_.tick(nowMs);
       display_.renderPlasmaFrame(demoPlasma_);
+      break;
+    case DemoKind::ShadeBobs:
+      demoShadeBobs_.tick(nowMs);
+      display_.renderShadeBobsFrame(demoShadeBobs_);
+      break;
+    case DemoKind::Vectorball:
+      demoVectorball_.tick(nowMs);
+      demoVectorball_.sortBalls();
+      display_.renderVectorballFrame(demoVectorball_);
       break;
     case DemoKind::None:
       break;

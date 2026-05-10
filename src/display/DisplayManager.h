@@ -8,6 +8,8 @@ class Rasterbars;
 class Starfield;
 class SineScroller;
 class Plasma;
+class ShadeBobs;
+class Vectorball;
 
 class DisplayManager {
  public:
@@ -100,6 +102,8 @@ class DisplayManager {
   void renderStarfieldFrame(const Starfield &sf);
   void renderSineScrollerFrame(const SineScroller &ss);
   void renderPlasmaFrame(const Plasma &pl);
+  void renderShadeBobsFrame(const ShadeBobs &sb);
+  void renderVectorballFrame(Vectorball &vb);
 
  private:
   bool initPanel();

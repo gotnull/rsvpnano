@@ -1,0 +1,55 @@
+Summary for fractals/Quaternions.jar
+Decompiled with CFR 0.152
+
+
+a
+----------------------------
+
+u(b int )
+  Handled impossible loop by duplicating code
+u(int )
+  Unable to fully structure code
+aj()
+  Unable to fully structure code
+ai()
+  Unable to fully structure code
+ah()
+  Unable to fully structure code
+ag()
+  Unable to fully structure code
+af()
+  Unable to fully structure code
+ae()
+  Unable to fully structure code
+ad()
+  Unable to fully structure code
+ac()
+  Unable to fully structure code
+ab()
+  Unable to fully structure code
+aa()
+  Unable to fully structure code
+z()
+  Unable to fully structure code
+y()
+  Unable to fully structure code
+x()
+  Unable to fully structure code
+w()
+  Unable to fully structure code
+v()
+  Unable to fully structure code
+
+
+b
+----------------------------
+
+u(byte byte byte byte byte byte )
+  Unable to fully structure code
+
+
+Quaternions
+----------------------------
+
+run()
+  Unable to fully structure code

@@ -8,8 +8,10 @@
 #include "audio/AudioManager.h"
 #include "demos/Plasma.h"
 #include "demos/Rasterbars.h"
+#include "demos/ShadeBobs.h"
 #include "demos/SineScroller.h"
 #include "demos/Starfield.h"
+#include "demos/Vectorball.h"
 #include "display/DisplayManager.h"
 #include "input/ButtonHandler.h"
 #include "input/TouchHandler.h"
@@ -72,6 +74,8 @@ class App {
     Starfield,
     SineScroller,
     Plasma,
+    ShadeBobs,
+    Vectorball,
   };
 
   void setState(AppState nextState, uint32_t nowMs);
@@ -335,6 +339,8 @@ class App {
   Starfield demoStarfield_;
   SineScroller demoSineScroller_;
   Plasma demoPlasma_;
+  ShadeBobs demoShadeBobs_;
+  Vectorball demoVectorball_;
   String notificationTone_;
   std::vector<String> ringtoneNames_;
   DisplayManager::TypographyConfig typographyConfig_;

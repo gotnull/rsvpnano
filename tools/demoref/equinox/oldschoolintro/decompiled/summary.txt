@@ -1,0 +1,13 @@
+Summary for oldschoolintro/Scrolls88.jar
+Decompiled with CFR 0.152
+
+
+Scrolls88
+----------------------------
+
+init()
+  Unable to fully structure code
+o(java.net.URL java.lang.String int )
+  Handled impossible loop by duplicating code
+k()
+  Handled impossible loop by duplicating code

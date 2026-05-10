@@ -1,0 +1,20 @@
+Summary for vectordotballs/Vectorball.jar
+Decompiled with CFR 0.152
+
+
+Vectorball
+----------------------------
+
+d()
+  Unable to fully structure code
+
+
+a
+----------------------------
+
+y(int int int int int )
+  Unable to fully structure code
+x()
+  Unable to fully structure code
+r(int[] int[] )
+  Unable to fully structure code

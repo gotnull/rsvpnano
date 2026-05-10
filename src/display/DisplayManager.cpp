@@ -2,8 +2,10 @@
 
 #include "demos/Plasma.h"
 #include "demos/Rasterbars.h"
+#include "demos/ShadeBobs.h"
 #include "demos/SineScroller.h"
 #include "demos/Starfield.h"
+#include "demos/Vectorball.h"
 #include "screensaver/Screensaver.h"
 
 #include <algorithm>
@@ -3278,7 +3280,12 @@ void DisplayManager::renderSineScrollerFrame(const SineScroller &ss) {
           panelColor(static_cast<uint16_t>(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)));
 
       for (int ny = nyStart; ny < nyEnd; ++ny) {
-        const int glyphCol = (ny - glyphLeftLogicalX) / kScale;        // 0..4
+        // Same panel-orientation correction as the gr inversion: native Y
+        // grows in the opposite direction from logical X for this rotated
+        // device, so glyph column 0 (leftmost in the font) needs to land at
+        // the LARGEST native Y inside the glyph slot, not the smallest.
+        const int glyphCol = (kTinyGlyphWidth - 1) -
+                             ((ny - glyphLeftLogicalX) / kScale);  // 0..4
         const uint8_t bitMask = static_cast<uint8_t>(0x10 >> glyphCol);  // bit4=col0
         const int localStripeRow = ny - stripeStart;
         // Iterate the 7 source rows; project each to its native X range.
@@ -3358,6 +3365,127 @@ void DisplayManager::renderPlasmaFrame(const Plasma &pl) {
         const int sum = static_cast<int>(sA) + sB + sC + sD;
         const uint8_t idx = static_cast<uint8_t>((sum + 512) >> 2);  // /4 → 0..255
         row[nx] = cachedPalette[idx];
+      }
+    }
+
+    if (!drawBitmap(0, stripeStart, kPanelNativeWidth, stripeStart + rows, txBuffer_)) {
+      return;
+    }
+  }
+}
+
+void DisplayManager::renderShadeBobsFrame(const ShadeBobs &sb) {
+  if (!initialized_) return;
+  lastRenderKey_ = "";
+
+  const uint8_t *canvas = sb.canvas();
+  if (canvas == nullptr) {
+    // Canvas allocation failed (PSRAM full?) — render solid black so we
+    // don't crash and so the user can see something happened.
+    for (int stripeStart = 0; stripeStart < kPanelNativeHeight;
+         stripeStart += kMaxChunkPhysicalRows) {
+      const int rows = std::min(kMaxChunkPhysicalRows, kPanelNativeHeight - stripeStart);
+      std::memset(txBuffer_, 0, static_cast<size_t>(rows) * kPanelNativeWidth * sizeof(uint16_t));
+      if (!drawBitmap(0, stripeStart, kPanelNativeWidth, stripeStart + rows, txBuffer_)) return;
+    }
+    return;
+  }
+
+  // Pre-bake the panelColor()-applied palette so the per-pixel inner loop
+  // does only LUT[index] and a store. 256 × 2 B = 512 B static.
+  static uint16_t cachedPalette[ShadeBobs::kPaletteSize];
+  static const uint16_t *lastPaletteSrc = nullptr;
+  if (sb.palette() != lastPaletteSrc) {
+    for (int i = 0; i < ShadeBobs::kPaletteSize; ++i) {
+      cachedPalette[i] = panelColor(sb.palette()[i]);
+    }
+    lastPaletteSrc = sb.palette();
+  }
+
+  for (int stripeStart = 0; stripeStart < kPanelNativeHeight;
+       stripeStart += kMaxChunkPhysicalRows) {
+    const int rows = std::min(kMaxChunkPhysicalRows, kPanelNativeHeight - stripeStart);
+
+    // Sequential PSRAM read of canvas slice → palette lookup → DRAM tx
+    // buffer write. Both axes hit memory linearly so the PSRAM cache stays
+    // hot.
+    const uint8_t *src = canvas + stripeStart * kPanelNativeWidth;
+    uint16_t *dst = txBuffer_;
+    const int total = rows * kPanelNativeWidth;
+    for (int i = 0; i < total; ++i) {
+      dst[i] = cachedPalette[src[i]];
+    }
+
+    if (!drawBitmap(0, stripeStart, kPanelNativeWidth, stripeStart + rows, txBuffer_)) {
+      return;
+    }
+  }
+}
+
+void DisplayManager::renderVectorballFrame(Vectorball &vb) {
+  if (!initialized_) return;
+  lastRenderKey_ = "";
+
+  // Project once per frame, cache native (cnX, cnY, radius, color) so the
+  // stripe loop is just bbox-cull + draw. 400 sprites × ~8 B = 3.2 KB stack.
+  struct Sprite {
+    int16_t cnX;
+    int16_t cnY;
+    int16_t radius;
+    uint16_t color;
+  };
+  Sprite sprites[Vectorball::kBallCount];
+  int spriteCount = 0;
+
+  // Tuned focal length: with cz ~3.5 and a sphere of ~radius 1 in a 640-wide
+  // panel, focal ~120 puts the sphere at ~70 % of the screen height — fills
+  // the strip nicely without clipping.
+  constexpr float kFocal = 120.0f;
+  constexpr int kVirtualWidth = kDisplayWidth;     // 640
+  constexpr int kVirtualHeight = kDisplayHeight;   // 172
+
+  const uint16_t *order = vb.drawOrder();
+  const auto *allBalls = vb.balls();
+  const uint16_t *palette = Vectorball::palette();
+
+  for (size_t i = 0; i < vb.ballCount(); ++i) {
+    const auto &b = allBalls[order[i]];
+    if (b.cz <= 0.1f) continue;
+    const float invCz = 1.0f / b.cz;
+    const int sx = kVirtualWidth / 2 + static_cast<int>(b.cx * kFocal * invCz);
+    const int sy = kVirtualHeight / 2 + static_cast<int>(b.cy * kFocal * invCz);
+    if (sx < -10 || sx >= kVirtualWidth + 10 ||
+        sy < -10 || sy >= kVirtualHeight + 10) continue;
+    // Depth-cued radius: closer balls bigger, capped so they don't blow up
+    // when cz approaches the near-plane.
+    int radius = static_cast<int>(3.5f * invCz);
+    if (radius < 1) radius = 1;
+    if (radius > 6) radius = 6;
+    Sprite &sp = sprites[spriteCount++];
+    sp.cnX = static_cast<int16_t>((kVirtualHeight - 1) - sy);
+    sp.cnY = static_cast<int16_t>(sx);
+    sp.radius = static_cast<int16_t>(radius);
+    sp.color = panelColor(palette[b.colorIndex % Vectorball::kPaletteSize]);
+  }
+
+  for (int stripeStart = 0; stripeStart < kPanelNativeHeight;
+       stripeStart += kMaxChunkPhysicalRows) {
+    const int rows = std::min(kMaxChunkPhysicalRows, kPanelNativeHeight - stripeStart);
+    const size_t bytes = static_cast<size_t>(rows) * kPanelNativeWidth * sizeof(uint16_t);
+    std::memset(txBuffer_, 0, bytes);
+
+    const int stripeEnd = stripeStart + rows;
+    for (int s = 0; s < spriteCount; ++s) {
+      const Sprite &sp = sprites[s];
+      if (sp.cnY + sp.radius < stripeStart || sp.cnY - sp.radius >= stripeEnd) continue;
+      const int localCy = sp.cnY - stripeStart;
+      fillCircleSolid(txBuffer_, kPanelNativeWidth, rows, sp.cnX, localCy, sp.radius, sp.color);
+      // Highlight on the larger balls — single bright pixel offset top-left
+      // of center, just like the screensaver dots. Cheap "shiny ball" feel.
+      if (sp.radius >= 4) {
+        const int hr = sp.radius / 3;
+        fillCircleSolid(txBuffer_, kPanelNativeWidth, rows,
+                        sp.cnX + hr, localCy + hr, hr, panelColor(0xFFFF));
       }
     }
 
