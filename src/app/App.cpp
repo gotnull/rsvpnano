@@ -709,8 +709,25 @@ void App::update(uint32_t nowMs)
     lastReaderRefreshMs_ = nowMs;
   }
 
+  // notifications_.poll() is fully synchronous and may spend up to ~60 s in
+  // WiFi connect retries. If we let it start within the screensaver-trigger
+  // window, the blocking call freezes the entire render loop right as the
+  // screensaver activates — looks like a lockup, and on user-reported repros
+  // it required a power-cycle to recover. Defer the poll if a screensaver
+  // activation is imminent; the next interval will pick it up.
+  bool screensaverImminent = false;
+  if (screensaverIndex_ > 0 && screensaverIndex_ < kScreensaverOptionCount) {
+    constexpr uint32_t kNotifPreEmptGuardMs = 45UL * 1000UL;
+    const uint32_t idleLimitMs =
+        static_cast<uint32_t>(kScreensaverMinutes[screensaverIndex_]) * 60UL * 1000UL;
+    const uint32_t idleSoFar = nowMs - lastActivityMs_;
+    if (idleLimitMs > 0 && idleSoFar + kNotifPreEmptGuardMs >= idleLimitMs) {
+      screensaverImminent = true;
+    }
+  }
   if (notificationsEnabled_ && nowMs >= nextNotificationPollMs_ &&
-      (state_ == AppState::Paused || state_ == AppState::Menu))
+      (state_ == AppState::Paused || state_ == AppState::Menu) &&
+      !screensaverImminent)
   {
     pollNotifications(nowMs);
     nextNotificationPollMs_ = nowMs + kNotificationPollIntervalMs;
