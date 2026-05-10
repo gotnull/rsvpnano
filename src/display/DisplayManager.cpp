@@ -6,6 +6,7 @@
 #include "demos/SineScroller.h"
 #include "demos/Starfield.h"
 #include "demos/Vectorball.h"
+#include "demos/VectorballData.h"
 #include "screensaver/Screensaver.h"
 
 #include <algorithm>
@@ -3426,66 +3427,84 @@ void DisplayManager::renderVectorballFrame(Vectorball &vb) {
   if (!initialized_) return;
   lastRenderKey_ = "";
 
-  // Project once per frame, cache native (cnX, cnY, radius, color) so the
-  // stripe loop is just bbox-cull + draw. 400 sprites × ~8 B = 3.2 KB stack.
-  struct Sprite {
-    int16_t cnX;
-    int16_t cnY;
-    int16_t radius;
-    uint16_t color;
-  };
-  Sprite sprites[Vectorball::kBallCount];
-  int spriteCount = 0;
-
-  // Tuned focal length: with cz ~3.5 and a sphere of ~radius 1 in a 640-wide
-  // panel, focal ~120 puts the sphere at ~70 % of the screen height — fills
-  // the strip nicely without clipping.
-  constexpr float kFocal = 120.0f;
-  constexpr int kVirtualWidth = kDisplayWidth;     // 640
-  constexpr int kVirtualHeight = kDisplayHeight;   // 172
-
-  const uint16_t *order = vb.drawOrder();
-  const auto *allBalls = vb.balls();
-  const uint16_t *palette = Vectorball::palette();
-
-  for (size_t i = 0; i < vb.ballCount(); ++i) {
-    const auto &b = allBalls[order[i]];
-    if (b.cz <= 0.1f) continue;
-    const float invCz = 1.0f / b.cz;
-    const int sx = kVirtualWidth / 2 + static_cast<int>(b.cx * kFocal * invCz);
-    const int sy = kVirtualHeight / 2 + static_cast<int>(b.cy * kFocal * invCz);
-    if (sx < -10 || sx >= kVirtualWidth + 10 ||
-        sy < -10 || sy >= kVirtualHeight + 10) continue;
-    // Depth-cued radius: closer balls bigger, capped so they don't blow up
-    // when cz approaches the near-plane.
-    int radius = static_cast<int>(3.5f * invCz);
-    if (radius < 1) radius = 1;
-    if (radius > 6) radius = 6;
-    Sprite &sp = sprites[spriteCount++];
-    sp.cnX = static_cast<int16_t>((kVirtualHeight - 1) - sy);
-    sp.cnY = static_cast<int16_t>(sx);
-    sp.radius = static_cast<int16_t>(radius);
-    sp.color = panelColor(palette[b.colorIndex % Vectorball::kPaletteSize]);
+  // The Vectorball class owns a 300×280 palette-indexed framebuffer; it
+  // already cleared and stamped its sprites in vb.paintFramebuffer(). Our
+  // job here is to letterbox-scale that frame onto the 640×172 logical
+  // panel and look up RGB565 from the 136-entry palette.
+  //
+  // Letterbox math (preserves the 300×280 aspect, fills the 172-tall
+  // dimension): scale = 172/280 = 0.6143; visible width = 300 * 0.6143
+  // = 184 px; left margin = (640 - 184) / 2 = 228; right margin = same.
+  // Source mapping inverse: srcX = (logicalX - 228) * 300 / 184,
+  //                         srcY = logicalY * 280 / 172.
+  const uint8_t *frame = vb.framebuffer();
+  if (frame == nullptr) {
+    // Framebuffer alloc failed (PSRAM full) — paint solid black.
+    for (int stripeStart = 0; stripeStart < kPanelNativeHeight;
+         stripeStart += kMaxChunkPhysicalRows) {
+      const int rows = std::min(kMaxChunkPhysicalRows, kPanelNativeHeight - stripeStart);
+      std::memset(txBuffer_, 0, static_cast<size_t>(rows) * kPanelNativeWidth * sizeof(uint16_t));
+      if (!drawBitmap(0, stripeStart, kPanelNativeWidth, stripeStart + rows, txBuffer_)) return;
+    }
+    return;
   }
 
+  // Pre-bake the palette: panelColor()-swap each of the 136 entries once
+  // per frame. Cheap (272 B work) and removes a swap from the hot loop.
+  uint16_t pal[136];
+  for (int i = 0; i < 136; ++i) {
+    const uint8_t r = kVectorballPalette[i][0];
+    const uint8_t g = kVectorballPalette[i][1];
+    const uint8_t b = kVectorballPalette[i][2];
+    const uint16_t rgb565 = static_cast<uint16_t>(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
+    pal[i] = panelColor(rgb565);
+  }
+  const uint16_t kBlack = panelColor(0x0000);
+
+  // Source-coordinate lookup tables — eliminates per-pixel multiplies.
+  // srcXForLogicalX[lx-228] = (lx-228) * 300 / 184 for lx in [228, 412).
+  // srcYForLogicalY[ly]     = ly * 280 / 172 for ly in [0, 172).
+  // Built once per render call (frame); ~360 B of stack.
+  constexpr int kVisibleW = 184;
+  constexpr int kLeftMargin = 228;  // (640 - 184) / 2
+  constexpr int kRightEdge = kLeftMargin + kVisibleW;  // 412
+  uint16_t srcXForCol[kVisibleW];
+  for (int c = 0; c < kVisibleW; ++c) {
+    int sx = (c * Vectorball::kFrameWidth) / kVisibleW;
+    if (sx < 0) sx = 0;
+    if (sx >= Vectorball::kFrameWidth) sx = Vectorball::kFrameWidth - 1;
+    srcXForCol[c] = static_cast<uint16_t>(sx);
+  }
+  uint16_t srcYForLogicalY[kDisplayHeight];
+  for (int y = 0; y < kDisplayHeight; ++y) {
+    int sy = (y * Vectorball::kFrameHeight) / kDisplayHeight;
+    if (sy < 0) sy = 0;
+    if (sy >= Vectorball::kFrameHeight) sy = Vectorball::kFrameHeight - 1;
+    srcYForLogicalY[y] = static_cast<uint16_t>(sy);
+  }
+
+  // Stripe loop — process panel in horizontal slabs (in native orientation
+  // that's nativeY = stripeStart..stripeStart+rows). For each native column
+  // (= one logical Y row, post-mirror), reads from the framebuffer are
+  // along a single row → sequential PSRAM access, cache-friendly.
   for (int stripeStart = 0; stripeStart < kPanelNativeHeight;
        stripeStart += kMaxChunkPhysicalRows) {
     const int rows = std::min(kMaxChunkPhysicalRows, kPanelNativeHeight - stripeStart);
-    const size_t bytes = static_cast<size_t>(rows) * kPanelNativeWidth * sizeof(uint16_t);
-    std::memset(txBuffer_, 0, bytes);
 
-    const int stripeEnd = stripeStart + rows;
-    for (int s = 0; s < spriteCount; ++s) {
-      const Sprite &sp = sprites[s];
-      if (sp.cnY + sp.radius < stripeStart || sp.cnY - sp.radius >= stripeEnd) continue;
-      const int localCy = sp.cnY - stripeStart;
-      fillCircleSolid(txBuffer_, kPanelNativeWidth, rows, sp.cnX, localCy, sp.radius, sp.color);
-      // Highlight on the larger balls — single bright pixel offset top-left
-      // of center, just like the screensaver dots. Cheap "shiny ball" feel.
-      if (sp.radius >= 4) {
-        const int hr = sp.radius / 3;
-        fillCircleSolid(txBuffer_, kPanelNativeWidth, rows,
-                        sp.cnX + hr, localCy + hr, hr, panelColor(0xFFFF));
+    for (int nativeX = 0; nativeX < kPanelNativeWidth; ++nativeX) {
+      // Logical Y for this native column (mirror): ly = 171 - nativeX.
+      const int ly = (kDisplayHeight - 1) - nativeX;
+      const uint8_t *srcRow = frame + srcYForLogicalY[ly] * Vectorball::kFrameWidth;
+      for (int localY = 0; localY < rows; ++localY) {
+        const int lx = stripeStart + localY;  // logical X for this stripe row
+        uint16_t color;
+        if (lx < kLeftMargin || lx >= kRightEdge) {
+          color = kBlack;
+        } else {
+          const uint8_t palIdx = srcRow[srcXForCol[lx - kLeftMargin]];
+          color = pal[palIdx];
+        }
+        txBuffer_[localY * kPanelNativeWidth + nativeX] = color;
       }
     }
 

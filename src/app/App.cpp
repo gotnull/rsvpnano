@@ -3508,6 +3508,7 @@ void App::renderDemoFrame(uint32_t nowMs)
     case DemoKind::Vectorball:
       demoVectorball_.tick(nowMs);
       demoVectorball_.sortBalls();
+      demoVectorball_.paintFramebuffer();
       display_.renderVectorballFrame(demoVectorball_);
       break;
     case DemoKind::None:
