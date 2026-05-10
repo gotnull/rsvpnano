@@ -467,6 +467,12 @@ void App::begin()
   display_.renderProgress("SD", "Loading books", "Use SD converter for EPUB", 0);
   const bool storageReady = storage_.begin();
   storage_.listBooks();
+  if (!storageReady) {
+    // Schedule the first auto-remount attempt 30 s after boot. Subsequent
+    // retries land every 30 s while the device is in Paused/Menu and SD is
+    // still unmounted — see the auto-remount block in update().
+    nextSdRemountAtMs_ = millis() + 30UL * 1000UL;
+  }
 
   // WiFi/OTA config: prefer SD's wifi.json (single source of truth), persist a
   // cached copy in NVS so OTA / Notifications / Downloads still work when the
@@ -733,6 +739,31 @@ void App::update(uint32_t nowMs)
     nextNotificationPollMs_ = nowMs + kNotificationPollIntervalMs;
   }
 
+  // Auto-remount SD if the boot mount failed. SD often fails its first attempt
+  // immediately after a power glitch / OTA reboot but mounts cleanly a few
+  // seconds later. We only retry while idle (Paused/Menu) so we don't stall
+  // a render loop or interrupt reading.
+  if (nextSdRemountAtMs_ != 0 && !storage_.isMounted() &&
+      nowMs >= nextSdRemountAtMs_ &&
+      (state_ == AppState::Paused || state_ == AppState::Menu))
+  {
+    Serial.println("[storage] auto-remount: retrying SD mount");
+    if (storage_.begin()) {
+      Serial.println("[storage] auto-remount: SUCCESS, refreshing library");
+      storage_.listBooks();
+      bookProgressInfo_.clear();
+      // One-shot: don't keep retrying once we're back. If it later fails for
+      // another reason, the user can hit Settings → Remount SD.
+      nextSdRemountAtMs_ = 0;
+      // If we were sitting on the demo splash because there was no library,
+      // re-render the menu to surface the now-available book picker.
+      if (state_ == AppState::Menu) renderMenu();
+    } else {
+      // Back off so we don't burn battery hammering an absent card.
+      nextSdRemountAtMs_ = nowMs + 30UL * 1000UL;
+    }
+  }
+
   // Banner now stays up until the user taps to dismiss; no time-based clear.
 
   const bool batteryChanged = updateBatteryStatus(nowMs);
@@ -913,10 +944,11 @@ void App::updateState(uint32_t nowMs)
   }
 
   if (state_ == AppState::Menu || state_ == AppState::Sleeping ||
-      state_ == AppState::Screensaver)
+      state_ == AppState::Screensaver || state_ == AppState::DemoPlaying)
   {
     // These states are exited by direct input only; don't auto-bounce back to
-    // Paused/Playing.
+    // Paused/Playing. (Forgetting to add DemoPlaying here was the bug that
+    // made every demo flash for 2 ms and immediately drop to Paused.)
     return;
   }
 
@@ -3519,11 +3551,24 @@ void App::runOtaUpdate(uint32_t nowMs)
     setState(AppState::Menu, nowMs);
     return;
   }
+  // Tear down the SD bus cleanly before kicking the OTA. ota_.runUpdate()
+  // ends in ESP.restart() on success; if SD_MMC is still mounted at that
+  // point, the new firmware can fail its first mount attempt (see the
+  // attempt-4 retry-with-delay path in StorageManager::begin()). Unmount
+  // here so the bus comes up cleanly post-reboot.
+  storage_.end();
+  delay(50);
   const bool ok = ota_.runUpdate();
   if (!ok)
   {
     display_.renderStatus("OTA failed", ota_.lastError().c_str(), "Returning to menu");
     delay(2500);
+    // Re-mount SD since runUpdate() returned without restarting — we still
+    // need the library back. Use a status overlay so a slow remount is visible.
+    display_.renderStatus("SD", "Re-mounting after OTA fail", "");
+    if (storage_.begin()) {
+      storage_.listBooks();
+    }
     menuScreen_ = MenuScreen::Main;
     setState(AppState::Menu, nowMs);
   }
@@ -4471,9 +4516,20 @@ void App::renderReaderWord()
   // between them on certain menu→reader transitions.
   if (currentWord.isEmpty())
   {
-    Serial.printf("[reader] renderReaderWord SKIP: currentWord is empty (idx=%u count=%u)\n",
-                  static_cast<unsigned>(reader_.currentIndex()),
-                  static_cast<unsigned>(reader_.wordCount()));
+    // The render loop calls this every periodic refresh; without this guard
+    // the log floods at ~kPausedRefreshIntervalMs while the reader sits in
+    // its transient empty state (e.g. meta-only-loaded, no SD). Log once per
+    // (idx, count) pair instead of every call.
+    static uint32_t sLastIdx = UINT32_MAX;
+    static uint32_t sLastCount = UINT32_MAX;
+    const uint32_t idx = reader_.currentIndex();
+    const uint32_t count = reader_.wordCount();
+    if (idx != sLastIdx || count != sLastCount) {
+      Serial.printf("[reader] renderReaderWord SKIP: currentWord empty (idx=%u count=%u)\n",
+                    static_cast<unsigned>(idx), static_cast<unsigned>(count));
+      sLastIdx = idx;
+      sLastCount = count;
+    }
     return;
   }
   const bool showFooter = state_ != AppState::Playing;

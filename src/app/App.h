@@ -321,6 +321,10 @@ class App {
   uint8_t autoPowerOffIndex_ = 0;        // 0=Off; cycles through preset minute values
   uint8_t screensaverIndex_ = 1;         // default 1m; 0=Off, others = minute threshold
   uint32_t lastActivityMs_ = 0;
+  // Earliest millis() at which we'll try to auto-remount the SD if it's
+  // currently unmounted. 0 disables retry until the first mount attempt
+  // sets it.
+  uint32_t nextSdRemountAtMs_ = 0;
   AppState screensaverPreviousState_ = AppState::Paused;
   Screensaver screensaver_;
   // All four demos live as stack-resident members so swapping is allocation-free.

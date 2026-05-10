@@ -23,6 +23,9 @@ class StorageManager {
   void setStatusCallback(StatusCallback callback, void *context);
   bool begin();
   void end();
+  // True if SD_MMC is currently mounted. Used by App for periodic auto-remount
+  // attempts when the initial boot mount failed.
+  bool isMounted() const { return mounted_; }
   void listBooks();
   void refreshBooks();
   bool loadFirstBookWords(std::vector<String> &words, String *loadedPath = nullptr);

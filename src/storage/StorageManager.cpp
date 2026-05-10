@@ -26,11 +26,24 @@ constexpr const char *kMountPoint = "/sdcard";
 constexpr const char *kBooksPath = "/books";
 constexpr size_t kMaxBookWords = static_cast<size_t>(RSVP_MAX_BOOK_WORDS);
 constexpr size_t kMaxChapterTitleChars = 64;
+// SD mount retry ladder. The first three are the canonical speed-step-down;
+// the duplicates after that re-try the same speeds with a `delay()` between
+// attempts to give a SoC just out of OTA reboot or a brief brownout time to
+// settle the SD pads before re-asserting CMD/CLK. Empirically the device
+// fails the first attempt cleanly after OTA but succeeds on the second.
 constexpr int kSdFrequenciesKhz[] = {
-    SDMMC_FREQ_DEFAULT,
+    SDMMC_FREQ_DEFAULT,    // 20000 kHz
     10000,
-    SDMMC_FREQ_PROBING,
+    SDMMC_FREQ_PROBING,    // 400 kHz
+    SDMMC_FREQ_DEFAULT,    // retry full-speed after warm-up delay
+    10000,
+    SDMMC_FREQ_PROBING,    // last-ditch slow probe
 };
+// Settle delay between mount attempts. First attempts run immediately; from
+// attempt 4 onward we delay this much to let the SD card's internal state
+// machine fully reset.
+constexpr uint32_t kSdRetryDelayMs = 350;
+constexpr int kSdRetryDelayFromAttempt = 3;  // 0-indexed: attempts 4,5,6 get the delay
 
 bool hasBookWordLimit() { return kMaxBookWords > 0; }
 
@@ -1075,21 +1088,32 @@ bool StorageManager::begin() {
     return false;
   }
 
-  for (int frequencyKhz : kSdFrequenciesKhz) {
+  const int attemptCount = static_cast<int>(sizeof(kSdFrequenciesKhz) /
+                                             sizeof(kSdFrequenciesKhz[0]));
+  for (int attempt = 0; attempt < attemptCount; ++attempt) {
+    const int frequencyKhz = kSdFrequenciesKhz[attempt];
+    if (attempt >= kSdRetryDelayFromAttempt) {
+      // Give the SD card pads time to fully reset before re-asserting CMD/CLK.
+      // First three attempts run back-to-back (matches old behavior); from
+      // attempt 4 onward we settle for ~350 ms each.
+      delay(kSdRetryDelayMs);
+    }
     notifyStatus("SD", "Mounting card", "", 5);
-    Serial.printf("[storage] Trying SD_MMC mount at %d kHz\n", frequencyKhz);
+    Serial.printf("[storage] Trying SD_MMC mount at %d kHz (attempt %d/%d)\n",
+                  frequencyKhz, attempt + 1, attemptCount);
     SD_MMC.end();
     mounted_ = SD_MMC.begin(kMountPoint, true, false, frequencyKhz, 5);
     if (mounted_) {
       const uint64_t sizeMb = SD_MMC.cardSize() / (1024ULL * 1024ULL);
-      Serial.printf("[storage] SD initialized (%llu MB) at %d kHz\n", sizeMb, frequencyKhz);
+      Serial.printf("[storage] SD initialized (%llu MB) at %d kHz on attempt %d\n",
+                    sizeMb, frequencyKhz, attempt + 1);
       notifyStatus("SD", "Scanning books", "EPUB converts on open", 10);
       refreshBookPaths();
       return true;
     }
   }
 
-  Serial.println("[storage] SD init failed after retries");
+  Serial.printf("[storage] SD init failed after %d retries\n", attemptCount);
   return false;
 }
 
