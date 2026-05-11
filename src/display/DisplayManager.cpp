@@ -2935,12 +2935,14 @@ void DisplayManager::renderScreensaverFrame(Screensaver &saver) {
   // Project once into native space; the stripe loop only does bbox-cull + draw.
   // 165 sprites × 12 bytes = ~2 KB on stack.
   struct Sprite {
-    int16_t cnX;        // native X (0..171)
+    int16_t cnX;        // native X (0..171) — center of dim outer rim
     int16_t cnY;        // native Y (0..639)
-    int16_t radius;     // 0 for stars, 1..7 for dots
-    int16_t hiOffset;   // 0 unless dot is large enough for a highlight
-    uint16_t color;     // already byte-swapped via panelColor()
-    uint16_t hiColor;   // white highlight if hiOffset > 0
+    int16_t radius;     // 0 for stars, 1..kRadiusMax for dots
+    int16_t coreShift;  // bright-core offset toward "light" (radius / 4)
+    int16_t hiOffset;   // 0 unless dot is large enough for a specular speck
+    uint16_t color;     // bright/lit color, already panelColor()-encoded
+    uint16_t dimColor;  // ~50% of color — outer rim, reads as the shadow side
+    uint16_t hiColor;   // white specular if hiOffset > 0
   };
   Sprite sprites[Screensaver::kStarCount + Screensaver::kPointCount];
   int spriteCount = 0;
@@ -2963,8 +2965,10 @@ void DisplayManager::renderScreensaverFrame(Screensaver &saver) {
     sp.cnX = static_cast<int16_t>((kVirtualHeight - 1) - s.sy);
     sp.cnY = static_cast<int16_t>(s.sx);
     sp.radius = 0;
+    sp.coreShift = 0;
     sp.hiOffset = 0;
     sp.color = panelColor(static_cast<uint16_t>((c5 << 11) | (c6 << 5) | c5));
+    sp.dimColor = 0;
     sp.hiColor = 0;
   }
 
@@ -2998,14 +3002,22 @@ void DisplayManager::renderScreensaverFrame(Screensaver &saver) {
     const uint16_t g6 = static_cast<uint16_t>((((base >>  5) & 0x3F) * scale) >> 8);
     const uint16_t b5 = static_cast<uint16_t>(( (base        & 0x1F) * scale) >> 8);
     const uint16_t shaded = static_cast<uint16_t>((r5 << 11) | (g6 << 5) | b5);
+    // dimColor = shaded × 0.5 via the RGB565 halve trick: mask the LSB of
+    // each channel so the right-shift doesn't bleed across channels.
+    const uint16_t dim = static_cast<uint16_t>((shaded & 0xF7DEu) >> 1);
     Sprite &sp = sprites[spriteCount++];
     sp.cnX = static_cast<int16_t>((kVirtualHeight - 1) - sy);
     sp.cnY = static_cast<int16_t>(sx);
     sp.radius = static_cast<int16_t>(radius);
-    // Highlight at logical (sx + hr, sy - hr) → native (cnX + hr, cnY + hr).
-    sp.hiOffset = (radius >= 6) ? static_cast<int16_t>(radius / 3) : 0;
+    // Bright core shifted toward the "light" (same axis as the specular).
+    // Below radius 3 the shift can't show a crescent, so we skip it.
+    sp.coreShift = (radius >= 3) ? static_cast<int16_t>(radius / 4) : 0;
+    // Specular highlight at +hiOffset in native coords. Threshold lowered
+    // from 6 → 4 so most non-tiny dots get the glint that sells the sphere.
+    sp.hiOffset = (radius >= 4) ? static_cast<int16_t>(radius / 3) : 0;
     sp.color = panelColor(shaded);
-    sp.hiColor = (radius >= 6) ? panelColor(0xFFFF) : 0;
+    sp.dimColor = panelColor(dim);
+    sp.hiColor = (radius >= 4) ? panelColor(0xFFFF) : 0;
   }
 
   // Stripe loop. txBuffer_ is the DMA-capable internal-RAM scratch already
@@ -3026,18 +3038,31 @@ void DisplayManager::renderScreensaverFrame(Screensaver &saver) {
     const int stripeEnd = stripeStart + rows;
     for (int s = 0; s < spriteCount; ++s) {
       const Sprite &sp = sprites[s];
-      // Bbox cull on native Y (= stripe axis).
-      if (sp.cnY + sp.radius < stripeStart || sp.cnY - sp.radius >= stripeEnd) continue;
+      // Bbox cull on native Y (= stripe axis). Use radius+coreShift since
+      // the bright core may extend slightly past the rim on the lit side.
+      const int extentY = sp.radius + sp.coreShift;
+      if (sp.cnY + extentY < stripeStart || sp.cnY - extentY >= stripeEnd) continue;
       const int localCy = sp.cnY - stripeStart;
       if (sp.radius == 0) {
         putPixel(txBuffer_, kPanelNativeWidth, rows, sp.cnX, localCy, sp.color);
-      } else {
-        fillCircleSolid(txBuffer_, kPanelNativeWidth, rows, sp.cnX, localCy, sp.radius,
-                        sp.color);
-        if (sp.hiOffset > 0) {
-          fillCircleSolid(txBuffer_, kPanelNativeWidth, rows,
-                          sp.cnX + sp.hiOffset, localCy + sp.hiOffset, sp.hiOffset, sp.hiColor);
-        }
+        continue;
+      }
+      // 3-tone shaded sphere: dim outer rim → bright inner core shifted
+      // toward the light → small white specular at the lit pole. The
+      // shadow side of the dim disc remains visible as a crescent because
+      // the bright core is offset by coreShift along (+cnX, +cnY).
+      fillCircleSolid(txBuffer_, kPanelNativeWidth, rows, sp.cnX, localCy, sp.radius,
+                      sp.dimColor);
+      const int innerR = sp.radius - 1;
+      if (innerR >= 0) {
+        fillCircleSolid(txBuffer_, kPanelNativeWidth, rows,
+                        sp.cnX + sp.coreShift, localCy + sp.coreShift,
+                        innerR, sp.color);
+      }
+      if (sp.hiOffset > 0) {
+        fillCircleSolid(txBuffer_, kPanelNativeWidth, rows,
+                        sp.cnX + sp.hiOffset, localCy + sp.hiOffset,
+                        sp.hiOffset, sp.hiColor);
       }
     }
 

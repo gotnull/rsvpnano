@@ -6,6 +6,7 @@
 
 #include "app/AppState.h"
 #include "audio/AudioManager.h"
+#include "audio/ModPlayer.h"
 #include "demos/Plasma.h"
 #include "demos/Rasterbars.h"
 #include "demos/ShadeBobs.h"
@@ -67,6 +68,7 @@ class App {
     RemoteBookPicker,
     BookDeleteConfirm,
     DemoPicker,
+    ModulesPicker,
   };
 
   enum class DemoKind : uint8_t {
@@ -150,6 +152,16 @@ class App {
   void openDemoPicker();
   void selectDemoPickerItem(uint32_t nowMs);
   void renderDemoPicker();
+  void openModulesPicker();
+  void selectModulesPickerItem(uint32_t nowMs);
+  void renderModulesPicker();
+  // Picks a random track from /mods/ and starts background playback.
+  // Used by the Demo-music shuffle hook on entering Screensaver/DemoPlaying.
+  bool startRandomModule(uint32_t nowMs);
+  // Fetches the starter MOD pack (5 tracks) from the gotnull/rsvpnano
+  // mods-pack-v1 GitHub release into /mods/. Skips files already present.
+  // Renders progress to the display; blocks until done.
+  void downloadModStarterPack();
   void enterDemoPlayback(DemoKind kind, uint32_t nowMs);
   void exitDemoPlayback(uint32_t nowMs);
   void renderDemoFrame(uint32_t nowMs);
@@ -237,6 +249,7 @@ class App {
   OtaManager ota_;
   NotificationsManager notifications_;
   AudioManager audio_;
+  ModPlayer modPlayer_;
   BookDownloadManager bookDownloader_;
   std::vector<BookDownloadManager::RemoteBook> remoteBooks_;
   size_t remoteBookSelectedIndex_ = 0;
@@ -245,6 +258,13 @@ class App {
   size_t networkSelectedIndex_ = 0;
   String preferredWifiSsid_;
   size_t demoSelectedIndex_ = 0;
+  size_t modulesSelectedIndex_ = 0;
+  std::vector<String> modulesMenuItems_;
+  // Demo-music mode: 0 = Off, 1 = Shuffle (random track on Screensaver/Demo
+  // entry), 2 = Picked (always replay the last picked track). Persisted as
+  // kPrefDemoMusic.
+  uint8_t demoMusicMode_ = 1;
+  String demoMusicPickedTrack_;
   Preferences preferences_;
   PausedTouchSession pausedTouch_;
   TouchIntent pausedTouchIntent_ = TouchIntent::None;

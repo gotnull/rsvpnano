@@ -169,6 +169,9 @@ namespace
   constexpr size_t kSettingsHomeNetworkIndex = 10;
   constexpr size_t kSettingsHomeScreensaverIndex = 11;
   constexpr size_t kSettingsHomeDemosIndex = 12;
+  constexpr size_t kSettingsHomeModulesIndex = 13;
+  constexpr size_t kSettingsHomeDemoMusicIndex = 14;
+  constexpr size_t kSettingsHomeModPackIndex = 15;
   // Demo picker layout: Back at 0, then one row per demo. Order must match
   // the dispatch in selectDemoPickerItem.
   constexpr size_t kDemoPickerBackIndex = 0;
@@ -425,6 +428,10 @@ void App::begin()
     preferences_.putUChar(kPrefNotifVolume, notificationVolume_);
   }
   audio_.setVolumePercent(notificationVolume_);
+  // Force audio init now so ModPlayer's task can start writing to a live
+  // I2S channel without racing the first lazy AudioManager call.
+  audio_.begin();
+  modPlayer_.begin();
   notificationTone_ = preferences_.getString(kPrefNotifTone, "");
   notifications_.setLastSeenTs(preferences_.getUInt(kPrefNotifLastTs, 0));
   soundEnabled_ = preferences_.getBool(kPrefSoundEnabled, soundEnabled_);
@@ -436,6 +443,9 @@ void App::begin()
   preferredWifiSsid_ = preferences_.getString(kPrefPreferredWifi, "");
   screensaverIndex_ = preferences_.getUChar(kPrefScreensaver, screensaverIndex_);
   if (screensaverIndex_ >= kScreensaverOptionCount) screensaverIndex_ = 0;
+  demoMusicMode_ = preferences_.getUChar("demoMusic", demoMusicMode_);
+  if (demoMusicMode_ > 2) demoMusicMode_ = 1;
+  demoMusicPickedTrack_ = preferences_.getString("demoMusicTr", "");
   lastActivityMs_ = millis();
   applyDisplayPreferences(0, false);
   applyTypographySettings(0, false);
@@ -914,6 +924,19 @@ void App::setState(AppState nextState, uint32_t nowMs)
   if (state_ == AppState::Paused || state_ == AppState::Menu)
   {
     preferences_.putUChar(kPrefAppState, static_cast<uint8_t>(state_));
+  }
+
+  // Demo-music background playback: shuffle/pick a track on entering
+  // Screensaver or DemoPlaying; stop on returning to a non-music state so
+  // the reader/menu stays quiet.
+  const bool entersMusicState = (state_ == AppState::Screensaver ||
+                                 state_ == AppState::DemoPlaying);
+  const bool leavesMusicState = (previousState == AppState::Screensaver ||
+                                 previousState == AppState::DemoPlaying);
+  if (entersMusicState && !leavesMusicState && demoMusicMode_ != 0) {
+    if (!modPlayer_.isPlaying()) startRandomModule(nowMs);
+  } else if (!entersMusicState && leavesMusicState) {
+    if (modPlayer_.isPlaying()) modPlayer_.stop();
   }
 
   switch (state_)
@@ -1919,6 +1942,11 @@ void App::moveMenuSelection(int direction)
     selectedIndex = &demoSelectedIndex_;
     itemCount = kDemoPickerItemCount;
   }
+  else if (menuScreen_ == MenuScreen::ModulesPicker)
+  {
+    selectedIndex = &modulesSelectedIndex_;
+    itemCount = modulesMenuItems_.size();
+  }
 
   if (itemCount == 0)
   {
@@ -2031,6 +2059,11 @@ void App::selectMenuItem(uint32_t nowMs)
   if (menuScreen_ == MenuScreen::DemoPicker)
   {
     selectDemoPickerItem(nowMs);
+    return;
+  }
+  if (menuScreen_ == MenuScreen::ModulesPicker)
+  {
+    selectModulesPickerItem(nowMs);
     return;
   }
 
@@ -2153,6 +2186,19 @@ void App::selectSettingsItem(uint32_t nowMs)
       return;
     case kSettingsHomeDemosIndex:
       openDemoPicker();
+      return;
+    case kSettingsHomeModulesIndex:
+      openModulesPicker();
+      return;
+    case kSettingsHomeDemoMusicIndex:
+      demoMusicMode_ = static_cast<uint8_t>((demoMusicMode_ + 1) % 3);
+      preferences_.putUChar("demoMusic", demoMusicMode_);
+      rebuildSettingsMenuItems();
+      renderSettings();
+      return;
+    case kSettingsHomeModPackIndex:
+      downloadModStarterPack();
+      renderSettings();
       return;
     case kSettingsHomeRemountSdIndex:
     {
@@ -2417,6 +2463,11 @@ void App::rebuildSettingsMenuItems()
     }
     settingsMenuItems_.push_back(String("Screensaver: ") + savLabel);
     settingsMenuItems_.push_back("Demos");
+    settingsMenuItems_.push_back("Modules");
+    const char *musicLabel =
+        (demoMusicMode_ == 0) ? "Off" : (demoMusicMode_ == 1) ? "Shuffle" : "Picked";
+    settingsMenuItems_.push_back(String("Demo music: ") + musicLabel);
+    settingsMenuItems_.push_back("Download MOD pack");
   }
   else if (menuScreen_ == MenuScreen::SettingsReadingSounds)
   {
@@ -3083,6 +3134,11 @@ void App::playNotificationTone(uint32_t maxDurationMs)
   if (notificationVolume_ == 0)
     return;
   audio_.setVolumePercent(notificationVolume_);
+  // Duck any active MOD playback to 30 % for the duration of the tone so
+  // the notification is audible without stopping the music. Restored
+  // unconditionally below so a mid-tone failure can't leave it muted.
+  const bool wasModPlaying = modPlayer_.isPlaying();
+  if (wasModPlaying) modPlayer_.setDuckPercent(30);
   if (notificationTone_.isEmpty())
   {
     audio_.playRtttl(kBuiltinNokiaRtttl, maxDurationMs);
@@ -3096,17 +3152,22 @@ void App::playNotificationTone(uint32_t maxDurationMs)
     {
       audio_.playRtttl(kBuiltinNokiaRtttl, maxDurationMs); // fallback
     }
-    return;
-  }
-  String rtttl;
-  if (storage_.loadRingtone(notificationTone_, rtttl))
-  {
-    audio_.playRtttl(rtttl, maxDurationMs);
   }
   else
   {
-    audio_.playRtttl(kBuiltinNokiaRtttl, maxDurationMs);
+    String rtttl;
+    if (storage_.loadRingtone(notificationTone_, rtttl))
+    {
+      audio_.playRtttl(rtttl, maxDurationMs);
+    }
+    else
+    {
+      audio_.playRtttl(kBuiltinNokiaRtttl, maxDurationMs);
+    }
   }
+  // Restore MOD volume after the tone finishes (synchronous WAV/RTTTL
+  // already returned, so the duck window is exactly the tone duration).
+  if (wasModPlaying) modPlayer_.setDuckPercent(100);
 }
 
 String App::currentNotificationToneLabel() const
@@ -3508,6 +3569,81 @@ void App::selectDemoPickerItem(uint32_t nowMs)
   default:
     return;
   }
+}
+
+void App::openModulesPicker()
+{
+  menuScreen_ = MenuScreen::ModulesPicker;
+  modulesMenuItems_.clear();
+  modulesMenuItems_.push_back("Back");
+  if (storage_.isMounted()) {
+    auto names = storage_.listModuleNames();
+    for (auto &n : names) modulesMenuItems_.push_back(n);
+  }
+  if (modulesMenuItems_.size() == 1) {
+    // Only the Back row — no /mods/ folder or empty. Surface that to the user.
+    modulesMenuItems_.push_back("(no modules — drop .mod/.xm/.s3m into /mods/)");
+  }
+  if (modulesSelectedIndex_ >= modulesMenuItems_.size()) modulesSelectedIndex_ = 0;
+  renderModulesPicker();
+}
+
+void App::renderModulesPicker()
+{
+  std::vector<bool> chevrons(modulesMenuItems_.size(), true);
+  chevrons[0] = false;  // Back
+  // The "(no modules)" placeholder row isn't selectable in any useful way;
+  // leave the chevron off it so it reads as informational, not actionable.
+  if (modulesMenuItems_.size() > 1 && modulesMenuItems_[1].startsWith("(")) {
+    chevrons[1] = false;
+  }
+  display_.renderMenu(modulesMenuItems_, modulesSelectedIndex_, chevrons);
+}
+
+void App::selectModulesPickerItem(uint32_t nowMs)
+{
+  if (modulesSelectedIndex_ == 0) {
+    // Back → return to Settings home, parked on the Modules row.
+    settingsSelectedIndex_ = 13;  // kSettingsHomeModulesIndex
+    menuScreen_ = MenuScreen::SettingsHome;
+    rebuildSettingsMenuItems();
+    renderSettings();
+    return;
+  }
+  if (modulesSelectedIndex_ >= modulesMenuItems_.size()) return;
+  const String &name = modulesMenuItems_[modulesSelectedIndex_];
+  if (name.startsWith("(")) return;  // placeholder row
+  const String path = storage_.modulePath(name);
+  Serial.printf("[mod] picker tap → %s\n", path.c_str());
+  display_.renderStatus("MOD", "Loading", name);
+  const bool ok = modPlayer_.playFile(path);
+  display_.renderStatus("MOD", ok ? "Playing" : "Failed", name);
+  if (ok) {
+    demoMusicPickedTrack_ = name;
+    preferences_.putString("demoMusicTr", demoMusicPickedTrack_);
+  }
+  delay(600);
+  renderModulesPicker();
+}
+
+bool App::startRandomModule(uint32_t nowMs)
+{
+  (void)nowMs;
+  if (!storage_.isMounted()) return false;
+  auto names = storage_.listModuleNames();
+  if (names.empty()) return false;
+  // Picked mode replays the saved track when available; otherwise falls
+  // through to a random pick so the music isn't silent on first boot.
+  if (demoMusicMode_ == 2 && !demoMusicPickedTrack_.isEmpty()) {
+    for (const auto &n : names) {
+      if (n == demoMusicPickedTrack_) {
+        return modPlayer_.playFile(storage_.modulePath(n));
+      }
+    }
+  }
+  const uint32_t pick = static_cast<uint32_t>(esp_random()) % names.size();
+  Serial.printf("[mod] shuffle pick: %s\n", names[pick].c_str());
+  return modPlayer_.playFile(storage_.modulePath(names[pick]));
 }
 
 void App::enterDemoPlayback(DemoKind kind, uint32_t nowMs)

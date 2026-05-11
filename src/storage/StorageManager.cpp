@@ -1646,6 +1646,49 @@ String StorageManager::ringtonePath(const String &name) const {
   return path;
 }
 
+std::vector<String> StorageManager::listModuleNames() const {
+  std::vector<String> names;
+  if (!mounted_) return names;
+  File dir = SD_MMC.open("/mods");
+  if (!dir || !dir.isDirectory()) {
+    if (dir) dir.close();
+    return names;
+  }
+  File entry = dir.openNextFile();
+  while (entry) {
+    if (!entry.isDirectory()) {
+      String name = String(entry.name());
+      const int slash = name.lastIndexOf('/');
+      if (slash >= 0) name = name.substring(slash + 1);
+      String lowered = name;
+      lowered.toLowerCase();
+      if (lowered.endsWith(".mod") || lowered.endsWith(".xm") ||
+          lowered.endsWith(".s3m") || lowered.endsWith(".it")) {
+        names.push_back(name);
+      }
+    }
+    entry.close();
+    entry = dir.openNextFile();
+    yield();
+  }
+  dir.close();
+  std::sort(names.begin(), names.end(), [](const String &a, const String &b) {
+    String al = a;
+    String bl = b;
+    al.toLowerCase();
+    bl.toLowerCase();
+    return al < bl;
+  });
+  return names;
+}
+
+String StorageManager::modulePath(const String &name) const {
+  if (name.isEmpty()) return "";
+  String path = "/mods/";
+  path += name;
+  return path;
+}
+
 bool StorageManager::loadRingtone(const String &name, String &rtttlOut) const {
   rtttlOut = "";
   if (!mounted_ || name.isEmpty()) return false;

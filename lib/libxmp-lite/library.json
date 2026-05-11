@@ -1,0 +1,25 @@
+{
+  "name": "libxmp-lite",
+  "version": "4.6.0",
+  "description": "Lite subset of libxmp — plays MOD/XM/S3M/IT module formats. Vendored from github.com/libxmp/libxmp@libxmp-4.6.0 (lite/ subdir layout). LIBXMP_CORE_PLAYER must be defined globally.",
+  "keywords": "audio, tracker, mod, xm, s3m, it",
+  "license": "MIT",
+  "frameworks": "*",
+  "platforms": "*",
+  "build": {
+    "flags": [
+      "-DLIBXMP_CORE_PLAYER",
+      "-I lib/libxmp-lite/src",
+      "-I lib/libxmp-lite/src/loaders",
+      "-Wno-unused-parameter",
+      "-Wno-unused-variable",
+      "-Wno-sign-compare"
+    ],
+    "srcDir": "src",
+    "srcFilter": [
+      "+<*.c>",
+      "+<loaders/*.c>",
+      "-<win32.c>"
+    ]
+  }
+}

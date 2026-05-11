@@ -43,6 +43,11 @@ class StorageManager {
   bool loadRingtone(const String &name, String &rtttlOut) const;
   // Returns the full /ringtones/ path for the file (for WAV streaming etc).
   String ringtonePath(const String &name) const;
+  // Tracker modules under /mods/ — bare filenames including extension.
+  // Filters to .mod/.xm/.s3m/.it. Sorted case-insensitively.
+  std::vector<String> listModuleNames() const;
+  // Full /mods/<name> path for ModPlayer::playFile().
+  String modulePath(const String &name) const;
   bool loadBookWords(size_t index, std::vector<String> &words, String *loadedPath = nullptr,
                      size_t *loadedIndex = nullptr);
   // Converts an EPUB on the SD card into a sibling .rsvp file (idempotent).
