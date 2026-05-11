@@ -2947,6 +2947,301 @@ void DisplayManager::renderModulePlayerFrame(const char *fileName,
 #endif
 }
 
+namespace {
+
+inline void formatNote(char *out, uint8_t note) {
+  // libxmp: 0 = empty, 1..96 = C-0..B-7, 254 = key-off, 255 = release.
+  static const char *kKeys[] = {"C-", "C#", "D-", "D#", "E-", "F-",
+                                "F#", "G-", "G#", "A-", "A#", "B-"};
+  if (note == 0) { out[0] = '.'; out[1] = '.'; out[2] = '.'; return; }
+  if (note == 254) { out[0] = '='; out[1] = '='; out[2] = '='; return; }
+  if (note == 255) { out[0] = '^'; out[1] = '^'; out[2] = '^'; return; }
+  if (note >= 1 && note <= 96) {
+    const int oct = (note - 1) / 12;
+    const int key = (note - 1) % 12;
+    out[0] = kKeys[key][0];
+    out[1] = kKeys[key][1];
+    out[2] = static_cast<char>('0' + oct);
+    return;
+  }
+  out[0] = '?'; out[1] = '?'; out[2] = '?';
+}
+
+inline void formatHex2(char *out, uint8_t v) {
+  static const char kHex[] = "0123456789ABCDEF";
+  out[0] = kHex[(v >> 4) & 0xF];
+  out[1] = kHex[v & 0xF];
+}
+
+inline void formatFx(char *out, uint8_t fxt, uint8_t fxp) {
+  // FastTracker-style letter + 2 hex digits. Empty cell shows "...".
+  static const char kHex[] = "0123456789ABCDEF";
+  if (fxt == 0 && fxp == 0) { out[0] = '.'; out[1] = '.'; out[2] = '.'; return; }
+  if (fxt < 10) {
+    out[0] = static_cast<char>('0' + fxt);
+  } else if (fxt < 36) {
+    out[0] = static_cast<char>('A' + (fxt - 10));
+  } else {
+    out[0] = '?';
+  }
+  out[1] = kHex[(fxp >> 4) & 0xF];
+  out[2] = kHex[fxp & 0xF];
+}
+
+}  // namespace
+
+void DisplayManager::renderModulePlayerPatternFrame(
+    const char *fileName, const char *title, const char *format,
+    int pattern, int patternCount, int pos, int orderCount,
+    int currentRow, int patternRows, int bpm, int speed,
+    const ModulePatternCell *cells, int visibleRowCount, int chanStride,
+    int firstRow, int totalChannels, int populatedChannels) {
+  if (!initialized_) return;
+  lastRenderKey_ = "";
+
+#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
+  const uint32_t t0 = micros();
+  uint32_t composeUs = 0;
+  uint32_t spiUs = 0;
+#endif
+
+  // ---- Layout (logical 640×172) ---------------------------------------
+  constexpr int kHeaderLogicalY = 2;
+  constexpr int kHeaderRowH = (kTinyGlyphHeight * 1) + 4;  // 11 px
+  constexpr int kGridTopLogicalY = kHeaderLogicalY + kHeaderRowH + 2;  // 15
+  constexpr int kRowHeight = (kTinyGlyphHeight * 1) + 1;   // 8 px → 19 rows fit
+  constexpr int kRowLabelLeftLX = 2;
+  constexpr int kRowLabelRightLX = 22;          // 2 hex chars (12 px) + pad
+  constexpr int kCellsStartLX = 26;
+  constexpr int kCellWidthLX = 64;
+  constexpr int kCellNoteOffsetLX = 0;
+  constexpr int kCellInsOffsetLX = 4 * 6;       // 3-char note + 1-char gap
+  constexpr int kCellFxOffsetLX = 7 * 6;        // + 2-char ins + 1-char gap
+  constexpr int kMaxVisibleChans = 8;
+
+  // ---- Orientation-aware coord helpers (same as the bars renderer). ---
+  const bool rotated = uiRotated_;
+  auto lxToNy = [rotated](int lx) -> int {
+    return rotated ? lx : ((kDisplayWidth - 1) - lx);
+  };
+  auto lyToNx = [rotated](int ly) -> int {
+    return rotated ? ((kDisplayHeight - 1) - ly) : ly;
+  };
+
+  // ---- Header line --------------------------------------------------
+  String headline;
+  // "PAT 03 / 12  POS 05/A8  ROW 11/40  BPM 084 SPD 03"
+  headline.reserve(64);
+  headline += "PAT ";
+  headline += String(pattern);
+  if (patternCount > 0) { headline += '/'; headline += String(patternCount); }
+  headline += "  POS ";
+  headline += String(pos);
+  if (orderCount > 0) { headline += '/'; headline += String(orderCount); }
+  headline += "  ROW ";
+  headline += String(currentRow);
+  if (patternRows > 0) { headline += '/'; headline += String(patternRows); }
+  if (bpm > 0) { headline += "  BPM "; headline += String(bpm); }
+  if (speed > 0) { headline += "  SPD "; headline += String(speed); }
+
+  const String fileText = fileName ? String(fileName) : String("");
+  String trackLabel = title ? String(title) : String("");
+  trackLabel.trim();
+  if (trackLabel.isEmpty()) trackLabel = fileText;
+  if (format && format[0]) {
+    trackLabel += "  ";
+    trackLabel += format;
+  }
+
+  // ---- Color palette (MilkyTracker-ish) -----------------------------
+  const uint16_t bgColor = panelColor(0x0841);        // very dark navy
+  const uint16_t headerColor = panelColor(0xC638);    // soft white
+  const uint16_t labelDimColor = panelColor(0x4A69);  // dim row label
+  const uint16_t labelMarkColor = panelColor(0x9CD3); // bright every 4 rows
+  const uint16_t separatorColor = panelColor(0x18C3); // dark column separator
+  const uint16_t noteColor = panelColor(0xE71C);      // light cyan
+  const uint16_t noteMarkColor = panelColor(0xFFFF);  // pure white on marker row
+  const uint16_t insColor = panelColor(0xFE60);       // amber/yellow
+  const uint16_t fxColor = panelColor(0xFC00);        // orange
+  const uint16_t emptyColor = panelColor(0x2104);     // very dim "..."
+  const uint16_t currentRowBg = panelColor(0x9013);   // dark wine — current row band
+  const uint16_t currentRowBgEdge = panelColor(0x4007);
+  const uint16_t hintColor = panelColor(0x9CD3);
+
+  // ---- Current-row band native bounds (a horizontal logical band). ----
+  const int highlightRowIdx = currentRow - firstRow;
+  int highlightLyLo = -1, highlightLyHi = -1;
+  if (highlightRowIdx >= 0 && highlightRowIdx < visibleRowCount) {
+    highlightLyLo = kGridTopLogicalY + highlightRowIdx * kRowHeight;
+    highlightLyHi = highlightLyLo + kRowHeight;
+  }
+  int highlightNxStart = 0, highlightNxEnd = 0;
+  if (highlightLyLo >= 0) {
+    const int a = lyToNx(highlightLyLo);
+    const int b = lyToNx(highlightLyHi - 1);
+    highlightNxStart = std::min(a, b);
+    highlightNxEnd = std::max(a, b) + 1;
+  }
+
+  // Vertical column separator: 1-px line in logical X between each cell.
+  // In native: 1 native row per separator, all panel-wide.
+  int separatorNy[kMaxVisibleChans + 1];
+  int separatorCount = 0;
+  for (int c = 0; c <= kMaxVisibleChans && c <= populatedChannels; ++c) {
+    const int sepLx = kCellsStartLX + c * kCellWidthLX - 2;
+    if (sepLx < 0 || sepLx >= kDisplayWidth) continue;
+    separatorNy[separatorCount++] = lxToNy(sepLx);
+  }
+
+  // Header text colors get panel-encoded once; cells call drawTinyTextNativeStripe.
+  // "+N more" hint when modules have more channels than fit on screen.
+  String moreHint;
+  if (totalChannels > kMaxVisibleChans) {
+    moreHint = "+";
+    moreHint += String(totalChannels - kMaxVisibleChans);
+    moreHint += " more";
+  }
+
+  // ---- Stripe loop ---------------------------------------------------
+  char noteBuf[3], insBuf[2], fxBuf[3];
+  for (int stripeStart = 0; stripeStart < kPanelNativeHeight;
+       stripeStart += kMaxChunkPhysicalRows) {
+    const int rows = std::min(kMaxChunkPhysicalRows, kPanelNativeHeight - stripeStart);
+    const int stripeEnd = stripeStart + rows;
+    const size_t pixels = static_cast<size_t>(rows) * kPanelNativeWidth;
+
+#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
+    const uint32_t cBegin = micros();
+#endif
+    // Background — solid dark navy fill (memset-fast loop).
+    for (size_t p = 0; p < pixels; ++p) txBuffer_[p] = bgColor;
+
+    // Current-row highlight band — a gradient (edge → centre → edge) reads
+    // like a hardware tracker's playing row.
+    if (highlightLyLo >= 0) {
+      for (int c = highlightNxStart; c < highlightNxEnd; ++c) {
+        if (c < 0 || c >= kPanelNativeWidth) continue;
+        // Top + bottom rows of the band slightly darker → subtle "lit row" look.
+        const bool edge = (c == highlightNxStart) || (c == highlightNxEnd - 1);
+        const uint16_t col = edge ? currentRowBgEdge : currentRowBg;
+        for (int r = 0; r < rows; ++r) {
+          txBuffer_[r * kPanelNativeWidth + c] = col;
+        }
+      }
+    }
+
+    // Column separators (1-px vertical logical lines).
+    for (int s = 0; s < separatorCount; ++s) {
+      const int ny = separatorNy[s];
+      if (ny < stripeStart || ny >= stripeEnd) continue;
+      const int r = ny - stripeStart;
+      uint16_t *base = txBuffer_ + r * kPanelNativeWidth;
+      const int lyLo = kGridTopLogicalY;
+      const int lyHi = kGridTopLogicalY + visibleRowCount * kRowHeight;
+      const int a = lyToNx(lyLo);
+      const int b = lyToNx(lyHi - 1);
+      const int nxLo = std::max(0, std::min(a, b));
+      const int nxHi = std::min(kPanelNativeWidth - 1, std::max(a, b));
+      for (int c = nxLo; c <= nxHi; ++c) base[c] = separatorColor;
+    }
+
+    // Header line.
+    drawTinyTextNativeStripe(headline, kRowLabelLeftLX, kHeaderLogicalY, 1,
+                             headerColor, stripeStart, rows, 0, kDisplayWidth);
+    if (!trackLabel.isEmpty()) {
+      const int trackWidth = measureTinyTextWidth(trackLabel, 1);
+      const int trackX = std::max(kRowLabelLeftLX,
+                                  kDisplayWidth - kFooterMarginX - trackWidth);
+      drawTinyTextNativeStripe(trackLabel, trackX, kHeaderLogicalY, 1,
+                               hintColor, stripeStart, rows, trackX,
+                               kDisplayWidth - kFooterMarginX);
+    }
+
+    // Hint about hidden channels.
+    if (!moreHint.isEmpty()) {
+      const int hintWidth = measureTinyTextWidth(moreHint, 1);
+      const int hintX = kDisplayWidth - kFooterMarginX - hintWidth;
+      const int hintY = kGridTopLogicalY + visibleRowCount * kRowHeight - kTinyGlyphHeight;
+      drawTinyTextNativeStripe(moreHint, hintX, hintY, 1, hintColor, stripeStart,
+                               rows, hintX, kDisplayWidth - kFooterMarginX);
+    }
+
+    // Rows.
+    char rowLabel[3] = {0, 0, 0};
+    for (int r = 0; r < visibleRowCount; ++r) {
+      const int rowIdx = firstRow + r;
+      if (rowIdx < 0 || (patternRows > 0 && rowIdx >= patternRows)) continue;
+      const int ly = kGridTopLogicalY + r * kRowHeight;
+      const bool markerRow = (rowIdx % 4) == 0;
+      const bool isCurrentRow = (rowIdx == currentRow);
+      const uint16_t rowLabelColor = markerRow ? labelMarkColor : labelDimColor;
+      const uint16_t noteCol = (markerRow || isCurrentRow) ? noteMarkColor : noteColor;
+
+      formatHex2(rowLabel, static_cast<uint8_t>(rowIdx & 0xFF));
+      String rowLabelStr(rowLabel);
+      drawTinyTextNativeStripe(rowLabelStr, kRowLabelLeftLX, ly, 1, rowLabelColor,
+                               stripeStart, rows, kRowLabelLeftLX, kRowLabelRightLX);
+
+      const int chans = std::min(populatedChannels, kMaxVisibleChans);
+      for (int c = 0; c < chans; ++c) {
+        const ModulePatternCell &cell = cells[r * chanStride + c];
+        const int cellLx = kCellsStartLX + c * kCellWidthLX;
+
+        formatNote(noteBuf, cell.note);
+        formatHex2(insBuf, cell.ins);
+        formatFx(fxBuf, cell.fxt, cell.fxp);
+
+        const bool noteEmpty = (cell.note == 0);
+        const bool insEmpty = (cell.ins == 0);
+        const bool fxEmpty = (cell.fxt == 0 && cell.fxp == 0);
+        // Force "  " (spaces) for empty instr so we don't print "00".
+        if (insEmpty) { insBuf[0] = '.'; insBuf[1] = '.'; }
+
+        String noteStr; noteStr.concat(noteBuf, 3);
+        String insStr; insStr.concat(insBuf, 2);
+        String fxStr; fxStr.concat(fxBuf, 3);
+
+        drawTinyTextNativeStripe(noteStr, cellLx + kCellNoteOffsetLX, ly, 1,
+                                 noteEmpty ? emptyColor : noteCol, stripeStart,
+                                 rows, cellLx, cellLx + kCellWidthLX);
+        drawTinyTextNativeStripe(insStr, cellLx + kCellInsOffsetLX, ly, 1,
+                                 insEmpty ? emptyColor : insColor, stripeStart,
+                                 rows, cellLx, cellLx + kCellWidthLX);
+        drawTinyTextNativeStripe(fxStr, cellLx + kCellFxOffsetLX, ly, 1,
+                                 fxEmpty ? emptyColor : fxColor, stripeStart,
+                                 rows, cellLx, cellLx + kCellWidthLX);
+      }
+    }
+
+#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
+    composeUs += micros() - cBegin;
+    const uint32_t sBegin = micros();
+#endif
+    if (!drawBitmap(0, stripeStart, kPanelNativeWidth, stripeEnd, txBuffer_)) {
+      return;
+    }
+#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
+    spiUs += micros() - sBegin;
+#endif
+  }
+
+#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
+  static uint32_t sFrameLogMs = 0;
+  static uint32_t sFrames = 0;
+  ++sFrames;
+  if (millis() - sFrameLogMs >= 1000) {
+    Serial.printf("[modpat] compose=%lu spi=%lu total=%lu us fps=%lu rot=%d\n",
+                  static_cast<unsigned long>(composeUs),
+                  static_cast<unsigned long>(spiUs),
+                  static_cast<unsigned long>(micros() - t0),
+                  static_cast<unsigned long>(sFrames),
+                  rotated ? 1 : 0);
+    sFrameLogMs = millis();
+    sFrames = 0;
+  }
+#endif
+}
+
 int DisplayManager::libraryLetterAtY(const std::vector<char> &letterAnchors, int y) {
   if (letterAnchors.empty()) {
     return -1;

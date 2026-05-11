@@ -255,6 +255,7 @@ namespace
   constexpr const char *kPrefAutoPowerOff = "apoff";
   constexpr const char *kPrefPreferredWifi = "wifipref";
   constexpr const char *kPrefScreensaver = "scrnsvr";
+  constexpr const char *kPrefModulePlayerView = "modview";
   // Index 0 disables; others are minutes of inactivity before the dots
   // screensaver kicks in. Same cycle pattern as auto-off.
   constexpr uint16_t kScreensaverMinutes[] = {0, 1, 5, 15, 30};
@@ -471,6 +472,8 @@ void App::begin()
   // at libxmp's ~80 % default regardless of the user's setting, which reads
   // as "blastingly loud". Same percent the user already chose for tones/WAVs.
   modPlayer_.setVolumePercent(notificationVolume_);
+  const uint8_t savedModView = preferences_.getUChar(kPrefModulePlayerView, 0);
+  modulePlayerView_ = (savedModView == 1) ? ModuleView::Pattern : ModuleView::Bars;
 
   // Scene architecture — Milestone 1. Register concrete scenes, bring up
   // the dispatcher, and subscribe to the events we need to react to from
@@ -1629,12 +1632,60 @@ void App::handleTouch(uint32_t nowMs)
     dismissTouchPending_ = (ev.phase != TouchPhase::End);
     return;
   }
-  // Tracker player: tap exits back to the modules picker (mirrors demo).
+  // Tracker player: tap exits back to the picker (unchanged), vertical
+  // swipe toggles between the VU-bars view and the MilkyTracker-style
+  // pattern grid. Discrimination happens on touch End — Start/Move just
+  // record the gesture origin.
   if (state_ == AppState::ModulePlaying)
   {
-    Serial.println("[modplay] dismissed by touch");
-    exitModulePlayback(nowMs);
-    dismissTouchPending_ = (ev.phase != TouchPhase::End);
+    constexpr int kModulePlayerSwipeYPx = 28;
+    constexpr int kModulePlayerTapSlopPx = 16;
+    if (ev.phase == TouchPhase::Start)
+    {
+      modulePlayerTouchActive_ = true;
+      modulePlayerTouchHandled_ = false;
+      modulePlayerTouchStartX_ = ev.x;
+      modulePlayerTouchStartY_ = ev.y;
+      return;
+    }
+    if (ev.phase == TouchPhase::Move)
+    {
+      if (modulePlayerTouchActive_ && !modulePlayerTouchHandled_)
+      {
+        const int dy = static_cast<int>(ev.y) - static_cast<int>(modulePlayerTouchStartY_);
+        const int dx = static_cast<int>(ev.x) - static_cast<int>(modulePlayerTouchStartX_);
+        if (std::abs(dy) >= kModulePlayerSwipeYPx &&
+            std::abs(dy) > std::abs(dx))
+        {
+          toggleModulePlayerView(nowMs);
+          modulePlayerTouchHandled_ = true;
+          dismissTouchPending_ = true;
+        }
+      }
+      return;
+    }
+    // End — fire tap if we never escalated to a swipe.
+    if (modulePlayerTouchActive_)
+    {
+      const bool consumed = modulePlayerTouchHandled_;
+      const int dx = static_cast<int>(ev.x) - static_cast<int>(modulePlayerTouchStartX_);
+      const int dy = static_cast<int>(ev.y) - static_cast<int>(modulePlayerTouchStartY_);
+      modulePlayerTouchActive_ = false;
+      modulePlayerTouchHandled_ = false;
+      if (consumed)
+      {
+        dismissTouchPending_ = false;  // gesture already consumed; clear suppress
+        return;
+      }
+      if (std::abs(dx) <= kModulePlayerTapSlopPx && std::abs(dy) <= kModulePlayerTapSlopPx)
+      {
+        Serial.println("[modplay] dismissed by tap");
+        exitModulePlayback(nowMs);
+        return;
+      }
+      // Horizontal or oversize drag we don't have a binding for — ignore.
+      return;
+    }
     return;
   }
   if (state_ == AppState::CameraStream)
@@ -3896,6 +3947,23 @@ void App::renderModulePlayerFrame(uint32_t nowMs)
 {
   ModPlayer::NowPlaying np;
   modPlayer_.getNowPlaying(np);
+  // libxmp emits track playback once it ends; if the track stopped on its
+  // own, drop back to the picker so the user isn't stuck looking at the same
+  // frozen frame forever.
+  if (!modPlayer_.isPlaying() && np.valid == false) {
+    exitModulePlayback(nowMs);
+    return;
+  }
+  if (modulePlayerView_ == ModuleView::Pattern) {
+    renderModulePlayerPattern(nowMs, np);
+  } else {
+    renderModulePlayerBars(nowMs, np);
+  }
+}
+
+void App::renderModulePlayerBars(uint32_t nowMs, const ModPlayer::NowPlaying &np)
+{
+  (void)nowMs;
   // VU-meter dynamics at 60 fps: instant attack, ~0.5 s fall on the body
   // (~2 units/frame over 64), peak marker holds ~0.3 s then drops a unit per
   // frame. Reads like a hardware level meter rather than raw volumes.
@@ -3920,19 +3988,58 @@ void App::renderModulePlayerFrame(uint32_t nowMs)
     }
     modulePlayerPeakLevels_[i] = peak;
   }
-  // libxmp emits track playback once it ends; if the track stopped on its
-  // own, drop back to the picker so the user isn't stuck looking at static
-  // bars forever.
-  if (!modPlayer_.isPlaying() && np.valid == false) {
-    exitModulePlayback(nowMs);
-    return;
-  }
   display_.renderModulePlayerFrame(modPlayer_.currentTrack().c_str(),
                                    np.title, np.format, np.bpm, np.speed,
                                    np.pos, np.row, np.numRows,
                                    modulePlayerBarLevels_,
                                    modulePlayerPeakLevels_,
                                    np.channelCount > 0 ? np.channelCount : 4);
+}
+
+void App::renderModulePlayerPattern(uint32_t nowMs, const ModPlayer::NowPlaying &np)
+{
+  (void)nowMs;
+  // 19 rows centred on the current row, max 8 channels visible at once.
+  // The renderer only needs the rows that will appear on screen, so we slide
+  // the window with `row` and clamp to the pattern's actual length. Cells
+  // outside the pattern come back zero-filled (empty cells).
+  constexpr int kVisibleRows = 19;
+  constexpr int kCentreOffset = kVisibleRows / 2;          // current row at index 9
+  constexpr int kMaxVisibleChans = 8;
+  const int totalRows = np.numRows > 0 ? np.numRows : kVisibleRows;
+  int firstRow = np.row - kCentreOffset;
+  if (firstRow < 0) firstRow = 0;
+  if (firstRow + kVisibleRows > totalRows) {
+    firstRow = std::max(0, totalRows - kVisibleRows);
+  }
+  if (modulePlayerPatternCells_.size() !=
+      static_cast<size_t>(kVisibleRows * kMaxVisibleChans)) {
+    modulePlayerPatternCells_.assign(kVisibleRows * kMaxVisibleChans,
+                                     ModulePatternCell{});
+  }
+  int outRows = 0;
+  int outChans = 0;
+  modPlayer_.getPatternWindow(firstRow, kVisibleRows, kMaxVisibleChans,
+                              modulePlayerPatternCells_.data(),
+                              &outRows, &outChans);
+  display_.renderModulePlayerPatternFrame(
+      modPlayer_.currentTrack().c_str(), np.title, np.format,
+      np.pattern, np.patternCount, np.pos, np.orderCount,
+      np.row, totalRows, np.bpm, np.speed,
+      modulePlayerPatternCells_.data(), kVisibleRows, kMaxVisibleChans,
+      firstRow, np.channelCount, outChans);
+}
+
+void App::toggleModulePlayerView(uint32_t nowMs)
+{
+  (void)nowMs;
+  modulePlayerView_ = (modulePlayerView_ == ModuleView::Bars)
+                          ? ModuleView::Pattern
+                          : ModuleView::Bars;
+  preferences_.putUChar(kPrefModulePlayerView,
+                        static_cast<uint8_t>(modulePlayerView_));
+  Serial.printf("[modplay] view -> %s\n",
+                modulePlayerView_ == ModuleView::Pattern ? "pattern" : "bars");
 }
 
 bool App::startRandomModule(uint32_t nowMs)

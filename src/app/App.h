@@ -167,6 +167,9 @@ class App {
   void enterModulePlayback(const String &path, uint32_t nowMs);
   void exitModulePlayback(uint32_t nowMs);
   void renderModulePlayerFrame(uint32_t nowMs);
+  void renderModulePlayerBars(uint32_t nowMs, const ModPlayer::NowPlaying &np);
+  void renderModulePlayerPattern(uint32_t nowMs, const ModPlayer::NowPlaying &np);
+  void toggleModulePlayerView(uint32_t nowMs);
   // Picks a random track from /mods/ and starts background playback.
   // Used by the Demo-music shuffle hook on entering Screensaver/DemoPlaying.
   bool startRandomModule(uint32_t nowMs);
@@ -311,6 +314,20 @@ class App {
   uint8_t modulePlayerBarLevels_[32] = {0};
   uint8_t modulePlayerPeakLevels_[32] = {0};
   uint8_t modulePlayerPeakHoldFrames_[32] = {0};
+  // Toggleable now-playing view. 0 = VU bars, 1 = MilkyTracker-style pattern
+  // grid. Persists via kPrefModulePlayerView; user toggles with a vertical
+  // swipe inside ModulePlaying (tap still exits to the picker).
+  enum class ModuleView : uint8_t { Bars = 0, Pattern = 1 };
+  ModuleView modulePlayerView_ = ModuleView::Bars;
+  // Touch-gesture bookkeeping for the module player so we can tell a tap
+  // (= exit) from a vertical swipe (= toggle view).
+  bool modulePlayerTouchActive_ = false;
+  bool modulePlayerTouchHandled_ = false;
+  uint16_t modulePlayerTouchStartX_ = 0;
+  uint16_t modulePlayerTouchStartY_ = 0;
+  // Scratch buffer for pattern-view cells; sized for kModulePatternRows ×
+  // kModulePatternMaxChans (filled by ModPlayer::getPatternWindow each frame).
+  std::vector<ModulePatternCell> modulePlayerPatternCells_;
   // Demo-music mode: 0 = Off, 1 = Shuffle (random track on Screensaver/Demo
   // entry), 2 = Picked (always replay the last picked track). Persisted as
   // kPrefDemoMusic.

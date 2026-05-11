@@ -205,6 +205,9 @@ void ModPlayer::getNowPlaying(NowPlaying &out) {
     xmp_get_module_info(ctx, &mi);
     out.valid = true;
     out.pos = fi.pos;
+    out.pattern = fi.pattern;
+    out.patternCount = mi.mod ? mi.mod->pat : 0;
+    out.orderCount = mi.mod ? mi.mod->len : 0;
     out.row = fi.row;
     out.numRows = fi.num_rows;
     out.bpm = fi.bpm;
@@ -228,6 +231,54 @@ void ModPlayer::getNowPlaying(NowPlaying &out) {
     }
   }
   xSemaphoreGive(lock_);
+}
+
+void ModPlayer::getPatternWindow(int rowStart, int rowCount, int maxChans,
+                                 ModulePatternCell *out, int *outRows,
+                                 int *outChans) {
+  if (outRows) *outRows = 0;
+  if (outChans) *outChans = 0;
+  if (!out || rowCount <= 0 || maxChans <= 0) return;
+  // Zero-fill the entire output up front so any path that doesn't write a
+  // cell (out-of-pattern row, missing track) leaves an empty cell behind.
+  for (int i = 0; i < rowCount * maxChans; ++i) out[i] = ModulePatternCell{};
+  if (!initialised_) return;
+  xSemaphoreTake(lock_, portMAX_DELAY);
+  xmp_context ctx = static_cast<xmp_context>(xmpCtx_);
+  int copiedRows = 0;
+  int copiedChans = 0;
+  if (ctx && running_) {
+    xmp_frame_info fi;
+    xmp_get_frame_info(ctx, &fi);
+    xmp_module_info mi;
+    xmp_get_module_info(ctx, &mi);
+    if (mi.mod && fi.pattern >= 0 && fi.pattern < mi.mod->pat) {
+      xmp_pattern *pat = mi.mod->xxp[fi.pattern];
+      const int chans = (mi.mod->chn < maxChans) ? mi.mod->chn : maxChans;
+      for (int r = 0; r < rowCount; ++r) {
+        const int rowIdx = rowStart + r;
+        if (rowIdx < 0 || rowIdx >= pat->rows) continue;
+        for (int c = 0; c < chans; ++c) {
+          const int trackIdx = pat->index[c];
+          if (trackIdx < 0 || trackIdx >= mi.mod->trk) continue;
+          xmp_track *tr = mi.mod->xxt[trackIdx];
+          if (!tr || rowIdx >= tr->rows) continue;
+          const xmp_event &ev = tr->event[rowIdx];
+          ModulePatternCell &dst = out[r * maxChans + c];
+          dst.note = ev.note;
+          dst.ins = ev.ins;
+          dst.vol = ev.vol;
+          dst.fxt = ev.fxt;
+          dst.fxp = ev.fxp;
+        }
+      }
+      copiedRows = rowCount;
+      copiedChans = chans;
+    }
+  }
+  xSemaphoreGive(lock_);
+  if (outRows) *outRows = copiedRows;
+  if (outChans) *outChans = copiedChans;
 }
 
 void ModPlayer::audioTaskTrampoline(void *arg) {

@@ -5,6 +5,8 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
+#include "audio/ModulePatternCell.h"
+
 // Streaming MOD/XM/S3M/IT player powered by libxmp-lite. Runs a dedicated
 // FreeRTOS task pinned to core 0 that renders the next chunk of audio with
 // xmp_play_buffer() and writes it to the existing I2S channel set up by
@@ -65,6 +67,9 @@ class ModPlayer {
     char title[48] = {0};
     char format[16] = {0};
     int pos = 0;          // song position
+    int pattern = 0;      // current pattern index (for the tracker view header)
+    int patternCount = 0; // total patterns in module
+    int orderCount = 0;   // total entries in the order list (song length)
     int row = 0;          // pattern row
     int numRows = 0;
     int bpm = 0;
@@ -79,6 +84,17 @@ class ModPlayer {
     uint8_t channelCount = 0;
   };
   void getNowPlaying(NowPlaying &out);
+
+  // Copy a window of pattern cells out of the currently playing module so
+  // the tracker view can render rows above/below the current row without
+  // re-walking libxmp's internals from the UI side. `out` must point to
+  // `rowCount * maxChans` cells; the function writes them in row-major
+  // order. `outRows` / `outChans` get the actual counts written. Rows that
+  // fall outside the current pattern are zero-filled. Safe to call from the
+  // UI tick; takes the player lock for the duration of the copy.
+  void getPatternWindow(int rowStart, int rowCount, int maxChans,
+                        ModulePatternCell *out,
+                        int *outRows, int *outChans);
 
  private:
   static void audioTaskTrampoline(void *arg);

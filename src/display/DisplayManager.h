@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include <vector>
 
+#include "audio/ModulePatternCell.h"
+
 class Screensaver;
 class Rasterbars;
 class Starfield;
@@ -122,6 +124,23 @@ class DisplayManager {
                                const uint8_t *barLevels,
                                const uint8_t *peakLevels,
                                int barCount);
+
+  // Alternate now-playing view — MilkyTracker-style pattern grid. Cells
+  // come in row-major layout sized [visibleRowCount × chanStride]; the
+  // caller passes only the rows it wants visible (centred around current
+  // row by sliding `firstRow`). Channel cells beyond `populatedChannels`
+  // are rendered as empty.
+  void renderModulePlayerPatternFrame(const char *fileName,
+                                      const char *title,
+                                      const char *format,
+                                      int pattern, int patternCount,
+                                      int pos, int orderCount,
+                                      int currentRow, int patternRows,
+                                      int bpm, int speed,
+                                      const ModulePatternCell *cells,
+                                      int visibleRowCount, int chanStride,
+                                      int firstRow, int totalChannels,
+                                      int populatedChannels);
 
  private:
   bool initPanel();
