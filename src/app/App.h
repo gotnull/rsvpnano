@@ -76,6 +76,8 @@ class App {
     BookDeleteConfirm,
     DemoPicker,
     ModulesPicker,
+    ModulesFavorites,
+    ModuleFavoriteConfirm,
   };
 
   enum class DemoKind : uint8_t {
@@ -162,6 +164,18 @@ class App {
   void openModulesPicker();
   void selectModulesPickerItem(uint32_t nowMs);
   void renderModulesPicker();
+  // Favorites submenu — long-press on a module in the picker prompts to add;
+  // long-press inside Favorites prompts to remove. Persisted as a comma-
+  // separated basename list in Preferences.
+  void openModulesFavorites();
+  void renderModulesFavorites();
+  void selectModulesFavoritesItem(uint32_t nowMs);
+  void openModuleFavoriteConfirm(const String &name, bool addMode);
+  void renderModuleFavoriteConfirm();
+  void selectModuleFavoriteConfirmItem(uint32_t nowMs);
+  bool isModuleFavorite(const String &name) const;
+  void loadModuleFavorites();
+  void saveModuleFavorites();
   // Fullscreen tracker player view. Entered from picker tap and exited by
   // touch. Re-renders frame on a fixed cadence so the channel bars animate.
   void enterModulePlayback(const String &path, uint32_t nowMs);
@@ -305,6 +319,21 @@ class App {
   size_t demoSelectedIndex_ = 0;
   size_t modulesSelectedIndex_ = 0;
   std::vector<String> modulesMenuItems_;
+  // Persisted module favorites — sorted basenames such as "slumberjack.xm".
+  std::vector<String> moduleFavorites_;
+  // Rendered Favorites picker (Modules ▸ Favorites). Same shape as the main
+  // modules picker (Back + items).
+  std::vector<String> modulesFavoritesMenuItems_;
+  size_t modulesFavoritesSelectedIndex_ = 0;
+  // Confirm-dialog state — same pattern as bookDeleteSelectedIndex_/etc.
+  size_t moduleFavoriteConfirmSelectedIndex_ = 0;
+  String moduleFavoriteTargetName_;
+  // addMode_ = true  → "Favorite this module?"
+  // addMode_ = false → "Remove favorite?"
+  bool moduleFavoriteAddMode_ = true;
+  // One-shot debounce so a long-press doesn't open the confirm twice in a row.
+  // Reset on the next touch-Start (same lifecycle as bookLongPressFired_).
+  bool moduleLongPressFired_ = false;
   uint32_t modulePlayerLastRenderMs_ = 0;
   // Smoothed channel-bar heights for the now-playing UI. Decayed each frame
   // and bumped to the current channel_info volume so taps + cut-offs read

@@ -171,6 +171,16 @@ namespace
   };
   constexpr size_t kBookDeleteConfirmHeaderRows = 1;
 
+  enum ModuleFavoriteOption : size_t {
+    ModuleFavoriteNo = 0,
+    ModuleFavoriteYes = 1,
+    ModuleFavoriteOptionCount,
+  };
+  constexpr size_t kModuleFavoriteConfirmHeaderRows = 1;
+  // Long-press threshold for the modules picker. Matches the book-delete
+  // long-press window so the muscle memory carries across pickers.
+  constexpr uint32_t kModuleLongPressMs = 800;
+
   constexpr const char *kRestartConfirmItems[] = {
       "Reboot now?",
       "No",
@@ -256,6 +266,7 @@ namespace
   constexpr const char *kPrefPreferredWifi = "wifipref";
   constexpr const char *kPrefScreensaver = "scrnsvr";
   constexpr const char *kPrefModulePlayerView = "modview";
+  constexpr const char *kPrefModuleFavorites = "modFavs";
   // Index 0 disables; others are minutes of inactivity before the dots
   // screensaver kicks in. Same cycle pattern as auto-off.
   constexpr uint16_t kScreensaverMinutes[] = {0, 1, 5, 15, 30};
@@ -474,6 +485,7 @@ void App::begin()
   modPlayer_.setVolumePercent(notificationVolume_);
   const uint8_t savedModView = preferences_.getUChar(kPrefModulePlayerView, 0);
   modulePlayerView_ = (savedModView == 1) ? ModuleView::Pattern : ModuleView::Bars;
+  loadModuleFavorites();
 
   // Scene architecture — Milestone 1. Register concrete scenes, bring up
   // the dispatcher, and subscribe to the events we need to react to from
@@ -1962,6 +1974,7 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs)
     pausedTouch_.startMs = nowMs;
     pausedTouch_.lastMs = nowMs;
     bookLongPressFired_ = false;
+    moduleLongPressFired_ = false;
     return;
   }
 
@@ -1996,6 +2009,58 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs)
       const size_t storageIndex = bookPickerBookIndices_[bookPickerSelectedIndex_ - 1];
       openBookDeleteConfirm(storageIndex);
       return;
+    }
+  }
+
+  // Long-press on a module row in the picker (or inside Favorites) opens the
+  // favorite-confirm dialog. Same threshold + slop as book delete so the
+  // gestures feel identical.
+  if (!moduleLongPressFired_ &&
+      (menuScreen_ == MenuScreen::ModulesPicker ||
+       menuScreen_ == MenuScreen::ModulesFavorites) &&
+      event.phase != TouchPhase::End &&
+      (nowMs - pausedTouch_.startMs) >= kModuleLongPressMs)
+  {
+    const int dx = abs(static_cast<int>(event.x) - static_cast<int>(pausedTouch_.startX));
+    const int dy = abs(static_cast<int>(event.y) - static_cast<int>(pausedTouch_.startY));
+    if (dx <= static_cast<int>(kTapSlopPx) && dy <= static_cast<int>(kTapSlopPx))
+    {
+      String targetName;
+      bool addMode = true;
+      if (menuScreen_ == MenuScreen::ModulesPicker)
+      {
+        const bool hasFavorites = !moduleFavorites_.empty();
+        const size_t favRow = hasFavorites ? size_t{1} : size_t{0};
+        if (modulesSelectedIndex_ >= 1 && modulesSelectedIndex_ != favRow &&
+            modulesSelectedIndex_ < modulesMenuItems_.size())
+        {
+          String label = modulesMenuItems_[modulesSelectedIndex_];
+          if (!label.startsWith("("))
+          {
+            if (label.startsWith("* ")) label = label.substring(2);
+            targetName = label;
+            addMode = !isModuleFavorite(targetName);
+          }
+        }
+      }
+      else  // ModulesFavorites
+      {
+        if (modulesFavoritesSelectedIndex_ >= 1 &&
+            modulesFavoritesSelectedIndex_ < modulesFavoritesMenuItems_.size())
+        {
+          targetName = modulesFavoritesMenuItems_[modulesFavoritesSelectedIndex_];
+          addMode = false;
+        }
+      }
+      if (!targetName.isEmpty())
+      {
+        moduleLongPressFired_ = true;
+        pausedTouch_.active = false;
+        Serial.printf("[mod-fav] long-press %s mode=%s\n", targetName.c_str(),
+                      addMode ? "add" : "remove");
+        openModuleFavoriteConfirm(targetName, addMode);
+        return;
+      }
     }
   }
 
@@ -2185,6 +2250,16 @@ void App::moveMenuSelection(int direction)
     selectedIndex = &modulesSelectedIndex_;
     itemCount = modulesMenuItems_.size();
   }
+  else if (menuScreen_ == MenuScreen::ModulesFavorites)
+  {
+    selectedIndex = &modulesFavoritesSelectedIndex_;
+    itemCount = modulesFavoritesMenuItems_.size();
+  }
+  else if (menuScreen_ == MenuScreen::ModuleFavoriteConfirm)
+  {
+    selectedIndex = &moduleFavoriteConfirmSelectedIndex_;
+    itemCount = ModuleFavoriteOptionCount;
+  }
 
   Serial.printf("[move] screen=%d direction=%d idxBefore=%u itemCount=%u\n",
                 static_cast<int>(menuScreen_), direction,
@@ -2321,6 +2396,16 @@ void App::selectMenuItem(uint32_t nowMs)
   if (menuScreen_ == MenuScreen::ModulesPicker)
   {
     selectModulesPickerItem(nowMs);
+    return;
+  }
+  if (menuScreen_ == MenuScreen::ModulesFavorites)
+  {
+    selectModulesFavoritesItem(nowMs);
+    return;
+  }
+  if (menuScreen_ == MenuScreen::ModuleFavoriteConfirm)
+  {
+    selectModuleFavoriteConfirmItem(nowMs);
     return;
   }
 
@@ -3849,8 +3934,17 @@ void App::openModulesPicker()
   menuScreen_ = MenuScreen::ModulesPicker;
   modulesMenuItems_.clear();
   modulesMenuItems_.push_back("Back");
+  // Favorites entry sits at the top of the picker (right under Back) so the
+  // user's pinned tracks are one tap away. Hidden when empty so the row
+  // doesn't read as a broken drill-in.
+  const bool hasFavorites = !moduleFavorites_.empty();
+  if (hasFavorites) {
+    modulesMenuItems_.push_back("Favorites");
+  }
   const bool mounted = storage_.isMounted();
-  Serial.printf("[modules-open] mounted=%d\n", mounted ? 1 : 0);
+  Serial.printf("[modules-open] mounted=%d favs=%u\n",
+                mounted ? 1 : 0,
+                static_cast<unsigned>(moduleFavorites_.size()));
   if (mounted) {
     const uint32_t t0 = millis();
     auto names = storage_.listModuleNames();
@@ -3861,10 +3955,15 @@ void App::openModulesPicker()
       Serial.printf("[modules-open] sample[%u]=%s\n",
                     static_cast<unsigned>(i), names[i].c_str());
     }
-    for (auto &n : names) modulesMenuItems_.push_back(n);
+    for (auto &n : names) {
+      // "* " prefix marks favourites in the unified list. Plain ASCII so it
+      // renders in the tiny font without Unicode tricks.
+      modulesMenuItems_.push_back(isModuleFavorite(n) ? (String("* ") + n) : n);
+    }
   }
-  if (modulesMenuItems_.size() == 1) {
-    // Only the Back row — no /mods/ folder or empty. Surface that to the user.
+  const size_t baseRows = hasFavorites ? 2 : 1;
+  if (modulesMenuItems_.size() == baseRows) {
+    // No real modules to play — surface a hint row that's not selectable.
     modulesMenuItems_.push_back("(no modules — drop .mod/.xm/.s3m into /mods/)");
   }
   if (modulesSelectedIndex_ >= modulesMenuItems_.size()) modulesSelectedIndex_ = 0;
@@ -3880,11 +3979,9 @@ void App::renderModulesPicker()
                 static_cast<unsigned>(modulesSelectedIndex_),
                 static_cast<unsigned>(modulesMenuItems_.size()));
   std::vector<bool> chevrons(modulesMenuItems_.size(), true);
-  chevrons[0] = false;  // Back
-  // The "(no modules)" placeholder row isn't selectable in any useful way;
-  // leave the chevron off it so it reads as informational, not actionable.
-  if (modulesMenuItems_.size() > 1 && modulesMenuItems_[1].startsWith("(")) {
-    chevrons[1] = false;
+  chevrons[0] = false;  // Back never has a chevron.
+  for (size_t i = 1; i < modulesMenuItems_.size(); ++i) {
+    if (modulesMenuItems_[i].startsWith("(")) chevrons[i] = false;  // placeholder row
   }
   display_.renderMenu(modulesMenuItems_, modulesSelectedIndex_, chevrons);
 }
@@ -3899,12 +3996,163 @@ void App::selectModulesPickerItem(uint32_t nowMs)
     renderSettings();
     return;
   }
+  const bool hasFavorites = !moduleFavorites_.empty();
+  if (hasFavorites && modulesSelectedIndex_ == 1) {
+    openModulesFavorites();
+    return;
+  }
   if (modulesSelectedIndex_ >= modulesMenuItems_.size()) return;
-  const String &name = modulesMenuItems_[modulesSelectedIndex_];
+  String name = modulesMenuItems_[modulesSelectedIndex_];
   if (name.startsWith("(")) return;  // placeholder row
+  if (name.startsWith("* ")) name = name.substring(2);
   const String path = storage_.modulePath(name);
   Serial.printf("[mod] picker tap → %s\n", path.c_str());
   enterModulePlayback(path, nowMs);
+}
+
+// ---------------------------------------------------------------------------
+// Module favourites — persistence helpers, submenu, confirm dialog.
+// ---------------------------------------------------------------------------
+
+void App::loadModuleFavorites()
+{
+  moduleFavorites_.clear();
+  const String packed = preferences_.getString(kPrefModuleFavorites, "");
+  if (packed.isEmpty()) {
+    Serial.println("[mod-fav] no saved favorites");
+    return;
+  }
+  int start = 0;
+  while (start < static_cast<int>(packed.length())) {
+    int end = packed.indexOf(',', start);
+    if (end < 0) end = packed.length();
+    String name = packed.substring(start, end);
+    name.trim();
+    if (!name.isEmpty()) moduleFavorites_.push_back(name);
+    start = end + 1;
+  }
+  std::sort(moduleFavorites_.begin(), moduleFavorites_.end(),
+            [](const String &a, const String &b) {
+              return a.compareTo(b) < 0;
+            });
+  Serial.printf("[mod-fav] loaded %u favorites\n",
+                static_cast<unsigned>(moduleFavorites_.size()));
+}
+
+void App::saveModuleFavorites()
+{
+  String packed;
+  for (size_t i = 0; i < moduleFavorites_.size(); ++i) {
+    if (i > 0) packed += ',';
+    packed += moduleFavorites_[i];
+  }
+  preferences_.putString(kPrefModuleFavorites, packed);
+  Serial.printf("[mod-fav] saved %u favorites\n",
+                static_cast<unsigned>(moduleFavorites_.size()));
+}
+
+bool App::isModuleFavorite(const String &name) const
+{
+  for (const auto &n : moduleFavorites_) {
+    if (n == name) return true;
+  }
+  return false;
+}
+
+void App::openModulesFavorites()
+{
+  menuScreen_ = MenuScreen::ModulesFavorites;
+  modulesFavoritesMenuItems_.clear();
+  modulesFavoritesMenuItems_.push_back("Back");
+  for (const auto &n : moduleFavorites_) modulesFavoritesMenuItems_.push_back(n);
+  if (modulesFavoritesSelectedIndex_ >= modulesFavoritesMenuItems_.size()) {
+    modulesFavoritesSelectedIndex_ = 0;
+  }
+  renderModulesFavorites();
+}
+
+void App::renderModulesFavorites()
+{
+  std::vector<bool> chevrons(modulesFavoritesMenuItems_.size(), true);
+  chevrons[0] = false;
+  display_.renderMenu(modulesFavoritesMenuItems_, modulesFavoritesSelectedIndex_,
+                      chevrons);
+}
+
+void App::selectModulesFavoritesItem(uint32_t nowMs)
+{
+  if (modulesFavoritesSelectedIndex_ == 0) {
+    openModulesPicker();
+    return;
+  }
+  if (modulesFavoritesSelectedIndex_ >= modulesFavoritesMenuItems_.size()) return;
+  const String name = modulesFavoritesMenuItems_[modulesFavoritesSelectedIndex_];
+  enterModulePlayback(storage_.modulePath(name), nowMs);
+}
+
+void App::openModuleFavoriteConfirm(const String &name, bool addMode)
+{
+  moduleFavoriteTargetName_ = name;
+  moduleFavoriteAddMode_ = addMode;
+  moduleFavoriteConfirmSelectedIndex_ = ModuleFavoriteNo;
+  menuScreen_ = MenuScreen::ModuleFavoriteConfirm;
+  renderModuleFavoriteConfirm();
+}
+
+void App::renderModuleFavoriteConfirm()
+{
+  std::vector<String> items;
+  items.reserve(ModuleFavoriteOptionCount + 1);
+  String header = moduleFavoriteAddMode_ ? "Favorite \"" : "Remove favorite \"";
+  header += moduleFavoriteTargetName_;
+  header += "\"?";
+  items.push_back(header);
+  items.push_back(String("No"));
+  items.push_back(moduleFavoriteAddMode_ ? String("Yes, favorite")
+                                         : String("Yes, remove"));
+  display_.renderMenu(items, moduleFavoriteConfirmSelectedIndex_ +
+                                 kModuleFavoriteConfirmHeaderRows);
+}
+
+void App::selectModuleFavoriteConfirmItem(uint32_t nowMs)
+{
+  (void)nowMs;
+  // Cancel — return to whichever picker triggered the dialog.
+  if (moduleFavoriteConfirmSelectedIndex_ != ModuleFavoriteYes) {
+    if (moduleFavoriteAddMode_) {
+      openModulesPicker();
+    } else {
+      openModulesFavorites();
+    }
+    return;
+  }
+  if (moduleFavoriteAddMode_) {
+    if (!isModuleFavorite(moduleFavoriteTargetName_)) {
+      moduleFavorites_.push_back(moduleFavoriteTargetName_);
+      std::sort(moduleFavorites_.begin(), moduleFavorites_.end(),
+                [](const String &a, const String &b) {
+                  return a.compareTo(b) < 0;
+                });
+      saveModuleFavorites();
+    }
+    openModulesPicker();
+  } else {
+    for (auto it = moduleFavorites_.begin(); it != moduleFavorites_.end(); ++it) {
+      if (*it == moduleFavoriteTargetName_) {
+        moduleFavorites_.erase(it);
+        break;
+      }
+    }
+    saveModuleFavorites();
+    if (moduleFavorites_.empty()) {
+      // Favorites section is now gone — drop back to the main picker so the
+      // user isn't staring at an empty submenu.
+      openModulesPicker();
+    } else {
+      modulesFavoritesSelectedIndex_ = 0;
+      openModulesFavorites();
+    }
+  }
 }
 
 void App::enterModulePlayback(const String &path, uint32_t nowMs)
@@ -5449,6 +5697,14 @@ void App::renderMenu()
   else if (menuScreen_ == MenuScreen::ModulesPicker)
   {
     renderModulesPicker();
+  }
+  else if (menuScreen_ == MenuScreen::ModulesFavorites)
+  {
+    renderModulesFavorites();
+  }
+  else if (menuScreen_ == MenuScreen::ModuleFavoriteConfirm)
+  {
+    renderModuleFavoriteConfirm();
   }
   else
   {
