@@ -181,11 +181,12 @@ namespace
   // long-press window so the muscle memory carries across pickers.
   constexpr uint32_t kModuleLongPressMs = 800;
 
-  // Tabbed pickers reserve row 0 for the tab strip and row 1 for "Back".
-  // The first selectable item lives at row 2.
-  constexpr size_t kTabStripRow = 0;
-  constexpr size_t kTabbedBackRow = 1;
-  constexpr size_t kTabbedFirstItemRow = 2;
+  // Tabbed pickers use a dedicated tab band (rendered by DisplayManager); the
+  // items vector therefore starts with "Back" at row 0, items at row 1+.
+  constexpr size_t kTabbedBackRow = 0;
+  constexpr size_t kTabbedFirstItemRow = 1;
+  // Slide animation timing for the underline between tabs.
+  constexpr uint32_t kTabSlideDurationMs = 200;
 
   constexpr const char *kRestartConfirmItems[] = {
       "Reboot now?",
@@ -699,12 +700,31 @@ void App::begin()
 
 void App::update(uint32_t nowMs)
 {
+  // Diagnostic heartbeat — once per second so we can tell whether the main
+  // loop is alive when the device "locks up". If this line stops printing,
+  // the loop itself is wedged (panic / watchdog / infinite loop). If it
+  // keeps printing but the screen is frozen, look at the renderer paths.
+  static uint32_t sHbLastMs = 0;
+  static uint32_t sHbTicks = 0;
+  ++sHbTicks;
+  if (nowMs - sHbLastMs >= 1000) {
+    Serial.printf("[heart] t=%lu state=%d menu=%d ticks=%lu heap=%u min=%u\n",
+                  static_cast<unsigned long>(nowMs),
+                  static_cast<int>(state_),
+                  static_cast<int>(menuScreen_),
+                  static_cast<unsigned long>(sHbTicks),
+                  static_cast<unsigned>(ESP.getFreeHeap()),
+                  static_cast<unsigned>(ESP.getMinFreeHeap()));
+    sHbLastMs = nowMs;
+    sHbTicks = 0;
+  }
   button_.update(nowMs);
   powerButton_.update(nowMs);
   if (button_.isHeld() || powerButton_.isHeld())
   {
     lastActivityMs_ = nowMs;
   }
+  tickTabAnimation(nowMs);
   handleBootButton(nowMs);
   handlePowerButton(nowMs);
   if (powerOffStarted_)
@@ -2148,14 +2168,26 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs)
   }
 
   // Generic horizontal-swipe → tab cycle for any menu screen that belongs
-  // to a TabGroup (currently Modules ↔ Favorites; extend by registering more
-  // groups in tabGroupFor()).
+  // to a TabGroup. Directional, no wrap: left-swipe moves to the previous
+  // tab (or no-op at the leftmost), right-swipe moves to the next tab (or
+  // no-op at the rightmost).
   if (currentScreenHasTabs() &&
       absDeltaX >= static_cast<int>(kSwipeThresholdPx) &&
       absDeltaX > absDeltaY + static_cast<int>(kAxisBiasPx))
   {
-    cycleTabs(deltaX < 0 ? 1 : -1);
+    cycleTabs(deltaX < 0 ? -1 : 1);
     return;
+  }
+
+  // Leftward swipe on a non-tabbed menu with a Back affordance = navigate
+  // up one level. Saves the user from scrolling back to the Back row in a
+  // long list. Right swipe is intentionally not handled — there's no
+  // forward sibling to navigate to in a single-tab picker.
+  if (deltaX < 0 &&
+      absDeltaX >= static_cast<int>(kSwipeThresholdPx) &&
+      absDeltaX > absDeltaY + static_cast<int>(kAxisBiasPx))
+  {
+    if (goBack(nowMs)) return;
   }
 
   if (absDeltaY >= static_cast<int>(kSwipeThresholdPx) &&
@@ -2290,18 +2322,16 @@ void App::moveMenuSelection(int direction)
     return;
   }
 
-  const bool tabbed = currentScreenHasTabs();
-  // Tabbed pickers reserve row 0 for the (non-selectable) tab strip — the
-  // cursor must wrap to row 1 instead of row 0.
-  const size_t minIdx = tabbed ? kTabbedBackRow : 0;
+  // Tab band lives outside the items list now, so every row in tabbed
+  // pickers is selectable — no special skip logic needed.
   const int next = static_cast<int>(*selectedIndex) + direction;
-  if (next < static_cast<int>(minIdx))
+  if (next < 0)
   {
     *selectedIndex = itemCount - 1;
   }
   else if (next >= static_cast<int>(itemCount))
   {
-    *selectedIndex = minIdx;
+    *selectedIndex = 0;
   }
   else
   {
@@ -2479,6 +2509,78 @@ void App::selectMenuItem(uint32_t nowMs)
   }
 }
 
+bool App::goBack(uint32_t nowMs)
+{
+  // Each branch sets the cancel/back row of its picker and invokes the
+  // corresponding select handler — that route already knows how to clean up
+  // state and render the parent screen. Adding a new menu? Add it here too.
+  switch (menuScreen_)
+  {
+    case MenuScreen::Main:
+      return false;  // root — nothing to go back to
+    case MenuScreen::SettingsHome:
+    case MenuScreen::SettingsDisplay:
+    case MenuScreen::SettingsPacing:
+    case MenuScreen::SettingsReadingSounds:
+      settingsSelectedIndex_ = kSettingsBackIndex;
+      selectSettingsItem(nowMs);
+      return true;
+    case MenuScreen::TypographyTuning:
+      typographyTuningSelectedIndex_ = TypographyTuningBack;
+      selectTypographyTuningItem(nowMs);
+      return true;
+    case MenuScreen::AuthorPicker:
+      authorPickerSelectedIndex_ = 0;
+      selectAuthorPickerItem(nowMs);
+      return true;
+    case MenuScreen::BookPicker:
+      bookPickerSelectedIndex_ = kBookPickerBackIndex;
+      selectBookPickerItem(nowMs);
+      return true;
+    case MenuScreen::ChapterPicker:
+      chapterPickerSelectedIndex_ = 0;
+      selectChapterPickerItem(nowMs);
+      return true;
+    case MenuScreen::RestartConfirm:
+      restartConfirmSelectedIndex_ = RestartConfirmNo;
+      selectRestartConfirmItem(nowMs);
+      return true;
+    case MenuScreen::TonePicker:
+      tonePickerSelectedIndex_ = 0;
+      selectTonePickerItem(nowMs);
+      return true;
+    case MenuScreen::RemoteBookPicker:
+      remoteBookSelectedIndex_ = 0;  // kRemoteBookPickerBackIndex (defined later in file)
+      selectRemoteBookPickerItem(nowMs);
+      return true;
+    case MenuScreen::NetworkPicker:
+      networkSelectedIndex_ = 0;
+      selectNetworkPickerItem(nowMs);
+      return true;
+    case MenuScreen::BookDeleteConfirm:
+      bookDeleteSelectedIndex_ = BookDeleteCancel;
+      selectBookDeleteConfirmItem(nowMs);
+      return true;
+    case MenuScreen::DemoPicker:
+      demoSelectedIndex_ = kDemoPickerBackIndex;
+      selectDemoPickerItem(nowMs);
+      return true;
+    case MenuScreen::ModulesPicker:
+      modulesSelectedIndex_ = kTabbedBackRow;
+      selectModulesPickerItem(nowMs);
+      return true;
+    case MenuScreen::ModulesFavorites:
+      modulesFavoritesSelectedIndex_ = kTabbedBackRow;
+      selectModulesFavoritesItem(nowMs);
+      return true;
+    case MenuScreen::ModuleFavoriteConfirm:
+      moduleFavoriteConfirmSelectedIndex_ = ModuleFavoriteNo;
+      selectModuleFavoriteConfirmItem(nowMs);
+      return true;
+  }
+  return false;
+}
+
 void App::openSettings()
 {
   settingsSelectedIndex_ = kSettingsHomeDisplayIndex;
@@ -2575,6 +2677,7 @@ void App::selectSettingsItem(uint32_t nowMs)
       delay(100);
       display_.renderStatus("SD", "Remounting", "");
       const bool ok = storage_.begin();
+      invalidateModulesListCache();  // /mods/ may differ on the re-mounted card
       if (ok)
       {
         storage_.listBooks();
@@ -3457,6 +3560,7 @@ void App::exitUsbTransfer(uint32_t nowMs)
   usbTransfer_.end();
 
   const bool storageReady = storage_.begin();
+  invalidateModulesListCache();  // user may have added/removed mods over USB
   if (storageReady)
   {
     storage_.listBooks();
@@ -4018,47 +4122,144 @@ void App::cycleTabs(int direction)
   const int active = tabIndexInGroup(*group, menuScreen_);
   if (active < 0) return;
   const int count = static_cast<int>(group->tabCount);
-  int next = (active + direction) % count;
-  if (next < 0) next += count;
-  Serial.printf("[tabs] %s → %s\n", group->tabs[active].label,
+  const int next = active + direction;
+  // No-wrap: left at the leftmost tab and right at the rightmost are no-ops.
+  // Left-on-leftmost intentionally does NOT chain into goBack — keeps the
+  // gesture predictable inside a tabbed picker.
+  if (next < 0 || next >= count) {
+    Serial.printf("[tabs] edge — no sibling in dir=%d\n", direction);
+    return;
+  }
+  Serial.printf("[tabs] %s → %s (slide)\n", group->tabs[active].label,
                 group->tabs[next].label);
-  (this->*group->tabs[next].opener)();
+  // Set up animation BEFORE any rendering — the partial-strip overlay reads
+  // the from/to indices via currentTabUnderlineX().
+  tabAnimFromIdx_ = active;
+  tabAnimToIdx_ = next;
+  tabAnimStartMs_ = millis();
+  tabAnimActive_ = true;
+  // Paint the underline at the from-position immediately so the slide starts
+  // visibly without a full virtualFrame_ flush. The destination tab's full
+  // menu is rendered AT THE END of the animation (tickTabAnimation) to keep
+  // the slide itself sub-millisecond per frame.
+  const int slotW = BoardConfig::DISPLAY_WIDTH / count;
+  display_.renderTabUnderlineStrip(currentTabUnderlineX(slotW, count),
+                                   currentTabUnderlineW(slotW));
+}
+
+int App::currentTabUnderlineW(int slotW) const
+{
+  (void)slotW;
+  const TabGroup *group = tabGroupFor(menuScreen_);
+  const int count = group ? static_cast<int>(group->tabCount) : 0;
+  return DisplayManager::tabUnderlineWidth(count);
+}
+
+int App::currentTabUnderlineX(int slotW, int slotCount) const
+{
+  (void)slotW;
+  if (slotCount <= 0) return 0;
+  const TabGroup *group = tabGroupFor(menuScreen_);
+  int activeIdx = 0;
+  if (group) {
+    const int idx = tabIndexInGroup(*group, menuScreen_);
+    if (idx >= 0) activeIdx = idx;
+  }
+  // Each tab's underline is a contiguous slice of the gray divider, with no
+  // intra-slot padding — the slices fit edge-to-edge across the dividerW.
+  // During animation we lerp between the from/to slice-start X coordinates.
+  const auto tabX = [slotCount](int idx) {
+    return DisplayManager::tabUnderlineXForTab(idx, slotCount);
+  };
+  int x = tabX(activeIdx);
+  if (tabAnimActive_) {
+    const uint32_t elapsed = millis() - tabAnimStartMs_;
+    if (elapsed < kTabSlideDurationMs) {
+      const float t = static_cast<float>(elapsed) / static_cast<float>(kTabSlideDurationMs);
+      const float k = 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t);  // ease-out cubic
+      const int fromX = tabX(tabAnimFromIdx_);
+      const int toX = tabX(tabAnimToIdx_);
+      x = fromX + static_cast<int>((toX - fromX) * k);
+    } else {
+      x = tabX(tabAnimToIdx_);
+    }
+  }
+  return x;
+}
+
+void App::tickTabAnimation(uint32_t nowMs)
+{
+  if (!tabAnimActive_) return;
+  if (state_ != AppState::Menu) {
+    tabAnimActive_ = false;
+    return;
+  }
+  const TabGroup *group = tabGroupFor(menuScreen_);
+  if (!group || group->tabCount < 2) {
+    tabAnimActive_ = false;
+    return;
+  }
+  // 60 fps slide — repaint only the 2-row underline strip via the native
+  // drawBitmap overlay, NOT the full virtualFrame_ menu. Compose budget per
+  // frame is sub-millisecond, SPI ≈ 1-2 ms for ~2.5 KB.
+  const int slotCount = static_cast<int>(group->tabCount);
+  const int slotW = BoardConfig::DISPLAY_WIDTH / slotCount;
+  display_.renderTabUnderlineStrip(currentTabUnderlineX(slotW, slotCount),
+                                   currentTabUnderlineW(slotW));
+  const uint32_t elapsed = nowMs - tabAnimStartMs_;
+  if (elapsed >= kTabSlideDurationMs) {
+    // Slide done — NOW switch screens and do the (slow) full re-render. The
+    // user only sees one heavy flush per swipe, at the moment content swaps.
+    tabAnimActive_ = false;
+    const TabDescriptor &target = group->tabs[tabAnimToIdx_];
+    (this->*target.opener)();
+  }
+}
+
+const std::vector<String> &App::cachedModuleList()
+{
+  if (modulesListCacheValid_) return modulesListCache_;
+  modulesListCache_.clear();
+  if (storage_.isMounted())
+  {
+    const uint32_t t0 = millis();
+    modulesListCache_ = storage_.listModuleNames();
+    Serial.printf("[modules-cache] refreshed in %lu ms (%u files)\n",
+                  static_cast<unsigned long>(millis() - t0),
+                  static_cast<unsigned>(modulesListCache_.size()));
+  }
+  modulesListCacheValid_ = true;
+  return modulesListCache_;
+}
+
+void App::invalidateModulesListCache()
+{
+  if (modulesListCacheValid_)
+  {
+    Serial.println("[modules-cache] invalidated");
+  }
+  modulesListCacheValid_ = false;
 }
 
 void App::openModulesPicker()
 {
   menuScreen_ = MenuScreen::ModulesPicker;
   modulesMenuItems_.clear();
-  // Row 0 — tab strip (non-selectable). Row 1 — Back. Rows 2+ — modules.
-  modulesMenuItems_.push_back(buildTabStripLabel(kModulesTabGroup, 0));
+  // Row 0 — Back. Rows 1+ — modules. (Tab band lives outside the items list.)
   modulesMenuItems_.push_back("Back");
   const bool mounted = storage_.isMounted();
-  Serial.printf("[modules-open] mounted=%d favs=%u\n",
+  const auto &names = cachedModuleList();
+  Serial.printf("[modules-open] mounted=%d favs=%u cache=%u\n",
                 mounted ? 1 : 0,
-                static_cast<unsigned>(moduleFavorites_.size()));
-  if (mounted) {
-    const uint32_t t0 = millis();
-    auto names = storage_.listModuleNames();
-    Serial.printf("[modules-open] scanned /mods/ in %lu ms, found=%u files\n",
-                  static_cast<unsigned long>(millis() - t0),
-                  static_cast<unsigned>(names.size()));
-    for (size_t i = 0; i < names.size() && i < 4; ++i) {
-      Serial.printf("[modules-open] sample[%u]=%s\n",
-                    static_cast<unsigned>(i), names[i].c_str());
-    }
-    for (auto &n : names) {
-      // "* " prefix marks favourites in the unified list. Plain ASCII so it
-      // renders in the tiny font without Unicode tricks.
-      modulesMenuItems_.push_back(isModuleFavorite(n) ? (String("* ") + n) : n);
-    }
+                static_cast<unsigned>(moduleFavorites_.size()),
+                static_cast<unsigned>(names.size()));
+  for (const auto &n : names) {
+    modulesMenuItems_.push_back(isModuleFavorite(n) ? (String("* ") + n) : n);
   }
   if (modulesMenuItems_.size() == kTabbedFirstItemRow) {
-    // No real modules to play — surface a hint row that's not selectable.
     modulesMenuItems_.push_back("(no modules — drop .mod/.xm/.s3m into /mods/)");
   }
-  if (modulesSelectedIndex_ < kTabbedBackRow ||
-      modulesSelectedIndex_ >= modulesMenuItems_.size())
-  {
+  if (modulesSelectedIndex_ >= modulesMenuItems_.size()) {
     modulesSelectedIndex_ = kTabbedBackRow;
   }
   Serial.printf("[modules-open] menu rows=%u idx=%u\n",
@@ -4069,25 +4270,22 @@ void App::openModulesPicker()
 
 void App::renderModulesPicker()
 {
-  Serial.printf("[modules-render] idx=%u rows=%u\n",
-                static_cast<unsigned>(modulesSelectedIndex_),
-                static_cast<unsigned>(modulesMenuItems_.size()));
   std::vector<bool> chevrons(modulesMenuItems_.size(), true);
-  chevrons[kTabStripRow] = false;   // Tab strip — informational, not actionable.
-  chevrons[kTabbedBackRow] = false; // Back — no drill-in chevron.
+  chevrons[kTabbedBackRow] = false;  // Back — never drills with a chevron.
   for (size_t i = kTabbedFirstItemRow; i < modulesMenuItems_.size(); ++i) {
     if (modulesMenuItems_[i].startsWith("(")) chevrons[i] = false;
   }
-  display_.renderMenu(modulesMenuItems_, modulesSelectedIndex_, chevrons);
+  const std::vector<String> tabLabels = {"Modules", "Favorites"};
+  const int slotW = BoardConfig::DISPLAY_WIDTH / static_cast<int>(tabLabels.size());
+  display_.renderMenuWithTabs(modulesMenuItems_, modulesSelectedIndex_, chevrons,
+                              tabLabels, 0,
+                              currentTabUnderlineX(slotW, static_cast<int>(tabLabels.size())),
+                              currentTabUnderlineW(slotW));
 }
 
 void App::selectModulesPickerItem(uint32_t nowMs)
 {
-  if (modulesSelectedIndex_ == kTabStripRow) {
-    return;  // tap on the strip is a no-op; swipe horizontally to switch tabs
-  }
   if (modulesSelectedIndex_ == kTabbedBackRow) {
-    // Back → return to Settings home, parked on the Modules row.
     settingsSelectedIndex_ = 13;  // kSettingsHomeModulesIndex
     menuScreen_ = MenuScreen::SettingsHome;
     rebuildSettingsMenuItems();
@@ -4096,7 +4294,7 @@ void App::selectModulesPickerItem(uint32_t nowMs)
   }
   if (modulesSelectedIndex_ >= modulesMenuItems_.size()) return;
   String name = modulesMenuItems_[modulesSelectedIndex_];
-  if (name.startsWith("(")) return;  // placeholder row
+  if (name.startsWith("(")) return;
   if (name.startsWith("* ")) name = name.substring(2);
   const String path = storage_.modulePath(name);
   Serial.printf("[mod] picker tap → %s\n", path.c_str());
@@ -4156,16 +4354,12 @@ void App::openModulesFavorites()
 {
   menuScreen_ = MenuScreen::ModulesFavorites;
   modulesFavoritesMenuItems_.clear();
-  modulesFavoritesMenuItems_.push_back(buildTabStripLabel(kModulesTabGroup, 1));
   modulesFavoritesMenuItems_.push_back("Back");
   for (const auto &n : moduleFavorites_) modulesFavoritesMenuItems_.push_back(n);
   if (modulesFavoritesMenuItems_.size() == kTabbedFirstItemRow) {
-    // No favourites yet — show a hint so the tab isn't a blank dead-end.
     modulesFavoritesMenuItems_.push_back("(no favorites — long-press a module to add)");
   }
-  if (modulesFavoritesSelectedIndex_ < kTabbedBackRow ||
-      modulesFavoritesSelectedIndex_ >= modulesFavoritesMenuItems_.size())
-  {
+  if (modulesFavoritesSelectedIndex_ >= modulesFavoritesMenuItems_.size()) {
     modulesFavoritesSelectedIndex_ = kTabbedBackRow;
   }
   renderModulesFavorites();
@@ -4174,20 +4368,20 @@ void App::openModulesFavorites()
 void App::renderModulesFavorites()
 {
   std::vector<bool> chevrons(modulesFavoritesMenuItems_.size(), true);
-  chevrons[kTabStripRow] = false;
   chevrons[kTabbedBackRow] = false;
   for (size_t i = kTabbedFirstItemRow; i < modulesFavoritesMenuItems_.size(); ++i) {
     if (modulesFavoritesMenuItems_[i].startsWith("(")) chevrons[i] = false;
   }
-  display_.renderMenu(modulesFavoritesMenuItems_, modulesFavoritesSelectedIndex_,
-                      chevrons);
+  const std::vector<String> tabLabels = {"Modules", "Favorites"};
+  const int slotW = BoardConfig::DISPLAY_WIDTH / static_cast<int>(tabLabels.size());
+  display_.renderMenuWithTabs(modulesFavoritesMenuItems_, modulesFavoritesSelectedIndex_,
+                              chevrons, tabLabels, 1,
+                              currentTabUnderlineX(slotW, static_cast<int>(tabLabels.size())),
+                              currentTabUnderlineW(slotW));
 }
 
 void App::selectModulesFavoritesItem(uint32_t nowMs)
 {
-  if (modulesFavoritesSelectedIndex_ == kTabStripRow) {
-    return;  // strip is non-selectable; swipe to switch tabs
-  }
   if (modulesFavoritesSelectedIndex_ == kTabbedBackRow) {
     settingsSelectedIndex_ = 13;
     menuScreen_ = MenuScreen::SettingsHome;
@@ -4197,7 +4391,7 @@ void App::selectModulesFavoritesItem(uint32_t nowMs)
   }
   if (modulesFavoritesSelectedIndex_ >= modulesFavoritesMenuItems_.size()) return;
   const String name = modulesFavoritesMenuItems_[modulesFavoritesSelectedIndex_];
-  if (name.startsWith("(")) return;  // placeholder row
+  if (name.startsWith("(")) return;
   enterModulePlayback(storage_.modulePath(name), nowMs);
 }
 
@@ -5826,13 +6020,20 @@ void App::renderMenu()
 void App::renderMainMenu()
 {
   if (menuScreen_ != MenuScreen::Main) {
-    // If we ever end up here with a non-Main screen, that's the bug the
-    // user is hitting — log loudly and bail to the right renderer.
     Serial.printf("[render-bug] renderMainMenu called but menuScreen_=%d\n",
                   static_cast<int>(menuScreen_));
     renderMenu();
     return;
   }
+  // Diagnostic: log every main-menu render plus title length so we can
+  // see how often the marquee bursts the cache and whether the title is
+  // suspicious (e.g. abnormally long after a corrupted resume).
+  Serial.printf("[main-render] sel=%u bookCtx=%d titleLen=%u using=%d meta=%d\n",
+                static_cast<unsigned>(menuSelectedIndex_),
+                ((usingStorageBook_ || bookMetaOnly_) && !currentBookTitle_.isEmpty()) ? 1 : 0,
+                static_cast<unsigned>(currentBookTitle_.length()),
+                usingStorageBook_ ? 1 : 0,
+                bookMetaOnly_ ? 1 : 0);
   String accentTitle;
   std::vector<String> accentChips;
   const bool haveBookContext =

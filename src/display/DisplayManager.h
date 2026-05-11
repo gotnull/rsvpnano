@@ -77,6 +77,29 @@ class DisplayManager {
   void renderMenu(const std::vector<String> &items, size_t selectedIndex);
   void renderMenu(const std::vector<String> &items, size_t selectedIndex,
                   const std::vector<bool> &chevronRows);
+  // Tabbed-picker renderer. Reserves a top tab band, centres each tab label
+  // in its slot, and draws a Material-style underline at (underlineXPx,
+  // underlineWPx) so callers can animate the underline by sliding those
+  // values between calls. `chevronRows` follows the existing per-row
+  // convention (must be present for every drill-in row).
+  void renderMenuWithTabs(const std::vector<String> &items,
+                          size_t selectedIndex,
+                          const std::vector<bool> &chevronRows,
+                          const std::vector<String> &tabLabels,
+                          int activeTabIdx,
+                          int underlineXPx,
+                          int underlineWPx);
+  // Partial 60 fps overlay used during a tab-slide animation. Repaints ONLY
+  // the 2-row underline strip (a thin native-X slice) via drawBitmap, so the
+  // rest of the menu rendered by renderMenuWithTabs is preserved on the
+  // panel without paying for a full virtualFrame_ flush per frame.
+  void renderTabUnderlineStrip(int underlineXPx, int underlineWPx);
+  // Geometry helpers — return the X coordinate and width an active tab's
+  // underline should occupy. Computed from the same divider-margin constants
+  // used by renderMenuWithTabs / renderTabUnderlineStrip so the underline
+  // perfectly overlaps its slice of the gray hairline.
+  static int tabUnderlineXForTab(int tabIdx, int tabCount);
+  static int tabUnderlineWidth(int tabCount);
   void renderMenuWithAccent(const char *const *items, size_t itemCount, size_t selectedIndex,
                             size_t accentRow, const String &accentText,
                             const std::vector<String> &accentChips = std::vector<String>(),

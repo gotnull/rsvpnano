@@ -58,6 +58,28 @@ constexpr int kFooterMarginX = 12;
 constexpr int kFooterMarginBottom = 8;
 constexpr int kCompactMenuRowHeight = 22;
 constexpr int kCompactMenuX = 28;
+
+// Tabbed-picker band layout. Shared between the full-menu renderer and the
+// partial-strip overlay used during slide animations so the two stay in sync.
+// Underline TOP sits 1 px above the gray divider so the 2-px bar reads as
+// "sitting on the line", not as a thicker line. Divider sits 2 px below the
+// bottom of the scale=2 tab label (y=4..17) so it doesn't kiss the glyphs.
+constexpr int kTabBandHeight = 21;
+constexpr int kTabLabelY = 4;
+constexpr int kTabDividerY = 19;
+constexpr int kTabUnderlineH = 2;
+// Underline top sits ON the divider row (z-ordered above it so the highlight
+// overlaps + replaces the gray), extending 1 px below for the 2-px bar.
+constexpr int kTabUnderlineY = kTabDividerY;
+// Symmetric side margins for the gray divider hairline. The right side has
+// to clear the right-aligned battery chip (chip right edge =
+// panelWidth − kFooterMarginX − kLibraryLetterStripWidth, widest chip "100%"
+// is ~58 px wide + small visual gap = ~100 px). The left mirrors it so the
+// divider reads as a centred element on the band.
+constexpr int kTabDividerSideMarginPx = 12 + 22 + 58 + 8;  // = 100
+constexpr int kTabDividerLeftMarginPx = kTabDividerSideMarginPx;
+constexpr int kTabDividerRightMarginPx = kTabDividerSideMarginPx;
+constexpr int kTabMenuGapPx = 4;
 constexpr int kLibraryRowHeight = 38;
 constexpr int kLibraryInsetX = 26;
 constexpr int kLibraryTitleYOffset = 4;
@@ -1652,6 +1674,15 @@ void DisplayManager::applyBrightness() {
 }
 
 void DisplayManager::flushScaledFrame(int scale, int virtualWidth, int virtualHeight) {
+  // Diagnostic: log the start (and later the duration) of every flush. Helps
+  // identify which renderer wedges the device when the marquee triggers a
+  // continuous re-render storm.
+  const uint32_t flushStartMs = millis();
+  static uint32_t sFlushCount = 0;
+  ++sFlushCount;
+  Serial.printf("[flush] in #%lu w=%d h=%d scale=%d\n",
+                static_cast<unsigned long>(sFlushCount),
+                virtualWidth, virtualHeight, scale);
   // Fast path: rotated panel (the production orientation), scale=1, and the
   // virtual buffer is the full logical screen. We can hoist the rotation math,
   // drop the per-pixel bounds check, and reorder the inner loop so each PSRAM
@@ -1733,6 +1764,11 @@ void DisplayManager::flushScaledFrame(int scale, int virtualWidth, int virtualHe
 #else
   (void)fastPath;
 #endif
+  // Diagnostic: confirm we got back out of the flush. If "[flush] in" appears
+  // without a matching "[flush] out", the lock-up is somewhere inside the
+  // virtualFrame_ flush path (transpose + drawBitmap chunks).
+  Serial.printf("[flush] out dt=%lu ms\n",
+                static_cast<unsigned long>(millis() - flushStartMs));
 }
 
 void DisplayManager::renderCenteredWord(const String &word, uint16_t color) {
@@ -2302,8 +2338,9 @@ void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemC
   }
 
   const int rowHeight = kCompactMenuRowHeight;
-  const int totalHeight = rowHeight * static_cast<int>(visibleCount);
-  int y = std::max(0, (virtualHeight - totalHeight) / 2);
+  // Top-align — Back/first item lives at the top of every menu, never
+  // centred vertically. Keeps muscle memory consistent across pickers.
+  int y = 0;
 
   clearVirtualBuffer(virtualWidth, virtualHeight);
 
@@ -2395,6 +2432,13 @@ void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemC
 
       const int titleMaxWidth = std::max(0, titleEndX - titleStartX);
       if (titleMaxWidth > 0 && !accentText.isEmpty()) {
+        // Diagnostic: log the marquee window so we can see if the math goes
+        // pathological (negative widths, gigantic offsets, etc.) when the
+        // device locks up landing on Resume with a long book title.
+        Serial.printf("[marquee] start=%d end=%d w=%d titleLen=%u accW=%d\n",
+                      titleStartX, titleEndX, titleMaxWidth,
+                      static_cast<unsigned>(accentText.length()),
+                      measureTinyTextWidth(accentText, kTinyScale));
         drawTinyMarquee(accentText, titleStartX, titleEndX, y + 3, accentColor,
                         backgroundColor());
       }
@@ -2461,8 +2505,9 @@ void DisplayManager::renderMenu(const std::vector<String> &items, size_t selecte
   }
 
   const int rowHeight = kCompactMenuRowHeight;
-  const int totalHeight = rowHeight * static_cast<int>(visibleCount);
-  int y = std::max(0, (virtualHeight - totalHeight) / 2);
+  // Top-align — Back/first item lives at the top of every menu, never
+  // centred vertically. Keeps muscle memory consistent across pickers.
+  int y = 0;
 
   clearVirtualBuffer(virtualWidth, virtualHeight);
 
@@ -2518,6 +2563,194 @@ void DisplayManager::renderMenu(const std::vector<String> &items, size_t selecte
 
   drawBatteryBadge();
   flushScaledFrame(scale, virtualWidth, virtualHeight);
+}
+
+int DisplayManager::tabUnderlineWidth(int tabCount) {
+  if (tabCount <= 0) return 0;
+  const int grayW = kDisplayWidth - kTabDividerLeftMarginPx - kTabDividerRightMarginPx;
+  return grayW > 0 ? grayW / tabCount : 0;
+}
+
+int DisplayManager::tabUnderlineXForTab(int tabIdx, int tabCount) {
+  if (tabCount <= 0) return kTabDividerLeftMarginPx;
+  return kTabDividerLeftMarginPx + tabIdx * tabUnderlineWidth(tabCount);
+}
+
+void DisplayManager::renderMenuWithTabs(const std::vector<String> &items,
+                                        size_t selectedIndex,
+                                        const std::vector<bool> &chevronRows,
+                                        const std::vector<String> &tabLabels,
+                                        int activeTabIdx,
+                                        int underlineXPx,
+                                        int underlineWPx) {
+  if (items.empty()) {
+    renderCenteredWord("MENU");
+    return;
+  }
+  if (selectedIndex >= items.size()) selectedIndex = items.size() - 1;
+
+  // Tab band is animated — bypass the lastRenderKey_ cache so each call
+  // (especially during slide animations) repaints.
+  lastRenderKey_ = "";
+
+  const int scale = 1;
+  const int virtualWidth = kDisplayWidth;
+  const int virtualHeight = kDisplayHeight;
+
+  // Tab band layout constants live at file scope so renderTabUnderlineStrip()
+  // (the partial-strip animation overlay) shares the exact same geometry.
+  clearVirtualBuffer(virtualWidth, virtualHeight);
+
+  // ---- Tab band ----
+  const int tabCount = static_cast<int>(tabLabels.size());
+  if (tabCount > 0) {
+    const int slotW = virtualWidth / tabCount;
+    for (int i = 0; i < tabCount; ++i) {
+      const String &label = tabLabels[i];
+      const int labelW = measureTinyTextWidth(label, kTinyScale);
+      const int slotCenter = i * slotW + slotW / 2;
+      const int labelX = std::max(0, slotCenter - labelW / 2);
+      const uint16_t color = (i == activeTabIdx) ? focusColor() : dimColor();
+      drawTinyTextAt(label, labelX, kTabLabelY, color, kTinyScale);
+    }
+    // Draw the divider FIRST so the bright underline z-paints on top of it.
+    // Hairline is inset on both sides; right inset is wider than purely
+    // aesthetic — it has to clear the right-aligned battery chip.
+    const int dividerWidth =
+        virtualWidth - kTabDividerLeftMarginPx - kTabDividerRightMarginPx;
+    if (dividerWidth > 0) {
+      fillVirtualRect(kTabDividerLeftMarginPx, kTabDividerY, dividerWidth, 1,
+                      dimColor());
+    }
+    // Active tab's underline — drawn AFTER the divider so it cleanly overlaps
+    // (highlights) the corresponding slice of the gray line.
+    if (underlineWPx > 0 && underlineXPx >= 0) {
+      const int clampedX = std::max(0, std::min(underlineXPx, virtualWidth - 1));
+      const int clampedW = std::min(underlineWPx, virtualWidth - clampedX);
+      fillVirtualRect(clampedX, kTabUnderlineY, clampedW, kTabUnderlineH,
+                      focusColor());
+    }
+  }
+
+  // ---- Menu rows below the tab band ----
+  const int menuTopY = kTabBandHeight + kTabMenuGapPx;
+  const int menuHeight = std::max(0, virtualHeight - menuTopY);
+  const size_t itemCount = items.size();
+  const size_t visibleCount =
+      std::min(itemCount, static_cast<size_t>(std::max(1, menuHeight / kCompactMenuRowHeight)));
+  size_t firstVisible = 0;
+  if (selectedIndex >= visibleCount / 2) {
+    firstVisible = selectedIndex - visibleCount / 2;
+  }
+  if (firstVisible + visibleCount > itemCount) {
+    firstVisible = itemCount - visibleCount;
+  }
+
+  const int rowHeight = kCompactMenuRowHeight;
+  // Top-align — Back (row 0) always sits at the top of the menu area so the
+  // user reaches it predictably regardless of how many items are below.
+  int y = menuTopY;
+
+  const int chevronWidth = measureTinyTextWidth(">", kTinyScale);
+  const int spaceWidth = (kTinyGlyphWidth + kTinyGlyphSpacing) * kTinyScale;
+  int maxItemTextWidth = 0;
+  for (size_t i = 0; i < itemCount; ++i) {
+    const int w = measureTinyTextWidth(items[i], kTinyScale);
+    if (w > maxItemTextWidth) maxItemTextWidth = w;
+  }
+  const int chevronCapX = virtualWidth - chevronWidth - kFooterMarginX - 4;
+  const int chevronColumnX = std::min(
+      kCompactMenuX + maxItemTextWidth + spaceWidth * 2, chevronCapX);
+
+  for (size_t row = 0; row < visibleCount; ++row) {
+    const size_t itemIndex = firstVisible + row;
+    const bool selected = itemIndex == selectedIndex;
+    const uint16_t color = selected ? focusColor() : dimColor();
+    const bool hasChevron = itemIndex < chevronRows.size() && chevronRows[itemIndex];
+    const int maxWidth = std::max(0, chevronColumnX - kCompactMenuX - spaceWidth);
+    if (selected) {
+      fillVirtualRect(10, y + 2, 5, kTinyGlyphHeight * kTinyScale + 2, selectedBarColor());
+    }
+    const String &itemText = items[itemIndex];
+    const int itemTextWidth = measureTinyTextWidth(itemText, kTinyScale);
+    const int textY = y + 3;
+    const int leftX = kCompactMenuX;
+    const int rightX = leftX + maxWidth;
+    if (itemTextWidth <= maxWidth) {
+      drawTinyTextAt(itemText, leftX, textY, color, kTinyScale);
+    } else if (selected) {
+      drawTinyMarquee(itemText, leftX, rightX, textY, color, backgroundColor());
+    } else {
+      const String fittedItem = fitTinyText(itemText, maxWidth, kTinyScale);
+      drawTinyTextAt(fittedItem, leftX, textY, color, kTinyScale);
+    }
+    if (hasChevron) {
+      drawTinyTextAt(">", chevronColumnX, textY, color, kTinyScale);
+    }
+    y += rowHeight;
+  }
+
+  drawBatteryBadge();
+  flushScaledFrame(scale, virtualWidth, virtualHeight);
+}
+
+void DisplayManager::renderTabUnderlineStrip(int underlineXPx, int underlineWPx) {
+  if (!initialized_ || txBuffer_ == nullptr) return;
+
+  const bool rotated = uiRotated_;
+
+  // Native-X slice that covers the union of the underline rows and the
+  // divider row. Underline now sits 1 px above the divider, so the slice
+  // spans logical-Y [kTabUnderlineY, kTabDividerY] inclusive.
+  const int logicalSpanMin = std::min(kTabUnderlineY, kTabDividerY);
+  const int logicalSpanMax = std::max(kTabUnderlineY + kTabUnderlineH - 1,
+                                      kTabDividerY);
+  int nxA, nxB;
+  if (rotated) {
+    nxA = (kDisplayHeight - 1) - logicalSpanMin;
+    nxB = (kDisplayHeight - 1) - logicalSpanMax;
+  } else {
+    nxA = logicalSpanMin;
+    nxB = logicalSpanMax;
+  }
+  int nxStart = std::min(nxA, nxB);
+  int nxEnd = std::max(nxA, nxB) + 1;
+  if (nxStart < 0) nxStart = 0;
+  if (nxEnd > kPanelNativeWidth) nxEnd = kPanelNativeWidth;
+  const int cols = nxEnd - nxStart;
+  if (cols <= 0) return;
+  if (static_cast<size_t>(cols) * kPanelNativeHeight > kTxBufferPixels) return;
+
+  const uint16_t bg = panelColor(backgroundColor());
+  const uint16_t dividerColor = panelColor(dimColor());
+  const uint16_t underlineColor = panelColor(focusColor());
+
+  const int dividerLeft = kTabDividerLeftMarginPx;
+  const int dividerRight = kDisplayWidth - kTabDividerRightMarginPx;
+  const int underlineLeft = underlineXPx;
+  const int underlineRight = underlineXPx + underlineWPx;
+
+  // For each native row (= logical X), paint the `cols` columns of the strip
+  // by deciding pixel-by-pixel which of {bg, divider, underline} applies.
+  // ~2 KB of compose for 2 cols × 640 rows — well under 1 ms.
+  for (int ny = 0; ny < kPanelNativeHeight; ++ny) {
+    const int lx = rotated ? ny : ((kDisplayWidth - 1) - ny);
+    uint16_t *row = txBuffer_ + ny * cols;
+    const bool inUnderlineX = (lx >= underlineLeft && lx < underlineRight);
+    const bool inDividerX = (lx >= dividerLeft && lx < dividerRight);
+    for (int c = nxStart; c < nxEnd; ++c) {
+      const int ly = rotated ? ((kDisplayHeight - 1) - c) : c;
+      uint16_t color = bg;
+      if (inUnderlineX && ly >= kTabUnderlineY && ly < kTabUnderlineY + kTabUnderlineH) {
+        color = underlineColor;
+      } else if (ly == kTabDividerY && inDividerX) {
+        color = dividerColor;
+      }
+      row[c - nxStart] = color;
+    }
+  }
+
+  drawBitmap(nxStart, 0, nxEnd, kPanelNativeHeight, txBuffer_);
 }
 
 void DisplayManager::drawTinyGlyphNativeStripe(int logicalX, int logicalY, char c,
@@ -4008,9 +4241,19 @@ void DisplayManager::renderSineScrollerFrame(const SineScroller &ss) {
   // directly so the tick rate matches.
   const float wave = ss.wavePhase();
 
-  // Cache project per glyph: native (cnX-base, cnY-base) for the glyph's
-  // top-left, then per-pixel shift inside the inner loop. We fill on the
-  // fly per stripe rather than materialising a full bitmap.
+  // Orientation-aware mapping — same lambdas as the module player so the
+  // demo renders right-way-up + non-mirrored regardless of which way the
+  // display-flip preference resolves. Previous version hardcoded the
+  // uiRotated_=false formula and produced a horizontal mirror on the
+  // default 180-rotated device ("NANO RSVP" → "PVSR ONAN").
+  const bool rotated = uiRotated_;
+  auto lxToNy = [rotated](int lx) -> int {
+    return rotated ? lx : ((kDisplayWidth - 1) - lx);
+  };
+  auto lyToNx = [rotated](int ly) -> int {
+    return rotated ? ((kDisplayHeight - 1) - ly) : ly;
+  };
+
   for (int stripeStart = 0; stripeStart < kPanelNativeHeight;
        stripeStart += kMaxChunkPhysicalRows) {
     const int rows = std::min(kMaxChunkPhysicalRows, kPanelNativeHeight - stripeStart);
@@ -4028,14 +4271,15 @@ void DisplayManager::renderSineScrollerFrame(const SineScroller &ss) {
       const float yOff = sinf(wave + static_cast<float>(gi) * 0.4f) * 30.0f;
       const int glyphTopLogicalY = kBaselineY + static_cast<int>(yOff);
 
-      // A glyph spans logicalX in [glyphLeftLogicalX, +kGlyphW) and logicalY
-      // in [glyphTopLogicalY, +kGlyphH). The glyph maps to native coords:
-      //   nativeY (= logicalX) ∈ [glyphLeftLogicalX, +kGlyphW)
-      //   nativeX (= 171 − logicalY) ∈ [171 − glyphTopLogicalY − kGlyphH + 1,
-      //                                  171 − glyphTopLogicalY]
-      // For this stripe's nativeY range, only some glyph columns may apply.
-      const int nyStart = std::max(stripeStart, glyphLeftLogicalX);
-      const int nyEnd = std::min(stripeEnd, glyphLeftLogicalX + kGlyphW);
+      // Native-Y range this glyph occupies (orientation-aware). Take
+      // min/max of the two endpoint mappings so the iteration order is
+      // always ascending native-Y.
+      const int nyA = lxToNy(glyphLeftLogicalX);
+      const int nyB = lxToNy(glyphLeftLogicalX + kGlyphW - 1);
+      const int glyphNyStart = std::min(nyA, nyB);
+      const int glyphNyEnd = std::max(nyA, nyB) + 1;
+      const int nyStart = std::max(stripeStart, glyphNyStart);
+      const int nyEnd = std::min(stripeEnd, glyphNyEnd);
       if (nyStart >= nyEnd) continue;
 
       const uint8_t *rows5x7 = tinyRowsFor(msg[gi]);
@@ -4048,29 +4292,24 @@ void DisplayManager::renderSineScrollerFrame(const SineScroller &ss) {
           panelColor(static_cast<uint16_t>(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)));
 
       for (int ny = nyStart; ny < nyEnd; ++ny) {
-        // Same panel-orientation correction as the gr inversion: native Y
-        // grows in the opposite direction from logical X for this rotated
-        // device, so glyph column 0 (leftmost in the font) needs to land at
-        // the LARGEST native Y inside the glyph slot, not the smallest.
-        const int glyphCol = (kTinyGlyphWidth - 1) -
-                             ((ny - glyphLeftLogicalX) / kScale);  // 0..4
-        const uint8_t bitMask = static_cast<uint8_t>(0x10 >> glyphCol);  // bit4=col0
+        // Recover the logical-X for this native row, then derive the
+        // glyph column. With the orientation-aware mapping this is the
+        // straight ratio — no inversions needed.
+        const int lx = rotated ? ny : ((kDisplayWidth - 1) - ny);
+        const int glyphCol = (lx - glyphLeftLogicalX) / kScale;
+        if (glyphCol < 0 || glyphCol >= kTinyGlyphWidth) continue;
+        const uint8_t bitMask = static_cast<uint8_t>(0x10 >> glyphCol);  // bit4 = col0
         const int localStripeRow = ny - stripeStart;
-        // Iterate the 7 source rows; project each to its native X range.
+        // Each set source bit fills a kScale × kScale block in the panel.
         for (int gr = 0; gr < kTinyGlyphHeight; ++gr) {
           if ((rows5x7[gr] & bitMask) == 0) continue;
-          // Source row gr → logicalY range. Empirical fix: the mapping I
-          // derived from the flush formula visually inverts text on this
-          // panel orientation (uiRotated_=true with the device flipped
-          // 180° per BoardConfig). Inverting gr restores upright glyphs.
-          const int logicalY0 =
-              glyphTopLogicalY + (kTinyGlyphHeight - 1 - gr) * kScale;
+          const int logicalY0 = glyphTopLogicalY + gr * kScale;
           const int logicalY1 = logicalY0 + kScale;  // exclusive
-          // Logical Y → native X (mirror).
-          const int nxA = (kDisplayHeight - 1) - (logicalY1 - 1);  // top of row in native X
-          const int nxB = (kDisplayHeight - 1) - logicalY0;        // bottom of row in native X
-          int xLo = std::max(0, nxA);
-          int xHi = std::min(kPanelNativeWidth - 1, nxB);
+          // Map the kScale-tall row span into a native-X span.
+          const int nxA = lyToNx(logicalY0);
+          const int nxB = lyToNx(logicalY1 - 1);
+          const int xLo = std::max(0, std::min(nxA, nxB));
+          const int xHi = std::min(kPanelNativeWidth - 1, std::max(nxA, nxB));
           if (xLo > xHi) continue;
           uint16_t *dst = txBuffer_ + localStripeRow * kPanelNativeWidth + xLo;
           for (int x = xLo; x <= xHi; ++x) *dst++ = color;

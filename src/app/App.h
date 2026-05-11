@@ -149,6 +149,10 @@ class App {
   void applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs);
   void moveMenuSelection(int direction);
   void selectMenuItem(uint32_t nowMs);
+  // Generic "navigate to parent" for menu screens that have a Back/No row.
+  // Returns false if the current screen has no parent (e.g. Main). Used by
+  // the left-swipe shortcut so the user never has to scroll to the Back row.
+  bool goBack(uint32_t nowMs);
   void openSettings();
   void selectSettingsItem(uint32_t nowMs);
   void openTypographyTuning();
@@ -209,6 +213,18 @@ class App {
   bool isModuleFavorite(const String &name) const;
   void loadModuleFavorites();
   void saveModuleFavorites();
+  // Lazy SD-walk cache so re-opening the picker (or swiping between tabs)
+  // doesn't pay for another /mods/ scan. Invalidated only when /mods/ might
+  // have changed: SD remount, USB-transfer end, starter-pack download.
+  const std::vector<String> &cachedModuleList();
+  void invalidateModulesListCache();
+  // Re-render the current menu screen during a tab-slide animation. Driven
+  // from App::update() while tabAnimActive_ is true.
+  void tickTabAnimation(uint32_t nowMs);
+  // Compute the underline X-position for the current tab/animation state.
+  // `slotW` is the per-tab slot width on screen.
+  int currentTabUnderlineX(int slotW, int slotCount) const;
+  int currentTabUnderlineW(int slotW) const;
   // Fullscreen tracker player view. Entered from picker tap and exited by
   // touch. Re-renders frame on a fixed cadence so the channel bars animate.
   void enterModulePlayback(const String &path, uint32_t nowMs);
@@ -352,6 +368,16 @@ class App {
   size_t demoSelectedIndex_ = 0;
   size_t modulesSelectedIndex_ = 0;
   std::vector<String> modulesMenuItems_;
+  // Cached basename list from storage_.listModuleNames(). Refreshed lazily
+  // on first picker open after a mount/transfer event; tab swipes between
+  // Modules ↔ Favorites reuse it instead of paying for an SD walk every time.
+  std::vector<String> modulesListCache_;
+  bool modulesListCacheValid_ = false;
+  // Tab-slide animation state for tabbed pickers.
+  bool tabAnimActive_ = false;
+  int tabAnimFromIdx_ = 0;
+  int tabAnimToIdx_ = 0;
+  uint32_t tabAnimStartMs_ = 0;
   // Persisted module favorites — sorted basenames such as "slumberjack.xm".
   std::vector<String> moduleFavorites_;
   // Rendered Favorites picker (Modules ▸ Favorites). Same shape as the main
