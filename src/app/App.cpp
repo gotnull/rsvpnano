@@ -4266,6 +4266,125 @@ bool App::readCameraStreamBytes(uint8_t *dst, size_t length, uint32_t timeoutMs)
   return true;
 }
 
+bool App::parseCameraMjpegHeaders(int &contentLength, uint32_t deadlineMs)
+{
+  // Fixed stack buffer — headers are tiny (≤ ~120 bytes for this server's
+  // multipart frames). 320 bytes is generous and avoids any heap activity.
+  static constexpr size_t kHeaderBufBytes = 320;
+  char hdr[kHeaderBufBytes];
+  size_t hdrLen = 0;
+  contentLength = -1;
+
+  while (millis() < deadlineMs)
+  {
+    if (pollCameraExitTouch(millis()) || state_ != AppState::CameraStream)
+    {
+      return false;
+    }
+    const int available = cameraStreamClient_.available();
+    if (available <= 0)
+    {
+      if (!cameraStreamClient_.connected())
+      {
+        return false;
+      }
+      delay(1);
+      yield();
+      continue;
+    }
+    const int b = cameraStreamClient_.read();
+    if (b < 0) continue;
+    if (hdrLen >= kHeaderBufBytes - 1)
+    {
+      // Headers overran our buffer — malformed stream. Bail so the
+      // caller can reconnect.
+      Serial.println("[camera] header buffer overflow");
+      return false;
+    }
+    hdr[hdrLen++] = static_cast<char>(b);
+
+    // Headers terminate at the first \r\n\r\n we see. The first 1-2 bytes
+    // may be the trailing CRLF from the previous frame's body; that's
+    // fine, we just keep scanning until the double-CRLF closer.
+    if (hdrLen >= 4 &&
+        hdr[hdrLen - 4] == '\r' && hdr[hdrLen - 3] == '\n' &&
+        hdr[hdrLen - 2] == '\r' && hdr[hdrLen - 1] == '\n')
+    {
+      // Scan the accumulated header bytes for "Content-Length: N".
+      static const char kKey[] = "content-length";
+      constexpr size_t kKeyLen = sizeof(kKey) - 1;
+      for (size_t i = 0; i + kKeyLen < hdrLen; ++i)
+      {
+        bool match = true;
+        for (size_t j = 0; j < kKeyLen; ++j)
+        {
+          const char hc = static_cast<char>(
+              tolower(static_cast<unsigned char>(hdr[i + j])));
+          if (hc != kKey[j]) { match = false; break; }
+        }
+        if (!match) continue;
+        size_t p = i + kKeyLen;
+        while (p < hdrLen && (hdr[p] == ':' || hdr[p] == ' ' || hdr[p] == '\t'))
+        {
+          ++p;
+        }
+        int v = 0;
+        while (p < hdrLen && hdr[p] >= '0' && hdr[p] <= '9')
+        {
+          v = v * 10 + (hdr[p] - '0');
+          ++p;
+        }
+        contentLength = v;
+        break;
+      }
+      return contentLength > 0;
+    }
+  }
+  Serial.println("[camera] header parse deadline");
+  return false;
+}
+
+void App::drainStaleCameraFrames(int maxToDrop)
+{
+  // Each iteration: peek if the TCP receive window already holds another
+  // frame. If yes, parse its headers and skip the body. If no, return.
+  // Capped so a fast server can't keep us in this loop forever.
+  for (int i = 0; i < maxToDrop; ++i)
+  {
+    if (cameraStreamClient_.available() <= 0) return;
+    if (!cameraStreamClient_.connected()) return;
+    int contentLength = -1;
+    // Tight deadline — drain must not block on the network; if the next
+    // frame's bytes aren't fully buffered yet, leave it for the regular
+    // read path so we don't introduce extra latency.
+    if (!parseCameraMjpegHeaders(contentLength, millis() + 25))
+    {
+      return;
+    }
+    if (contentLength <= 0 || static_cast<size_t>(contentLength) > kCameraMaxJpegBytes)
+    {
+      return;
+    }
+    // Skip body bytes that are *already in the receive buffer*. We never
+    // block waiting for more — if only part of the body is buffered, we
+    // leave it for the next readCameraMjpegFrame() call which will
+    // re-parse from there.
+    int remaining = contentLength;
+    uint8_t scratch[512];
+    while (remaining > 0)
+    {
+      const int avail = cameraStreamClient_.available();
+      if (avail <= 0) return;
+      const int chunk = std::min<int>(remaining,
+                                      std::min<int>(avail, static_cast<int>(sizeof(scratch))));
+      const int got = cameraStreamClient_.readBytes(scratch, chunk);
+      if (got <= 0) return;
+      remaining -= got;
+    }
+    Serial.printf("[camera] drained stale frame (cl=%d)\n", contentLength);
+  }
+}
+
 bool App::readCameraMjpegFrame(uint32_t nowMs)
 {
   if (!cameraStreamConnected_ || !cameraStreamClient_.connected())
@@ -4273,43 +4392,18 @@ bool App::readCameraMjpegFrame(uint32_t nowMs)
     return false;
   }
 
-  String line;
-  int contentLength = -1;
   const uint32_t frameStartMs = millis();
-
-  while (millis() - frameStartMs < kCameraStreamFrameTimeoutMs)
+  int contentLength = -1;
+  if (!parseCameraMjpegHeaders(contentLength,
+                               frameStartMs + kCameraStreamFrameTimeoutMs))
   {
-    if (!readCameraStreamLine(line, kCameraStreamFrameTimeoutMs))
-    {
-      Serial.println("[camera] stream frame header timeout");
-      return false;
-    }
-    line.trim();
-    if (line.length() == 0 || line.startsWith("--"))
-    {
-      continue;
-    }
-    if (line.equalsIgnoreCase("Content-Type: image/jpeg"))
-    {
-      continue;
-    }
-    if (line.startsWith("Content-Length:") || line.startsWith("content-length:"))
-    {
-      contentLength = line.substring(line.indexOf(':') + 1).toInt();
-      break;
-    }
+    Serial.println("[camera] stream frame header parse failed");
+    return false;
   }
-
   if (contentLength <= 0 || static_cast<size_t>(contentLength) > kCameraMaxJpegBytes)
   {
     Serial.printf("[camera] stream bad content length=%d\n", contentLength);
     return false;
-  }
-
-  while (readCameraStreamLine(line, kCameraStreamFrameTimeoutMs))
-  {
-    line.trim();
-    if (line.length() == 0) break;
   }
 
   if (!ensureCameraBuffers(static_cast<size_t>(contentLength),
@@ -4323,6 +4417,12 @@ bool App::readCameraMjpegFrame(uint32_t nowMs)
   {
     return false;
   }
+
+  // We just finished one frame's body. If the server is producing faster
+  // than we render, the TCP receive buffer already holds the next frame
+  // (or several). Skip past them so the frame we decode + paint next is
+  // the most-recent one, not the oldest queued one.
+  drainStaleCameraFrames(/*maxToDrop=*/4);
 
   const bool ok = decodeCameraSnapshot(cameraJpegBuffer_, static_cast<size_t>(contentLength));
   cameraLastFrameMs_ = nowMs;

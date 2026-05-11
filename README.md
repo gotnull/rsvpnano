@@ -76,10 +76,26 @@ The current firmware configuration targets the [Waveshare ESP32-S3-Touch-LCD-3.4
 
 - ESP32-S3 with 16 MB flash and OPI PSRAM.
 - AXS15231B-based 172 x 640 LCD panel used in landscape as 640 x 172.
+- ES8311 audio codec + NS4150B speaker amp (enable via TCA9554 P7).
+- AXS15231B-based capacitive touch on I²C bus 0 (address `0x3B`).
 - SD card connected through `SD_MMC`.
 - Touch, battery, and board power control pins defined in `src/board/BoardConfig.h`.
 
+Board pinout (Waveshare reference diagram — header labels and exposed GPIOs):
+
+![Waveshare ESP32-S3-Touch-LCD-3.49 pinout](pinout.png)
+
 If you are adapting the project to different hardware, start with `src/board/BoardConfig.h`, then review the display, touch, power, and SD wiring code.
+
+## Rendering Architecture
+
+Performance-sensitive screens (screensaver, demoscene effects, tracker player, camera test) bypass the UI virtual framebuffer and compose directly into panel-native stripes:
+
+- `kPanelNativeWidth` × `kMaxChunkPhysicalRows` (≈ 16 KB) DMA-capable internal-RAM `txBuffer_`.
+- Each frame is computed in panel-native orientation (`172 × 640`), so no transpose pass.
+- Stripes are pushed via `drawBitmap()` directly.
+
+The pattern is documented in `src/display/DisplayManager.cpp` next to each renderer (`renderScreensaverFrame`, `renderStarfieldFrame`, `renderCameraRgb565Frame`, …). Read one of those before adding another full-screen effect.
 
 ## Desktop Book Conversion
 

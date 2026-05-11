@@ -182,6 +182,18 @@ class App {
   bool readCameraMjpegFrame(uint32_t nowMs);
   bool readCameraStreamLine(String &line, uint32_t timeoutMs);
   bool readCameraStreamBytes(uint8_t *dst, size_t length, uint32_t timeoutMs);
+  // Byte-state-machine multipart header parser. Reads from the stream
+  // client into a fixed stack buffer, looks for the `\r\n\r\n` end-of-
+  // headers terminator, and scans the buffered headers for Content-Length.
+  // No String allocations per frame — replaces the previous per-line String
+  // approach that allocated dozens of times per second at 10 fps.
+  bool parseCameraMjpegHeaders(int &contentLength, uint32_t deadlineMs);
+  // Skips up to maxToDrop frames already buffered in the TCP receive
+  // window so the next decoded/rendered frame is the most-recent one the
+  // server produced. Each skip reads the next frame's headers and
+  // discards `Content-Length` body bytes. Returns immediately if no data
+  // is buffered — never blocks on the network.
+  void drainStaleCameraFrames(int maxToDrop);
   bool decodeCameraSnapshot(const uint8_t *data, size_t length);
   String cameraSnapshotUrl() const;
   String cameraStreamUrl() const;

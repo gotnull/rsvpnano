@@ -9,7 +9,43 @@ The Python server captures webcam frames with OpenCV and serves:
 - `/stream.mjpg` multipart MJPEG stream
 - `/health` JSON health endpoint
 
-The production RSVP Nano firmware uses `/stream.mjpg` for the `Settings -> Camera test` path. The standalone generic ESP32 example starts with snapshot polling because it is easier to debug on arbitrary boards.
+The production RSVP Nano firmware (`Settings -> Camera test`) uses `/stream.mjpg` with a snapshot fallback. The standalone generic ESP32 example in this directory uses snapshot polling because it is easier to debug on arbitrary boards.
+
+## Production Firmware Integration
+
+The device-side camera path lives in `src/app/App.cpp` (`enterCameraStream`, `updateCameraStream`, `readCameraMjpegFrame`, `decodeCameraSnapshot`) and the renderer in `src/display/DisplayManager.cpp` (`renderCameraRgb565Frame`).
+
+The renderer follows the same **native-stripe** architecture as the screensaver and demos:
+
+- Logical display is `640 x 172`; panel-native orientation is `172 x 640`.
+- `txBuffer_` is a DMA-capable internal-RAM scratch sized to `kPanelNativeWidth * kMaxChunkPhysicalRows` (~16 KB → ~47 physical rows per transfer).
+- The camera renderer aspect-fits the JPEG-decoded RGB565 source frame and composes directly into panel-native stripes, then pushes each stripe with `drawBitmap()`.
+- A 180° camera correction is applied so the image isn't upside-down on the device.
+
+Network flow (`updateCameraStream`):
+
+1. Ensure Wi-Fi from `/wifi.json` (reuses the OTA / book-downloader Wi-Fi stack).
+2. Open a persistent `GET /stream.mjpg` keep-alive connection.
+3. Parse multipart-MJPEG boundary + `Content-Length`, read the JPEG bytes.
+4. `JPEGDecoder` decodes MCU blocks → `cameraFrameBuffer_` (RGB565, source size).
+5. `renderCameraRgb565Frame()` projects the source frame to native stripes.
+
+If MJPEG frame parsing stalls (`kCameraStreamFrameTimeoutMs`), the firmware closes the stream and falls back to a single `GET /snapshot.jpg` to keep the display moving and make parser stalls visible in serial logs.
+
+Touch is preemptive: `pollCameraExitTouch()` runs before each update and inside the blocking stream/body-read loops so a tap can abort camera I/O and return to Settings even if a frame read is hanging.
+
+Camera-server compile-time defaults (override with `-D` flags in the root `platformio.ini`):
+
+```cpp
+#define RSVP_CAMERA_SERVER_HOST  "192.168.5.77"
+#define RSVP_CAMERA_SERVER_PORT  8080
+#define RSVP_CAMERA_SNAPSHOT_PATH "/snapshot.jpg"
+#define RSVP_CAMERA_STREAM_PATH   "/stream.mjpg"
+```
+
+## Server Diagnostics Overlay
+
+The Mac server overlays a frame counter / timestamp and a moving red bar into every JPEG by default. This is a deliberate stream diagnostic: if the overlay does not change on the device, the device is not receiving or rendering subsequent frames. Pass `--no-overlay` to disable it after the client is proven.
 
 ## Layout
 
