@@ -197,6 +197,44 @@ void ModPlayer::setDuckPercent(uint8_t pct) {
   duck_ = pct;
 }
 
+void ModPlayer::getNowPlaying(NowPlaying &out) {
+  out.valid = false;
+  out.channelCount = 0;
+  if (!initialised_) return;
+  xSemaphoreTake(lock_, portMAX_DELAY);
+  xmp_context ctx = static_cast<xmp_context>(xmpCtx_);
+  if (ctx && running_) {
+    xmp_frame_info fi;
+    xmp_get_frame_info(ctx, &fi);
+    xmp_module_info mi;
+    xmp_get_module_info(ctx, &mi);
+    out.valid = true;
+    out.pos = fi.pos;
+    out.row = fi.row;
+    out.numRows = fi.num_rows;
+    out.bpm = fi.bpm;
+    out.speed = fi.speed;
+    out.timeMs = fi.time;
+    out.totalMs = fi.total_time;
+    out.virtChannels = fi.virt_channels;
+    out.virtUsed = fi.virt_used;
+    // Take up to 32 channel volumes — enough for any tracker format. Some
+    // XM tunes go up to 32; MOD is always 4. We clamp here so the bar
+    // renderer always knows how many to draw.
+    const int sourceCount = (mi.mod && mi.mod->chn > 0) ? mi.mod->chn : 0;
+    const int bound = sourceCount < 32 ? sourceCount : 32;
+    for (int i = 0; i < bound; ++i) {
+      out.channelVolumes[i] = fi.channel_info[i].volume;
+    }
+    out.channelCount = static_cast<uint8_t>(bound);
+    if (mi.mod) {
+      strncpy(out.title, mi.mod->name, sizeof(out.title) - 1);
+      strncpy(out.format, mi.mod->type, sizeof(out.format) - 1);
+    }
+  }
+  xSemaphoreGive(lock_);
+}
+
 void ModPlayer::audioTaskTrampoline(void *arg) {
   static_cast<ModPlayer *>(arg)->audioTaskLoop();
 }

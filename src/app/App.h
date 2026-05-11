@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <Preferences.h>
+#include <WiFiClient.h>
 #include <vector>
 
 #include "app/AppState.h"
@@ -155,6 +156,11 @@ class App {
   void openModulesPicker();
   void selectModulesPickerItem(uint32_t nowMs);
   void renderModulesPicker();
+  // Fullscreen tracker player view. Entered from picker tap and exited by
+  // touch. Re-renders frame on a fixed cadence so the channel bars animate.
+  void enterModulePlayback(const String &path, uint32_t nowMs);
+  void exitModulePlayback(uint32_t nowMs);
+  void renderModulePlayerFrame(uint32_t nowMs);
   // Picks a random track from /mods/ and starts background playback.
   // Used by the Demo-music shuffle hook on entering Screensaver/DemoPlaying.
   bool startRandomModule(uint32_t nowMs);
@@ -168,10 +174,17 @@ class App {
   void enterCameraStream(uint32_t nowMs);
   void exitCameraStream(uint32_t nowMs);
   void updateCameraStream(uint32_t nowMs);
+  bool pollCameraExitTouch(uint32_t nowMs);
   bool ensureCameraBuffers(size_t jpegBytes, int frameWidth, int frameHeight);
   bool fetchCameraSnapshot(uint32_t nowMs);
+  bool openCameraMjpegStream();
+  void closeCameraMjpegStream();
+  bool readCameraMjpegFrame(uint32_t nowMs);
+  bool readCameraStreamLine(String &line, uint32_t timeoutMs);
+  bool readCameraStreamBytes(uint8_t *dst, size_t length, uint32_t timeoutMs);
   bool decodeCameraSnapshot(const uint8_t *data, size_t length);
   String cameraSnapshotUrl() const;
+  String cameraStreamUrl() const;
   void cycleNotificationVolume(uint32_t nowMs);
   void pollNotifications(uint32_t nowMs);
   void showNotificationBanner(uint32_t nowMs, const String &title, const String &body);
@@ -267,6 +280,11 @@ class App {
   size_t demoSelectedIndex_ = 0;
   size_t modulesSelectedIndex_ = 0;
   std::vector<String> modulesMenuItems_;
+  uint32_t modulePlayerLastRenderMs_ = 0;
+  // Smoothed channel-bar heights for the now-playing UI. Decayed each frame
+  // and bumped to the current channel_info volume so taps + cut-offs read
+  // as bars dropping, not jumping.
+  uint8_t modulePlayerBarLevels_[32] = {0};
   // Demo-music mode: 0 = Off, 1 = Shuffle (random track on Screensaver/Demo
   // entry), 2 = Picked (always replay the last picked track). Persisted as
   // kPrefDemoMusic.
@@ -395,7 +413,13 @@ class App {
   uint32_t cameraLastStatsMs_ = 0;
   uint32_t cameraFramesOk_ = 0;
   uint32_t cameraFramesFailed_ = 0;
+  uint32_t cameraFrameSeq_ = 0;
+  uint32_t cameraIgnoreTouchUntilMs_ = 0;
+  bool cameraSuppressOpeningTouch_ = false;
+  bool cameraExitRequested_ = false;
   bool cameraWifiConnected_ = false;
+  bool cameraStreamConnected_ = false;
+  WiFiClient cameraStreamClient_;
   String notificationTone_;
   std::vector<String> ringtoneNames_;
   DisplayManager::TypographyConfig typographyConfig_;

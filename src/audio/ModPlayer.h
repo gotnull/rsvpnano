@@ -52,6 +52,29 @@ class ModPlayer {
   // the now-playing UI in Stage 2.
   const String &currentTrack() const { return currentTrack_; }
 
+  // libxmp-derived now-playing telemetry. Safe to call from the UI tick at
+  // ~30 fps; reads xmp_get_frame_info() under the player lock so the
+  // audio task can't pull the context out from under it.
+  struct NowPlaying {
+    bool valid = false;
+    char title[48] = {0};
+    char format[16] = {0};
+    int pos = 0;          // song position
+    int row = 0;          // pattern row
+    int numRows = 0;
+    int bpm = 0;
+    int speed = 0;
+    int timeMs = 0;
+    int totalMs = 0;
+    int virtChannels = 0;
+    int virtUsed = 0;
+    // Per-channel volume snapshot, 0..64. channelCount tells the renderer
+    // how many entries to read.
+    uint8_t channelVolumes[32] = {0};
+    uint8_t channelCount = 0;
+  };
+  void getNowPlaying(NowPlaying &out);
+
  private:
   static void audioTaskTrampoline(void *arg);
   void audioTaskLoop();

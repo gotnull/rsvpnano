@@ -40,6 +40,10 @@
 #define RSVP_CAMERA_SNAPSHOT_PATH "/snapshot.jpg"
 #endif
 
+#ifndef RSVP_CAMERA_STREAM_PATH
+#define RSVP_CAMERA_STREAM_PATH "/stream.mjpg"
+#endif
+
 static const char *kAppTag = "app";
 constexpr uint32_t kBootSplashMs = 750;
 constexpr uint32_t kWpmFeedbackMs = 900;
@@ -218,6 +222,7 @@ namespace
   constexpr size_t kSettingsPacingResetIndex = 4;
   constexpr uint32_t kCameraFrameIntervalMs = 100;  // snapshot polling target: 10 fps
   constexpr uint32_t kCameraHttpTimeoutMs = 2500;
+  constexpr uint32_t kCameraStreamFrameTimeoutMs = 650;
   constexpr uint32_t kCameraWifiTimeoutMs = 12000;
   constexpr size_t kCameraMaxJpegBytes = 96 * 1024;
   constexpr int kCameraMaxFrameWidth = 320;
@@ -673,7 +678,7 @@ void App::update(uint32_t nowMs)
   // word — so it gates only on touch / button input, not on Playing state.
   if (screensaverIndex_ > 0 && screensaverIndex_ < kScreensaverOptionCount &&
       state_ != AppState::Screensaver && state_ != AppState::DemoPlaying &&
-      state_ != AppState::CameraStream &&
+      state_ != AppState::CameraStream && state_ != AppState::ModulePlaying &&
       state_ != AppState::Booting && state_ != AppState::UsbTransfer &&
       state_ != AppState::Sleeping && !powerOffStarted_)
   {
@@ -711,8 +716,28 @@ void App::update(uint32_t nowMs)
   if (state_ == AppState::CameraStream)
   {
     const uint32_t s = micros();
-    updateCameraStream(nowMs);
-    trackStage("camera", micros() - s, 60000);
+    pollCameraExitTouch(nowMs);
+    if (state_ != AppState::CameraStream)
+    {
+      trackStage("camera", micros() - s, 60000);
+    }
+    else
+    {
+      updateCameraStream(nowMs);
+      trackStage("camera", micros() - s, 60000);
+    }
+  }
+  if (state_ == AppState::ModulePlaying)
+  {
+    // ~30 fps cap for the now-playing UI. Bars + marquee don't need more,
+    // and the panel flush dominates anyway.
+    constexpr uint32_t kModulePlayerMinIntervalMs = 33;
+    if (nowMs - modulePlayerLastRenderMs_ >= kModulePlayerMinIntervalMs) {
+      modulePlayerLastRenderMs_ = nowMs;
+      const uint32_t s = micros();
+      renderModulePlayerFrame(nowMs);
+      trackStage("modplay", micros() - s, 30000);
+    }
   }
 
   // Auto-power-off: enterPowerOff after the configured idle window. Active
@@ -721,7 +746,7 @@ void App::update(uint32_t nowMs)
   if (autoPowerOffIndex_ > 0 && autoPowerOffIndex_ < kAutoPowerOffOptionCount &&
       state_ != AppState::Playing && state_ != AppState::Booting &&
       state_ != AppState::UsbTransfer && state_ != AppState::Sleeping &&
-      state_ != AppState::CameraStream &&
+      state_ != AppState::CameraStream && state_ != AppState::ModulePlaying &&
       !powerOffStarted_)
   {
     const uint32_t idleLimitMs =
@@ -914,6 +939,8 @@ const char *App::stateName(AppState state) const
     return "DemoPlaying";
   case AppState::CameraStream:
     return "CameraStream";
+  case AppState::ModulePlaying:
+    return "ModulePlaying";
   }
   return "Unknown";
 }
@@ -1003,6 +1030,10 @@ void App::setState(AppState nextState, uint32_t nowMs)
     break;
   case AppState::CameraStream:
     // Camera updates perform network I/O and render on the periodic update tick.
+    break;
+  case AppState::ModulePlaying:
+    // First bars/title paint comes from the next update() tick — the audio
+    // task is already running so we don't need to kick it here.
     break;
   }
 
@@ -1550,7 +1581,7 @@ void App::handleTouch(uint32_t nowMs)
     }
     // Suppress the rest of this finger-down so the underlying menu doesn't
     // pick up Move/End events from the dismiss tap as one of its own.
-    dismissTouchPending_ = true;
+    dismissTouchPending_ = (ev.phase != TouchPhase::End);
     return;
   }
   // Demo: same lifecycle. Any touch ends playback and returns to the picker.
@@ -1558,14 +1589,36 @@ void App::handleTouch(uint32_t nowMs)
   {
     Serial.println("[demo] dismissed by touch");
     exitDemoPlayback(nowMs);
-    dismissTouchPending_ = true;
+    dismissTouchPending_ = (ev.phase != TouchPhase::End);
+    return;
+  }
+  // Tracker player: tap exits back to the modules picker (mirrors demo).
+  if (state_ == AppState::ModulePlaying)
+  {
+    Serial.println("[modplay] dismissed by touch");
+    exitModulePlayback(nowMs);
+    dismissTouchPending_ = (ev.phase != TouchPhase::End);
     return;
   }
   if (state_ == AppState::CameraStream)
   {
+    if (cameraSuppressOpeningTouch_)
+    {
+      if (ev.phase == TouchPhase::End)
+      {
+        cameraSuppressOpeningTouch_ = false;
+      }
+      Serial.printf("[camera] ignored opening touch phase=%s\n", touchPhaseName(ev.phase));
+      return;
+    }
+    if (nowMs < cameraIgnoreTouchUntilMs_)
+    {
+      return;
+    }
     Serial.println("[camera] dismissed by touch");
+    cameraExitRequested_ = true;
     exitCameraStream(nowMs);
-    dismissTouchPending_ = true;
+    dismissTouchPending_ = (ev.phase != TouchPhase::End);
     return;
   }
 
@@ -1617,6 +1670,42 @@ void App::handleTouch(uint32_t nowMs)
   {
     applyPausedTouchGesture(ev, nowMs);
   }
+}
+
+bool App::pollCameraExitTouch(uint32_t nowMs)
+{
+  if (!touchInitialized_ || state_ != AppState::CameraStream)
+  {
+    return false;
+  }
+
+  TouchEvent ev;
+  if (!touch_.poll(ev))
+  {
+    return false;
+  }
+
+  lastActivityMs_ = nowMs;
+  if (cameraSuppressOpeningTouch_)
+  {
+    if (ev.phase == TouchPhase::End)
+    {
+      cameraSuppressOpeningTouch_ = false;
+    }
+    Serial.printf("[camera] ignored opening touch phase=%s\n", touchPhaseName(ev.phase));
+    return false;
+  }
+
+  if (nowMs < cameraIgnoreTouchUntilMs_)
+  {
+    return false;
+  }
+
+  Serial.printf("[camera] preemptive touch exit phase=%s\n", touchPhaseName(ev.phase));
+  cameraExitRequested_ = true;
+  exitCameraStream(nowMs);
+  dismissTouchPending_ = (ev.phase != TouchPhase::End);
+  return true;
 }
 
 void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs)
@@ -3670,15 +3759,71 @@ void App::selectModulesPickerItem(uint32_t nowMs)
   if (name.startsWith("(")) return;  // placeholder row
   const String path = storage_.modulePath(name);
   Serial.printf("[mod] picker tap → %s\n", path.c_str());
+  enterModulePlayback(path, nowMs);
+}
+
+void App::enterModulePlayback(const String &path, uint32_t nowMs)
+{
+  // Surface a loading status while libxmp parses the file — large XM
+  // modules can take a beat to load, and the picker freezing is confusing.
+  const int slash = path.lastIndexOf('/');
+  const String name = (slash >= 0) ? path.substring(slash + 1) : path;
   display_.renderStatus("MOD", "Loading", name);
   const bool ok = modPlayer_.playFile(path);
-  display_.renderStatus("MOD", ok ? "Playing" : "Failed", name);
-  if (ok) {
-    demoMusicPickedTrack_ = name;
-    preferences_.putString("demoMusicTr", demoMusicPickedTrack_);
+  if (!ok) {
+    display_.renderStatus("MOD", "Failed", name);
+    delay(800);
+    renderModulesPicker();
+    return;
   }
-  delay(600);
+  demoMusicPickedTrack_ = name;
+  preferences_.putString("demoMusicTr", demoMusicPickedTrack_);
+  std::memset(modulePlayerBarLevels_, 0, sizeof(modulePlayerBarLevels_));
+  modulePlayerLastRenderMs_ = 0;
+  // Re-use screensaver/demo previous-state plumbing so the dismiss handler
+  // knows where to return after touch.
+  screensaverPreviousState_ = AppState::Menu;
+  setState(AppState::ModulePlaying, nowMs);
+}
+
+void App::exitModulePlayback(uint32_t nowMs)
+{
+  modPlayer_.stop();
+  setState(AppState::Menu, nowMs);
+  // Drop back into the modules picker so a quick re-tap lets the user
+  // browse to another tune.
+  menuScreen_ = MenuScreen::ModulesPicker;
   renderModulesPicker();
+}
+
+void App::renderModulePlayerFrame(uint32_t nowMs)
+{
+  ModPlayer::NowPlaying np;
+  modPlayer_.getNowPlaying(np);
+  // Decay then bump bars — tracker channels naturally fade as samples loop
+  // out; instant snap-up + slow fall-off reads as a level meter rather
+  // than raw volume readings.
+  constexpr uint8_t kBarDecay = 6;
+  for (int i = 0; i < 32; ++i) {
+    uint8_t cur = modulePlayerBarLevels_[i];
+    if (cur > kBarDecay) cur -= kBarDecay; else cur = 0;
+    if (i < np.channelCount && np.channelVolumes[i] > cur) {
+      cur = np.channelVolumes[i];
+    }
+    modulePlayerBarLevels_[i] = cur;
+  }
+  // libxmp emits track playback once it ends; if the track stopped on its
+  // own, drop back to the picker so the user isn't stuck looking at static
+  // bars forever.
+  if (!modPlayer_.isPlaying() && np.valid == false) {
+    exitModulePlayback(nowMs);
+    return;
+  }
+  display_.renderModulePlayerFrame(modPlayer_.currentTrack().c_str(),
+                                   np.title, np.format, np.bpm, np.speed,
+                                   np.pos, np.row, np.numRows,
+                                   modulePlayerBarLevels_,
+                                   np.channelCount > 0 ? np.channelCount : 4);
 }
 
 bool App::startRandomModule(uint32_t nowMs)
@@ -3790,13 +3935,24 @@ String App::cameraSnapshotUrl() const
          String(RSVP_CAMERA_SERVER_PORT) + RSVP_CAMERA_SNAPSHOT_PATH;
 }
 
+String App::cameraStreamUrl() const
+{
+  return String("http://") + RSVP_CAMERA_SERVER_HOST + ":" +
+         String(RSVP_CAMERA_SERVER_PORT) + RSVP_CAMERA_STREAM_PATH;
+}
+
 void App::enterCameraStream(uint32_t nowMs)
 {
   cameraWifiConnected_ = false;
+  cameraStreamConnected_ = false;
   cameraLastFrameMs_ = 0;
   cameraLastStatsMs_ = nowMs;
   cameraFramesOk_ = 0;
   cameraFramesFailed_ = 0;
+  cameraFrameSeq_ = 0;
+  cameraIgnoreTouchUntilMs_ = nowMs + 500;
+  cameraSuppressOpeningTouch_ = true;
+  cameraExitRequested_ = false;
 
   display_.renderStatus("Camera", "Connecting WiFi", RSVP_CAMERA_SERVER_HOST);
   if (!WifiConnector::connect(ota_.config().networks, kCameraWifiTimeoutMs, "camera"))
@@ -3806,20 +3962,23 @@ void App::enterCameraStream(uint32_t nowMs)
     settingsSelectedIndex_ = kSettingsHomeCameraIndex;
     menuScreen_ = MenuScreen::SettingsHome;
     rebuildSettingsMenuItems();
-    setState(AppState::Menu, nowMs);
+    renderMenu();
     return;
   }
 
   cameraWifiConnected_ = true;
-  Serial.printf("[camera] snapshot url=%s\n", cameraSnapshotUrl().c_str());
+  Serial.printf("[camera] stream url=%s\n", cameraStreamUrl().c_str());
   display_.renderStatus("Camera", "Opening stream", RSVP_CAMERA_SERVER_HOST);
   setState(AppState::CameraStream, nowMs);
 }
 
 void App::exitCameraStream(uint32_t nowMs)
 {
+  closeCameraMjpegStream();
   WiFi.disconnect(true);
   cameraWifiConnected_ = false;
+  cameraSuppressOpeningTouch_ = false;
+  cameraExitRequested_ = false;
   settingsSelectedIndex_ = kSettingsHomeCameraIndex;
   menuScreen_ = MenuScreen::SettingsHome;
   rebuildSettingsMenuItems();
@@ -3828,9 +3987,15 @@ void App::exitCameraStream(uint32_t nowMs)
 
 void App::updateCameraStream(uint32_t nowMs)
 {
+  if (pollCameraExitTouch(nowMs) || state_ != AppState::CameraStream)
+  {
+    return;
+  }
+
   if (!cameraWifiConnected_ || WiFi.status() != WL_CONNECTED)
   {
     Serial.println("[camera] wifi dropped, reconnecting");
+    closeCameraMjpegStream();
     display_.renderStatus("Camera", "Reconnecting WiFi", "");
     cameraWifiConnected_ =
         WifiConnector::connect(ota_.config().networks, kCameraWifiTimeoutMs, "camera");
@@ -3842,13 +4007,40 @@ void App::updateCameraStream(uint32_t nowMs)
     }
   }
 
-  if (nowMs - cameraLastFrameMs_ < kCameraFrameIntervalMs)
+  if (!cameraStreamConnected_ && !openCameraMjpegStream())
+  {
+    ++cameraFramesFailed_;
+    cameraLastFrameMs_ = nowMs;
+    delay(250);
+    return;
+  }
+
+  bool frameOk = readCameraMjpegFrame(nowMs);
+  if (state_ != AppState::CameraStream)
   {
     return;
   }
-  cameraLastFrameMs_ = nowMs;
+  if (!frameOk)
+  {
+    ++cameraFramesFailed_;
+    closeCameraMjpegStream();
+    Serial.println("[camera] stream frame failed; trying snapshot fallback");
+    if (nowMs - cameraLastFrameMs_ >= kCameraFrameIntervalMs)
+    {
+      frameOk = fetchCameraSnapshot(nowMs);
+      if (state_ != AppState::CameraStream)
+      {
+        return;
+      }
+      if (frameOk)
+      {
+        cameraLastFrameMs_ = nowMs;
+        Serial.println("[camera] snapshot fallback frame ok");
+      }
+    }
+  }
 
-  if (fetchCameraSnapshot(nowMs))
+  if (frameOk)
   {
     ++cameraFramesOk_;
     if (cameraFrameBuffer_ != nullptr && cameraFrameWidth_ > 0 && cameraFrameHeight_ > 0)
@@ -3943,11 +4135,213 @@ bool App::ensureCameraBuffers(size_t jpegBytes, int frameWidth, int frameHeight)
   return true;
 }
 
+bool App::openCameraMjpegStream()
+{
+  closeCameraMjpegStream();
+  Serial.printf("[camera] connecting stream %s:%u%s\n",
+                RSVP_CAMERA_SERVER_HOST, RSVP_CAMERA_SERVER_PORT, RSVP_CAMERA_STREAM_PATH);
+
+  if (!cameraStreamClient_.connect(RSVP_CAMERA_SERVER_HOST, RSVP_CAMERA_SERVER_PORT,
+                                   kCameraHttpTimeoutMs))
+  {
+    Serial.println("[camera] stream connect failed");
+    return false;
+  }
+
+  cameraStreamClient_.setTimeout(kCameraHttpTimeoutMs);
+  cameraStreamClient_.print(String("GET ") + RSVP_CAMERA_STREAM_PATH + " HTTP/1.1\r\n" +
+                            "Host: " + RSVP_CAMERA_SERVER_HOST + "\r\n" +
+                            "User-Agent: RSVP-Nano-Camera/1.0\r\n" +
+                            "Accept: multipart/x-mixed-replace\r\n" +
+                            "Connection: keep-alive\r\n\r\n");
+
+  String line;
+  if (!readCameraStreamLine(line, kCameraHttpTimeoutMs))
+  {
+    Serial.println("[camera] stream no HTTP status");
+    closeCameraMjpegStream();
+    return false;
+  }
+  line.trim();
+  if (!line.startsWith("HTTP/1.1 200") && !line.startsWith("HTTP/1.0 200"))
+  {
+    Serial.printf("[camera] stream bad status: %s\n", line.c_str());
+    closeCameraMjpegStream();
+    return false;
+  }
+
+  while (readCameraStreamLine(line, kCameraHttpTimeoutMs))
+  {
+    line.trim();
+    if (line.length() == 0)
+    {
+      cameraStreamConnected_ = true;
+      Serial.println("[camera] stream connected");
+      return true;
+    }
+  }
+
+  Serial.println("[camera] stream header timeout");
+  closeCameraMjpegStream();
+  return false;
+}
+
+void App::closeCameraMjpegStream()
+{
+  cameraStreamConnected_ = false;
+  if (cameraStreamClient_.connected())
+  {
+    cameraStreamClient_.stop();
+  }
+}
+
+bool App::readCameraStreamLine(String &line, uint32_t timeoutMs)
+{
+  line = "";
+  const uint32_t start = millis();
+  while (millis() - start < timeoutMs)
+  {
+    if (pollCameraExitTouch(millis()) || state_ != AppState::CameraStream)
+    {
+      return false;
+    }
+    while (cameraStreamClient_.available() > 0)
+    {
+      const char c = static_cast<char>(cameraStreamClient_.read());
+      if (c == '\n')
+      {
+        if (line.endsWith("\r")) line.remove(line.length() - 1);
+        return true;
+      }
+      line += c;
+      if (line.length() > 160)
+      {
+        return true;
+      }
+    }
+    if (!cameraStreamClient_.connected())
+    {
+      return false;
+    }
+    delay(1);
+    yield();
+  }
+  return false;
+}
+
+bool App::readCameraStreamBytes(uint8_t *dst, size_t length, uint32_t timeoutMs)
+{
+  if (dst == nullptr || length == 0) return false;
+  size_t offset = 0;
+  uint32_t lastByteMs = millis();
+  while (offset < length)
+  {
+    if (pollCameraExitTouch(millis()) || state_ != AppState::CameraStream)
+    {
+      return false;
+    }
+    const int available = cameraStreamClient_.available();
+    if (available > 0)
+    {
+      const size_t want = std::min(static_cast<size_t>(available), length - offset);
+      const int got = cameraStreamClient_.readBytes(dst + offset, want);
+      if (got > 0)
+      {
+        offset += static_cast<size_t>(got);
+        lastByteMs = millis();
+      }
+    }
+    else
+    {
+      if (!cameraStreamClient_.connected() || millis() - lastByteMs > timeoutMs)
+      {
+        Serial.printf("[camera] stream payload timeout bytes=%u/%u\n",
+                      static_cast<unsigned>(offset), static_cast<unsigned>(length));
+        return false;
+      }
+      delay(1);
+      yield();
+    }
+  }
+  return true;
+}
+
+bool App::readCameraMjpegFrame(uint32_t nowMs)
+{
+  if (!cameraStreamConnected_ || !cameraStreamClient_.connected())
+  {
+    return false;
+  }
+
+  String line;
+  int contentLength = -1;
+  const uint32_t frameStartMs = millis();
+
+  while (millis() - frameStartMs < kCameraStreamFrameTimeoutMs)
+  {
+    if (!readCameraStreamLine(line, kCameraStreamFrameTimeoutMs))
+    {
+      Serial.println("[camera] stream frame header timeout");
+      return false;
+    }
+    line.trim();
+    if (line.length() == 0 || line.startsWith("--"))
+    {
+      continue;
+    }
+    if (line.equalsIgnoreCase("Content-Type: image/jpeg"))
+    {
+      continue;
+    }
+    if (line.startsWith("Content-Length:") || line.startsWith("content-length:"))
+    {
+      contentLength = line.substring(line.indexOf(':') + 1).toInt();
+      break;
+    }
+  }
+
+  if (contentLength <= 0 || static_cast<size_t>(contentLength) > kCameraMaxJpegBytes)
+  {
+    Serial.printf("[camera] stream bad content length=%d\n", contentLength);
+    return false;
+  }
+
+  while (readCameraStreamLine(line, kCameraStreamFrameTimeoutMs))
+  {
+    line.trim();
+    if (line.length() == 0) break;
+  }
+
+  if (!ensureCameraBuffers(static_cast<size_t>(contentLength),
+                           kCameraMaxFrameWidth, kCameraMaxFrameHeight))
+  {
+    return false;
+  }
+
+  if (!readCameraStreamBytes(cameraJpegBuffer_, static_cast<size_t>(contentLength),
+                             kCameraStreamFrameTimeoutMs))
+  {
+    return false;
+  }
+
+  const bool ok = decodeCameraSnapshot(cameraJpegBuffer_, static_cast<size_t>(contentLength));
+  cameraLastFrameMs_ = nowMs;
+  Serial.printf("[camera] stream frame=%lu bytes=%u decode=%s total=%lu ms\n",
+                static_cast<unsigned long>(cameraFrameSeq_),
+                static_cast<unsigned>(contentLength), ok ? "ok" : "fail",
+                static_cast<unsigned long>(millis() - frameStartMs));
+  return ok;
+}
+
 bool App::fetchCameraSnapshot(uint32_t nowMs)
 {
   (void)nowMs;
+  if (pollCameraExitTouch(millis()) || state_ != AppState::CameraStream)
+  {
+    return false;
+  }
   HTTPClient http;
-  http.setTimeout(kCameraHttpTimeoutMs);
+  http.setTimeout(kCameraStreamFrameTimeoutMs);
   http.setReuse(false);
 
   const String url = cameraSnapshotUrl();
@@ -3959,6 +4353,11 @@ bool App::fetchCameraSnapshot(uint32_t nowMs)
 
   const uint32_t startMs = millis();
   const int status = http.GET();
+  if (pollCameraExitTouch(millis()) || state_ != AppState::CameraStream)
+  {
+    http.end();
+    return false;
+  }
   if (status != HTTP_CODE_OK)
   {
     Serial.printf("[camera] http status=%d error=%s\n", status, http.errorToString(status).c_str());
@@ -3986,6 +4385,11 @@ bool App::fetchCameraSnapshot(uint32_t nowMs)
   uint32_t lastByteMs = millis();
   while (offset < static_cast<size_t>(contentLength))
   {
+    if (pollCameraExitTouch(millis()) || state_ != AppState::CameraStream)
+    {
+      http.end();
+      return false;
+    }
     const int available = stream->available();
     if (available > 0)
     {
@@ -4000,7 +4404,7 @@ bool App::fetchCameraSnapshot(uint32_t nowMs)
     }
     else
     {
-      if (millis() - lastByteMs > kCameraHttpTimeoutMs)
+      if (millis() - lastByteMs > kCameraStreamFrameTimeoutMs)
       {
         Serial.printf("[camera] read timeout bytes=%u/%d\n",
                       static_cast<unsigned>(offset), contentLength);
@@ -4065,6 +4469,20 @@ bool App::decodeCameraSnapshot(const uint8_t *data, size_t length)
       const uint16_t *src = JpegDec.pImage + row * JpegDec.MCUWidth;
       uint16_t *dst = cameraFrameBuffer_ + (y + row) * cameraFrameWidth_ + x;
       std::memcpy(dst, src, static_cast<size_t>(w) * sizeof(uint16_t));
+    }
+  }
+
+  ++cameraFrameSeq_;
+  const uint16_t markerColor = static_cast<uint16_t>(
+      (cameraFrameSeq_ & 1) ? 0xF800 : ((cameraFrameSeq_ & 2) ? 0x07E0 : 0x001F));
+  const int markerW = std::min(18, cameraFrameWidth_);
+  const int markerH = std::min(12, cameraFrameHeight_);
+  for (int y = 0; y < markerH; ++y)
+  {
+    uint16_t *row = cameraFrameBuffer_ + y * cameraFrameWidth_;
+    for (int x = 0; x < markerW; ++x)
+    {
+      row[x] = markerColor;
     }
   }
 

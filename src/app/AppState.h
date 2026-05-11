@@ -10,4 +10,5 @@ enum class AppState {
   Screensaver,
   DemoPlaying,
   CameraStream,
+  ModulePlaying,
 };

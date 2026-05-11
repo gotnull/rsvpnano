@@ -21,12 +21,21 @@ LOGGER = logging.getLogger("camera_server")
 
 
 class CameraState:
-    def __init__(self, camera_index: int, width: int, height: int, fps: int, jpeg_quality: int):
+    def __init__(
+        self,
+        camera_index: int,
+        width: int,
+        height: int,
+        fps: int,
+        jpeg_quality: int,
+        overlay: bool,
+    ):
         self.camera_index = camera_index
         self.width = width
         self.height = height
         self.fps = fps
         self.jpeg_quality = jpeg_quality
+        self.overlay = overlay
         self.latest_jpeg: Optional[bytes] = None
         self.latest_frame_ts = 0.0
         self.frames_captured = 0
@@ -75,6 +84,7 @@ class CameraState:
             "height": self.height,
             "target_fps": self.fps,
             "jpeg_quality": self.jpeg_quality,
+            "overlay": self.overlay,
             "frames_captured": self.frames_captured,
             "capture_errors": self.capture_errors,
             "latest_frame_age_seconds": age,
@@ -115,6 +125,22 @@ class CameraState:
 
                 if self.width > 0 and self.height > 0:
                     frame = cv2.resize(frame, (self.width, self.height), interpolation=cv2.INTER_AREA)
+
+                if self.overlay:
+                    label = f"frame {self.frames_captured + 1}  {time.strftime('%H:%M:%S')}"
+                    cv2.rectangle(frame, (4, 4), (185, 30), (0, 0, 0), thickness=-1)
+                    cv2.putText(
+                        frame,
+                        label,
+                        (10, 23),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5,
+                        (0, 255, 0),
+                        1,
+                        cv2.LINE_AA,
+                    )
+                    phase = (self.frames_captured * 7) % max(1, self.width)
+                    cv2.rectangle(frame, (phase, self.height - 10), (min(self.width - 1, phase + 18), self.height - 2), (0, 0, 255), thickness=-1)
 
                 ok, encoded = cv2.imencode(".jpg", frame, encode_params)
                 if not ok:
@@ -251,6 +277,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--height", type=int, default=240)
     parser.add_argument("--fps", type=int, default=10)
     parser.add_argument("--jpeg-quality", type=int, default=60)
+    parser.add_argument(
+        "--no-overlay",
+        action="store_true",
+        help="Disable the frame counter/timestamp overlay burned into each JPEG.",
+    )
     return parser.parse_args()
 
 
@@ -259,7 +290,14 @@ def main() -> int:
     args = parse_args()
     quality = max(1, min(95, args.jpeg_quality))
 
-    camera = CameraState(args.camera_index, args.width, args.height, args.fps, quality)
+    camera = CameraState(
+        args.camera_index,
+        args.width,
+        args.height,
+        args.fps,
+        quality,
+        overlay=not args.no_overlay,
+    )
     camera.start()
 
     server = CameraHTTPServer((args.host, args.port), CameraRequestHandler, camera)
@@ -275,12 +313,13 @@ def main() -> int:
 
     ip = local_ip_hint()
     LOGGER.info(
-        "serving camera index=%d size=%dx%d fps=%d jpeg_quality=%d",
+        "serving camera index=%d size=%dx%d fps=%d jpeg_quality=%d overlay=%s",
         args.camera_index,
         args.width,
         args.height,
         args.fps,
         quality,
+        "on" if camera.overlay else "off",
     )
     LOGGER.info("local URL: http://127.0.0.1:%d/stream.mjpg", args.port)
     LOGGER.info("LAN URL hint: http://%s:%d/stream.mjpg", ip, args.port)

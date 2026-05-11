@@ -14,7 +14,12 @@ The Mac server is currently designed around snapshot + MJPEG HTTP:
 - `GET /stream.mjpg` multipart MJPEG stream
 - `GET /health` JSON health
 
-The device firmware currently uses snapshot polling, not persistent MJPEG parsing. This was deliberate: snapshot polling is the reliable first working path for ESP32, and the display side is already structured so a later MJPEG parser can feed the same decode/render path.
+The server now overlays a frame counter/timestamp and moving red bar into every
+JPEG by default. This is a deliberate stream diagnostic. If the overlay does
+not change on the device, the device is not receiving/rendering subsequent
+frames. Pass `--no-overlay` to disable it after the client is proven.
+
+The production device firmware now uses persistent `/stream.mjpg` parsing. The standalone generic ESP32 example still uses snapshot polling because it is the simpler board bring-up path.
 
 ## Files Added
 
@@ -49,11 +54,14 @@ The standalone ESP32 client is separate from the main firmware. It is useful for
     - `RSVP_CAMERA_SNAPSHOT_PATH`, default `"/snapshot.jpg"`
   - Added `Settings -> Camera test`.
   - Added `enterCameraStream()`, `exitCameraStream()`, `updateCameraStream()`.
-  - Added `fetchCameraSnapshot()` with content-length validation and read timeout.
+  - Added persistent MJPEG stream parsing via `/stream.mjpg`.
+  - Left `fetchCameraSnapshot()` in place as a fallback/reference path.
   - Added `decodeCameraSnapshot()` using `JPEGDecoder`.
   - Added PSRAM-preferred JPEG and RGB565 frame buffers.
   - Added camera serial diagnostics for bytes, decode status, timing, heap, PSRAM, RSSI.
   - Added touch/power exit behavior for the camera screen.
+  - Camera exit returns to `SettingsHome` with `Camera test` highlighted,
+    matching the way fullscreen demos return to the demo picker.
   - Added a minimal `downloadModStarterPack()` placeholder because the existing Settings menu referenced it but no implementation existed; root firmware would not link without it.
 
 - `src/display/DisplayManager.h`
@@ -85,9 +93,9 @@ Camera rendering currently works like this:
 2. Compressed JPEG is stored in `cameraJpegBuffer_`.
 3. `JPEGDecoder` decodes MCU blocks.
 4. MCU blocks are copied into `cameraFrameBuffer_` as normal RGB565, logical orientation.
-5. `DisplayManager::renderCameraRgb565Frame()` aspect-fits that source frame onto the `640 x 172` logical display and writes panel-native stripes.
+5. `DisplayManager::renderCameraRgb565Frame()` aspect-fits that source frame onto the `640 x 172` logical display, applies a 180-degree camera correction, and writes panel-native stripes.
 
-This is not full 60 FPS end-to-end yet. The renderer is 60 FPS-compatible, but snapshot polling, HTTP setup/teardown, JPEG decode, Wi-Fi, and server encode time are the limiting factors.
+This is not full 60 FPS end-to-end yet. The renderer is 60 FPS-compatible, but JPEG decode, Wi-Fi throughput, server encode time, and display flush time are the limiting factors.
 
 ## Current Defaults
 
@@ -145,6 +153,20 @@ Published OTA release:
 https://github.com/gotnull/rsvpnano/releases/tag/ota-20260511060028
 ```
 
+Additional camera-stream OTA releases published during debugging:
+
+```text
+ota-20260511061048 - return/menu handling fix
+ota-20260511062031 - MJPEG stream parser and 180-degree camera orientation fix
+ota-20260511062323 - frame marker / stream diagnostics
+ota-20260511062802 - screensaver/demo/camera dismiss touch cleanup
+ota-20260511062933 - camera opening touch guard
+ota-20260511063529 - suppress original menu-selection touch until release
+ota-20260511063835 - camera tap exit returns to SettingsHome with Camera test highlighted
+ota-20260511064626 - stream liveness fix: short MJPEG frame timeout plus snapshot fallback
+ota-20260511064920 - camera touch preemption: poll touch during camera network reads
+```
+
 Latest OTA URL:
 
 ```text
@@ -189,7 +211,14 @@ Built successfully for `waveshare_esp32s3_usb_msc`.
 ## Known Constraints
 
 - Current production device path uses `/snapshot.jpg` polling. It is robust but not optimal for smooth video.
-- For smoother video, the next implementation step is a persistent `/stream.mjpg` parser on-device.
+- The production firmware uses persistent `/stream.mjpg`; if streaming stalls, inspect serial logs for stream connect, content length, payload timeout, and decode failures.
+- Current camera liveness behavior: if MJPEG frame parsing does not produce a
+  frame within `kCameraStreamFrameTimeoutMs`, firmware closes the stream and
+  immediately tries `/snapshot.jpg` as a fallback frame. This keeps the display
+  moving and makes parser stalls visible in serial logs.
+- Camera touch exit is now preemptive. `pollCameraExitTouch()` runs before each
+  camera update and inside the blocking stream/body-read loops so a tap can
+  abort camera I/O and return to Settings even if the frame path is stalled.
 - Classic ESP32 is not a good target for high-resolution webcam streaming. ESP32-S3 with PSRAM is preferred.
 - Keep server output conservative:
   - `320 x 240`
@@ -198,30 +227,25 @@ Built successfully for `waveshare_esp32s3_usb_msc`.
 - The camera source frame buffer is capped at `320 x 240`.
 - Max compressed JPEG size is capped at `96 KB`.
 - Camera buffers are allocated lazily and kept for reuse.
-- Touch or power exits the camera stream and returns to Settings.
+- Camera Test is intentionally a Settings feature: touch or power exits the
+  stream and returns to `SettingsHome` with `Camera test` highlighted. This
+  mirrors demos returning to their picker and avoids falling back to the reader
+  after a fullscreen test view.
 
 ## Next Best Work
 
-1. Add on-device persistent MJPEG parsing:
-   - connect once to `/stream.mjpg`;
-   - scan multipart boundaries;
-   - parse `Content-Length`;
-   - read JPEG payload with timeouts;
-   - feed existing `decodeCameraSnapshot()` / `renderCameraRgb565Frame()`.
-
-2. Add a Settings subpage or config file for camera host:
+1. Add a Settings subpage or config file for camera host:
    - current default is compile-time.
    - better long-term location could be `/wifi.json` or `/camera.json`.
 
-3. Add frame-stage timing:
+2. Add frame-stage timing:
    - HTTP read ms;
    - JPEG decode ms;
    - display render ms;
    - total frame ms.
 
-4. Avoid full RGB565 source-frame storage if needed:
+3. Avoid full RGB565 source-frame storage if needed:
    - decode MCU blocks into a native intermediate stripe cache;
    - this is more complex but saves PSRAM and latency.
 
-5. Commit source changes before the next release.
-
+4. Commit source changes before the next release.

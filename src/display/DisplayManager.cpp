@@ -2470,21 +2470,28 @@ void DisplayManager::renderMenu(const std::vector<String> &items, size_t selecte
   const int spaceWidth = (kTinyGlyphWidth + kTinyGlyphSpacing) * kTinyScale;
 
   // Chevron column sits two spaces past the widest item in this menu so every
-  // chevron lines up regardless of which row it's on.
+  // chevron lines up regardless of which row it's on — but is capped at a
+  // safe right-side position so menus containing very long items (e.g. the
+  // Modules picker with 100+ .xm filenames) don't push the chevron off-screen
+  // and squeeze every row's text width to zero.
   int maxItemTextWidth = 0;
   for (size_t i = 0; i < itemCount; ++i) {
     const int w = measureTinyTextWidth(items[i], kTinyScale);
     if (w > maxItemTextWidth) maxItemTextWidth = w;
   }
-  const int chevronColumnX = kCompactMenuX + maxItemTextWidth + spaceWidth * 2;
+  const int chevronCapX = virtualWidth - chevronWidth - kFooterMarginX - 4;
+  const int chevronColumnX = std::min(
+      kCompactMenuX + maxItemTextWidth + spaceWidth * 2, chevronCapX);
 
   for (size_t row = 0; row < visibleCount; ++row) {
     const size_t itemIndex = firstVisible + row;
     const bool selected = itemIndex == selectedIndex;
     const uint16_t color = selected ? focusColor() : dimColor();
     const bool hasChevron = itemIndex < chevronRows.size() && chevronRows[itemIndex];
-    const int rightReserve = chevronColumnX - kCompactMenuX + chevronWidth + kFooterMarginX;
-    const int maxWidth = virtualWidth - kCompactMenuX - rightReserve;
+    // Text runs from leftX up to one space before the chevron column. This
+    // keeps maxWidth strictly positive when chevronColumnX is capped at the
+    // right edge for long-item menus.
+    const int maxWidth = std::max(0, chevronColumnX - kCompactMenuX - spaceWidth);
     if (selected) {
       fillVirtualRect(10, y + 2, 5, kTinyGlyphHeight * kTinyScale + 2, selectedBarColor());
     }
@@ -2511,6 +2518,107 @@ void DisplayManager::renderMenu(const std::vector<String> &items, size_t selecte
 
   drawBatteryBadge();
   flushScaledFrame(scale, virtualWidth, virtualHeight);
+}
+
+void DisplayManager::renderModulePlayerFrame(const char *fileName,
+                                             const char *title,
+                                             const char *format,
+                                             int bpm, int speed,
+                                             int pos, int row, int numRows,
+                                             const uint8_t *barLevels,
+                                             int barCount) {
+  if (!initialized_) return;
+  // Animation forces a full repaint each frame.
+  lastRenderKey_ = "";
+
+  const int virtualWidth = kDisplayWidth;
+  const int virtualHeight = kDisplayHeight;
+  clearVirtualBuffer(virtualWidth, virtualHeight);
+
+  // Header strip — module title (or file name if title is empty).
+  const String fileText = fileName ? String(fileName) : String("");
+  String headline = title ? String(title) : String("");
+  headline.trim();
+  if (headline.isEmpty()) headline = fileText;
+  // Row 1 — headline. Marquee if it overflows.
+  const int headlineY = 4;
+  const int headlineLeftX = 14;
+  const int headlineRightX = virtualWidth - kFooterMarginX - 12;
+  const int headlineWidth = measureTinyTextWidth(headline, kTinyScale);
+  if (headlineWidth <= headlineRightX - headlineLeftX) {
+    drawTinyTextAt(headline, headlineLeftX, headlineY, focusColor(), kTinyScale);
+  } else {
+    drawTinyMarquee(headline, headlineLeftX, headlineRightX, headlineY,
+                    focusColor(), backgroundColor());
+  }
+
+  // Row 2 — meta line: "<file.ext> · <format> · BPM ## · POS pp/qq".
+  String meta;
+  if (!fileText.isEmpty() && fileText != headline) {
+    meta += fileText;
+  }
+  if (format && format[0]) {
+    if (meta.length() > 0) meta += "  ";
+    meta += format;
+  }
+  if (bpm > 0) {
+    if (meta.length() > 0) meta += "  ";
+    meta += "BPM "; meta += String(bpm);
+  }
+  if (speed > 0) {
+    meta += "  SPD "; meta += String(speed);
+  }
+  if (numRows > 0) {
+    if (meta.length() > 0) meta += "  ";
+    meta += "POS "; meta += String(pos);
+    meta += "  ROW "; meta += String(row);
+    meta += "/"; meta += String(numRows);
+  }
+  if (!meta.isEmpty()) {
+    const int metaY = headlineY + (kTinyGlyphHeight * kTinyScale) + 6;
+    drawTinyTextAt(meta, headlineLeftX, metaY, dimColor(), 1);
+  }
+
+  // Bars area — vertical channel level meters along the bottom 60 % of the
+  // panel. Heights are proportional to libxmp's per-channel volume (0..64).
+  const int barsTopY = 50;
+  const int barsBottomY = virtualHeight - 6;
+  const int barsHeight = barsBottomY - barsTopY;
+  const int barsLeftX = 12;
+  const int barsRightX = virtualWidth - kFooterMarginX - 12;
+  const int barsWidth = barsRightX - barsLeftX;
+  if (barCount < 1) barCount = 4;
+  if (barCount > 32) barCount = 32;
+  // Per-bar pitch must leave at least 2 px of bar body; if not, halve count.
+  int effectiveBars = barCount;
+  while (effectiveBars > 1 && barsWidth / effectiveBars < 6) effectiveBars /= 2;
+  const int pitch = barsWidth / effectiveBars;
+  const int barBodyW = std::max(2, pitch - 4);
+
+  // Track bar palette — cycle through Pico-8-ish rainbow so adjacent
+  // channels are visually distinct.
+  static const uint16_t kBarPalette[] = {
+      0xF810, 0xFD60, 0xFFE0, 0x07E6, 0x2B7F, 0xC618, 0xFFFB, 0xFE36,
+  };
+  static constexpr int kBarPaletteSize = sizeof(kBarPalette) / sizeof(kBarPalette[0]);
+
+  for (int i = 0; i < effectiveBars; ++i) {
+    const int x = barsLeftX + i * pitch + (pitch - barBodyW) / 2;
+    // libxmp's tracker volume is 0..64; clamp + scale to bars height.
+    int v = (i < barCount && barLevels) ? barLevels[i] : 0;
+    if (v > 64) v = 64;
+    const int h = (v * barsHeight) / 64;
+    // Dim baseline rail across the full bar height so empty channels still
+    // read as something rather than blank space.
+    fillVirtualRect(x, barsTopY, barBodyW, barsHeight, dimColor());
+    if (h > 0) {
+      fillVirtualRect(x, barsBottomY - h, barBodyW, h,
+                      kBarPalette[i % kBarPaletteSize]);
+    }
+  }
+
+  drawBatteryBadge();
+  flushScaledFrame(1, virtualWidth, virtualHeight);
 }
 
 int DisplayManager::libraryLetterAtY(const std::vector<char> &letterAnchors, int y) {
@@ -3663,6 +3771,7 @@ void DisplayManager::renderCameraRgb565Frame(const uint16_t *frame, int sourceWi
     if (lx >= leftMargin && lx < rightEdge) {
       sx = ((lx - leftMargin) * sourceWidth) / visibleW;
       if (sx >= sourceWidth) sx = sourceWidth - 1;
+      sx = (sourceWidth - 1) - sx;
     }
     srcXForLogicalX[lx] = static_cast<uint16_t>(sx);
   }
@@ -3673,6 +3782,7 @@ void DisplayManager::renderCameraRgb565Frame(const uint16_t *frame, int sourceWi
     if (ly >= topMargin && ly < bottomEdge) {
       sy = ((ly - topMargin) * sourceHeight) / visibleH;
       if (sy >= sourceHeight) sy = sourceHeight - 1;
+      sy = (sourceHeight - 1) - sy;
     }
     srcYForLogicalY[ly] = static_cast<uint16_t>(sy);
   }

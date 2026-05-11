@@ -109,6 +109,16 @@ class DisplayManager {
   // Renders an RGB565 source frame using the same native-stripe path as the
   // screensaver/demos. Source pixels are normal RGB565 in logical orientation.
   void renderCameraRgb565Frame(const uint16_t *frame, int sourceWidth, int sourceHeight);
+  // Fullscreen tracker player. Shows file name (marquee if it overflows),
+  // module title + format, BPM/speed, position/row counters, and a row of
+  // channel volume bars (levels 0..64 per libxmp's xmp_channel_info.volume).
+  void renderModulePlayerFrame(const char *fileName,
+                               const char *title,
+                               const char *format,
+                               int bpm, int speed,
+                               int pos, int row, int numRows,
+                               const uint8_t *barLevels,
+                               int barCount);
 
  private:
   bool initPanel();

@@ -9,7 +9,7 @@ The Python server captures webcam frames with OpenCV and serves:
 - `/stream.mjpg` multipart MJPEG stream
 - `/health` JSON health endpoint
 
-The ESP32 example starts with snapshot polling because it is easier to debug and more robust on small boards than a long-lived MJPEG parser. The server still exposes MJPEG first so you can test latency in a browser and later replace snapshot polling with stream parsing.
+The production RSVP Nano firmware uses `/stream.mjpg` for the `Settings -> Camera test` path. The standalone generic ESP32 example starts with snapshot polling because it is easier to debug on arbitrary boards.
 
 ## Layout
 
@@ -98,6 +98,11 @@ Defaults:
 
 The capture loop runs in a background thread. HTTP clients receive the latest encoded JPEG without blocking camera capture.
 
+By default the server burns a small frame counter/timestamp and moving red bar
+into every JPEG. This is intentional while tuning the device client: if the
+number/bar does not change on the ESP32 display, the device is not receiving or
+rendering new frames. Use `--no-overlay` after the stream path is proven.
+
 ## ESP32 Client Setup
 
 The main RSVP Nano firmware also has a production-side test entry at:
@@ -106,10 +111,10 @@ The main RSVP Nano firmware also has a production-side test entry at:
 Settings -> Camera test
 ```
 
-It uses the normal device Wi-Fi configuration from `/wifi.json` and defaults to:
+It uses the normal device Wi-Fi configuration from `/wifi.json`, opens a persistent MJPEG stream, and defaults to:
 
 ```text
-http://192.168.5.77:8080/snapshot.jpg
+http://192.168.5.77:8080/stream.mjpg
 ```
 
 To build for a different Mac IP, add a build flag in the root `platformio.ini`:
@@ -181,7 +186,7 @@ Start conservative:
 - `320x240`
 - JPEG quality `50-60`
 - `5-10 fps`
-- snapshot polling before MJPEG parsing
+- use the production firmware's MJPEG path after browser testing works
 
 ESP32-S3 with PSRAM is strongly preferred for smoother display work. Classic ESP32 can receive and decode small JPEGs, but high-resolution webcam streaming is not realistic. Large JPEGs require a full compressed frame buffer plus decoder working memory, and a real display driver may need additional DMA buffers.
 
