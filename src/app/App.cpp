@@ -725,6 +725,7 @@ void App::update(uint32_t nowMs)
     lastActivityMs_ = nowMs;
   }
   tickTabAnimation(nowMs);
+  tickMainMenuMarquee(nowMs);
   handleBootButton(nowMs);
   handlePowerButton(nowMs);
   if (powerOffStarted_)
@@ -4297,6 +4298,18 @@ int App::currentTabUnderlineX(int slotW, int slotCount) const
     }
   }
   return x;
+}
+
+void App::tickMainMenuMarquee(uint32_t nowMs)
+{
+  // Only paint the overlay when we're actually on the Main menu — keeps
+  // stale strip pixels off unrelated screens, and lets DisplayManager's
+  // own state guard handle the "no marquee needed" short-circuit.
+  if (state_ != AppState::Menu || menuScreen_ != MenuScreen::Main) return;
+  constexpr uint32_t kMarqueeFrameMs = 16;  // ~60 fps
+  if (nowMs - mainMenuMarqueeLastFrameMs_ < kMarqueeFrameMs) return;
+  mainMenuMarqueeLastFrameMs_ = nowMs;
+  display_.renderMainMenuMarqueeOverlay();
 }
 
 void App::tickTabAnimation(uint32_t nowMs)

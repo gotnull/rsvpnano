@@ -94,6 +94,14 @@ class DisplayManager {
   // rest of the menu rendered by renderMenuWithTabs is preserved on the
   // panel without paying for a full virtualFrame_ flush per frame.
   void renderTabUnderlineStrip(int underlineXPx, int underlineWPx);
+  // Partial 60 fps overlay for the Main-menu accent-row marquee. Re-pushes
+  // only the marquee text strip via drawBitmap; reads mainMenuMarqueeActive_
+  // state populated by the last renderMenuWithAccent. No-op when no marquee
+  // is needed.
+  void renderMainMenuMarqueeOverlay();
+  // Reset the cached marquee state — call when the user leaves the Main menu
+  // so a stale overlay can't paint on top of an unrelated screen.
+  void clearMainMenuMarqueeState() { mainMenuMarqueeActive_ = false; }
   // Geometry helpers — return the X coordinate and width an active tab's
   // underline should occupy. Computed from the same divider-margin constants
   // used by renderMenuWithTabs / renderTabUnderlineStrip so the underline
@@ -252,6 +260,20 @@ class DisplayManager {
   void drawMenuItem(const String &item, int y, bool selected);
   void applyBrightness();
   void flushScaledFrame(int scale, int virtualWidth, int virtualHeight);
+
+  // Marquee partial-overlay state. Populated by renderMenuWithAccent whenever
+  // an accent row needs the marquee (long title that doesn't fit its band).
+  // App::update() then ticks renderMainMenuMarqueeOverlay() at 60 fps, which
+  // re-pushes JUST the marquee text strip via drawBitmap — orders of magnitude
+  // cheaper than re-rendering the entire menu through flushScaledFrame.
+  bool mainMenuMarqueeActive_ = false;
+  String mainMenuMarqueeText_;
+  int mainMenuMarqueeLeftX_ = 0;
+  int mainMenuMarqueeRightX_ = 0;
+  int mainMenuMarqueeTextY_ = 0;
+  uint16_t mainMenuMarqueeColor_ = 0;
+  uint16_t mainMenuMarqueeFadeColor_ = 0;
+  int mainMenuMarqueeFadeWidthPx_ = 8;
 
   uint16_t *virtualFrame_ = nullptr;
   uint16_t *txBuffer_ = nullptr;

@@ -247,6 +247,10 @@ class App {
   // Re-render the current menu screen during a tab-slide animation. Driven
   // from App::update() while tabAnimActive_ is true.
   void tickTabAnimation(uint32_t nowMs);
+  // 60 fps partial-overlay tick for the Resume marquee. Cheap (~1-2 ms /
+  // frame) so the main loop stays responsive even with a long book title.
+  void tickMainMenuMarquee(uint32_t nowMs);
+  uint32_t mainMenuMarqueeLastFrameMs_ = 0;
   // Compute the underline X-position for the current tab/animation state.
   // `slotW` is the per-tab slot width on screen.
   int currentTabUnderlineX(int slotW, int slotCount) const;
