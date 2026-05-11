@@ -181,6 +181,12 @@ namespace
   // long-press window so the muscle memory carries across pickers.
   constexpr uint32_t kModuleLongPressMs = 800;
 
+  // Tabbed pickers reserve row 0 for the tab strip and row 1 for "Back".
+  // The first selectable item lives at row 2.
+  constexpr size_t kTabStripRow = 0;
+  constexpr size_t kTabbedBackRow = 1;
+  constexpr size_t kTabbedFirstItemRow = 2;
+
   constexpr const char *kRestartConfirmItems[] = {
       "Reboot now?",
       "No",
@@ -2029,9 +2035,7 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs)
       bool addMode = true;
       if (menuScreen_ == MenuScreen::ModulesPicker)
       {
-        const bool hasFavorites = !moduleFavorites_.empty();
-        const size_t favRow = hasFavorites ? size_t{1} : size_t{0};
-        if (modulesSelectedIndex_ >= 1 && modulesSelectedIndex_ != favRow &&
+        if (modulesSelectedIndex_ >= kTabbedFirstItemRow &&
             modulesSelectedIndex_ < modulesMenuItems_.size())
         {
           String label = modulesMenuItems_[modulesSelectedIndex_];
@@ -2045,11 +2049,15 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs)
       }
       else  // ModulesFavorites
       {
-        if (modulesFavoritesSelectedIndex_ >= 1 &&
+        if (modulesFavoritesSelectedIndex_ >= kTabbedFirstItemRow &&
             modulesFavoritesSelectedIndex_ < modulesFavoritesMenuItems_.size())
         {
-          targetName = modulesFavoritesMenuItems_[modulesFavoritesSelectedIndex_];
-          addMode = false;
+          const String &label = modulesFavoritesMenuItems_[modulesFavoritesSelectedIndex_];
+          if (!label.startsWith("("))
+          {
+            targetName = label;
+            addMode = false;
+          }
         }
       }
       if (!targetName.isEmpty())
@@ -2136,6 +2144,17 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs)
       absDeltaX > absDeltaY + static_cast<int>(kAxisBiasPx))
   {
     cycleTypographyPreviewSample(deltaX < 0 ? 1 : -1);
+    return;
+  }
+
+  // Generic horizontal-swipe → tab cycle for any menu screen that belongs
+  // to a TabGroup (currently Modules ↔ Favorites; extend by registering more
+  // groups in tabGroupFor()).
+  if (currentScreenHasTabs() &&
+      absDeltaX >= static_cast<int>(kSwipeThresholdPx) &&
+      absDeltaX > absDeltaY + static_cast<int>(kAxisBiasPx))
+  {
+    cycleTabs(deltaX < 0 ? 1 : -1);
     return;
   }
 
@@ -2271,14 +2290,18 @@ void App::moveMenuSelection(int direction)
     return;
   }
 
+  const bool tabbed = currentScreenHasTabs();
+  // Tabbed pickers reserve row 0 for the (non-selectable) tab strip — the
+  // cursor must wrap to row 1 instead of row 0.
+  const size_t minIdx = tabbed ? kTabbedBackRow : 0;
   const int next = static_cast<int>(*selectedIndex) + direction;
-  if (next < 0)
+  if (next < static_cast<int>(minIdx))
   {
     *selectedIndex = itemCount - 1;
   }
   else if (next >= static_cast<int>(itemCount))
   {
-    *selectedIndex = 0;
+    *selectedIndex = minIdx;
   }
   else
   {
@@ -3929,18 +3952,86 @@ void App::selectDemoPickerItem(uint32_t nowMs)
   }
 }
 
+// ---------------------------------------------------------------------------
+// Tab-group infrastructure. Each tabbed picker declares its tabs once here
+// and the generic helpers below take care of the strip row, horizontal-swipe
+// switching, and move-selection skip behaviour. To add tabs to another area
+// (e.g. Books → Recent / All / Favorites) declare a new TabDescriptor array
+// + TabGroup constant and return it from tabGroupFor() for each member
+// MenuScreen.
+// ---------------------------------------------------------------------------
+
+const App::TabDescriptor App::kModulesTabsData[] = {
+    {"Modules", MenuScreen::ModulesPicker, &App::openModulesPicker},
+    {"Favorites", MenuScreen::ModulesFavorites, &App::openModulesFavorites},
+};
+const App::TabGroup App::kModulesTabGroup = {
+    kModulesTabsData,
+    sizeof(kModulesTabsData) / sizeof(kModulesTabsData[0]),
+};
+
+const App::TabGroup *App::tabGroupFor(MenuScreen screen) const
+{
+  switch (screen)
+  {
+    case MenuScreen::ModulesPicker:
+    case MenuScreen::ModulesFavorites:
+      return &kModulesTabGroup;
+    default:
+      return nullptr;
+  }
+}
+
+int App::tabIndexInGroup(const TabGroup &group, MenuScreen screen) const
+{
+  for (size_t i = 0; i < group.tabCount; ++i)
+  {
+    if (group.tabs[i].screen == screen) return static_cast<int>(i);
+  }
+  return -1;
+}
+
+String App::buildTabStripLabel(const TabGroup &group, int activeIdx) const
+{
+  String out;
+  for (size_t i = 0; i < group.tabCount; ++i)
+  {
+    if (i > 0) out += "   ";
+    if (static_cast<int>(i) == activeIdx)
+    {
+      out += '[';
+      out += group.tabs[i].label;
+      out += ']';
+    }
+    else
+    {
+      out += group.tabs[i].label;
+    }
+  }
+  return out;
+}
+
+void App::cycleTabs(int direction)
+{
+  const TabGroup *group = tabGroupFor(menuScreen_);
+  if (!group || group->tabCount < 2 || direction == 0) return;
+  const int active = tabIndexInGroup(*group, menuScreen_);
+  if (active < 0) return;
+  const int count = static_cast<int>(group->tabCount);
+  int next = (active + direction) % count;
+  if (next < 0) next += count;
+  Serial.printf("[tabs] %s → %s\n", group->tabs[active].label,
+                group->tabs[next].label);
+  (this->*group->tabs[next].opener)();
+}
+
 void App::openModulesPicker()
 {
   menuScreen_ = MenuScreen::ModulesPicker;
   modulesMenuItems_.clear();
+  // Row 0 — tab strip (non-selectable). Row 1 — Back. Rows 2+ — modules.
+  modulesMenuItems_.push_back(buildTabStripLabel(kModulesTabGroup, 0));
   modulesMenuItems_.push_back("Back");
-  // Favorites entry sits at the top of the picker (right under Back) so the
-  // user's pinned tracks are one tap away. Hidden when empty so the row
-  // doesn't read as a broken drill-in.
-  const bool hasFavorites = !moduleFavorites_.empty();
-  if (hasFavorites) {
-    modulesMenuItems_.push_back("Favorites");
-  }
   const bool mounted = storage_.isMounted();
   Serial.printf("[modules-open] mounted=%d favs=%u\n",
                 mounted ? 1 : 0,
@@ -3961,12 +4052,15 @@ void App::openModulesPicker()
       modulesMenuItems_.push_back(isModuleFavorite(n) ? (String("* ") + n) : n);
     }
   }
-  const size_t baseRows = hasFavorites ? 2 : 1;
-  if (modulesMenuItems_.size() == baseRows) {
+  if (modulesMenuItems_.size() == kTabbedFirstItemRow) {
     // No real modules to play — surface a hint row that's not selectable.
     modulesMenuItems_.push_back("(no modules — drop .mod/.xm/.s3m into /mods/)");
   }
-  if (modulesSelectedIndex_ >= modulesMenuItems_.size()) modulesSelectedIndex_ = 0;
+  if (modulesSelectedIndex_ < kTabbedBackRow ||
+      modulesSelectedIndex_ >= modulesMenuItems_.size())
+  {
+    modulesSelectedIndex_ = kTabbedBackRow;
+  }
   Serial.printf("[modules-open] menu rows=%u idx=%u\n",
                 static_cast<unsigned>(modulesMenuItems_.size()),
                 static_cast<unsigned>(modulesSelectedIndex_));
@@ -3979,26 +4073,25 @@ void App::renderModulesPicker()
                 static_cast<unsigned>(modulesSelectedIndex_),
                 static_cast<unsigned>(modulesMenuItems_.size()));
   std::vector<bool> chevrons(modulesMenuItems_.size(), true);
-  chevrons[0] = false;  // Back never has a chevron.
-  for (size_t i = 1; i < modulesMenuItems_.size(); ++i) {
-    if (modulesMenuItems_[i].startsWith("(")) chevrons[i] = false;  // placeholder row
+  chevrons[kTabStripRow] = false;   // Tab strip — informational, not actionable.
+  chevrons[kTabbedBackRow] = false; // Back — no drill-in chevron.
+  for (size_t i = kTabbedFirstItemRow; i < modulesMenuItems_.size(); ++i) {
+    if (modulesMenuItems_[i].startsWith("(")) chevrons[i] = false;
   }
   display_.renderMenu(modulesMenuItems_, modulesSelectedIndex_, chevrons);
 }
 
 void App::selectModulesPickerItem(uint32_t nowMs)
 {
-  if (modulesSelectedIndex_ == 0) {
+  if (modulesSelectedIndex_ == kTabStripRow) {
+    return;  // tap on the strip is a no-op; swipe horizontally to switch tabs
+  }
+  if (modulesSelectedIndex_ == kTabbedBackRow) {
     // Back → return to Settings home, parked on the Modules row.
     settingsSelectedIndex_ = 13;  // kSettingsHomeModulesIndex
     menuScreen_ = MenuScreen::SettingsHome;
     rebuildSettingsMenuItems();
     renderSettings();
-    return;
-  }
-  const bool hasFavorites = !moduleFavorites_.empty();
-  if (hasFavorites && modulesSelectedIndex_ == 1) {
-    openModulesFavorites();
     return;
   }
   if (modulesSelectedIndex_ >= modulesMenuItems_.size()) return;
@@ -4063,10 +4156,17 @@ void App::openModulesFavorites()
 {
   menuScreen_ = MenuScreen::ModulesFavorites;
   modulesFavoritesMenuItems_.clear();
+  modulesFavoritesMenuItems_.push_back(buildTabStripLabel(kModulesTabGroup, 1));
   modulesFavoritesMenuItems_.push_back("Back");
   for (const auto &n : moduleFavorites_) modulesFavoritesMenuItems_.push_back(n);
-  if (modulesFavoritesSelectedIndex_ >= modulesFavoritesMenuItems_.size()) {
-    modulesFavoritesSelectedIndex_ = 0;
+  if (modulesFavoritesMenuItems_.size() == kTabbedFirstItemRow) {
+    // No favourites yet — show a hint so the tab isn't a blank dead-end.
+    modulesFavoritesMenuItems_.push_back("(no favorites — long-press a module to add)");
+  }
+  if (modulesFavoritesSelectedIndex_ < kTabbedBackRow ||
+      modulesFavoritesSelectedIndex_ >= modulesFavoritesMenuItems_.size())
+  {
+    modulesFavoritesSelectedIndex_ = kTabbedBackRow;
   }
   renderModulesFavorites();
 }
@@ -4074,19 +4174,30 @@ void App::openModulesFavorites()
 void App::renderModulesFavorites()
 {
   std::vector<bool> chevrons(modulesFavoritesMenuItems_.size(), true);
-  chevrons[0] = false;
+  chevrons[kTabStripRow] = false;
+  chevrons[kTabbedBackRow] = false;
+  for (size_t i = kTabbedFirstItemRow; i < modulesFavoritesMenuItems_.size(); ++i) {
+    if (modulesFavoritesMenuItems_[i].startsWith("(")) chevrons[i] = false;
+  }
   display_.renderMenu(modulesFavoritesMenuItems_, modulesFavoritesSelectedIndex_,
                       chevrons);
 }
 
 void App::selectModulesFavoritesItem(uint32_t nowMs)
 {
-  if (modulesFavoritesSelectedIndex_ == 0) {
-    openModulesPicker();
+  if (modulesFavoritesSelectedIndex_ == kTabStripRow) {
+    return;  // strip is non-selectable; swipe to switch tabs
+  }
+  if (modulesFavoritesSelectedIndex_ == kTabbedBackRow) {
+    settingsSelectedIndex_ = 13;
+    menuScreen_ = MenuScreen::SettingsHome;
+    rebuildSettingsMenuItems();
+    renderSettings();
     return;
   }
   if (modulesFavoritesSelectedIndex_ >= modulesFavoritesMenuItems_.size()) return;
   const String name = modulesFavoritesMenuItems_[modulesFavoritesSelectedIndex_];
+  if (name.startsWith("(")) return;  // placeholder row
   enterModulePlayback(storage_.modulePath(name), nowMs);
 }
 

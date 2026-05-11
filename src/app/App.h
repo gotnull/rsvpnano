@@ -80,6 +80,39 @@ class App {
     ModuleFavoriteConfirm,
   };
 
+  // ----------------------------------------------------------------------
+  // Reusable tab-group infrastructure for tabbed pickers. Any picker that
+  // wants horizontal-swipe tab switching declares a static TabGroup
+  // containing one TabDescriptor per tab (label + the MenuScreen it maps to
+  // + the opener method). The shared helpers below render a tab-strip row
+  // at the top of the list, advance/wrap on swipe, and tell move-selection
+  // to skip the (non-selectable) strip row. To add tabs to another section,
+  // declare a new TabGroup constant and ensure tabGroupFor() returns it for
+  // each member MenuScreen.
+  struct TabDescriptor {
+    const char *label;
+    MenuScreen screen;
+    void (App::*opener)();
+  };
+  struct TabGroup {
+    const TabDescriptor *tabs;
+    size_t tabCount;
+  };
+  static const TabDescriptor kModulesTabsData[];
+  static const TabGroup kModulesTabGroup;
+  // Resolve the tab group a menu screen belongs to, or nullptr if the
+  // screen is single-tab (no tab strip rendered).
+  const TabGroup *tabGroupFor(MenuScreen screen) const;
+  int tabIndexInGroup(const TabGroup &group, MenuScreen screen) const;
+  // Build the row-0 tab-strip label ("[Modules]   Favorites").
+  String buildTabStripLabel(const TabGroup &group, int activeIdx) const;
+  // Advance the active tab by `direction` (wraps) and re-open the new
+  // screen. Caller is responsible for resetting selectedIndex if needed.
+  void cycleTabs(int direction);
+  // True when the current menu screen has a tab group — used by
+  // moveMenuSelection() to skip row 0 (the tab strip).
+  bool currentScreenHasTabs() const { return tabGroupFor(menuScreen_) != nullptr; }
+
   enum class DemoKind : uint8_t {
     None = 0,
     Rasterbars,
