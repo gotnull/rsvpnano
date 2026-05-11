@@ -106,6 +106,9 @@ class DisplayManager {
   void renderShadeBobsFrame(const ShadeBobs &sb);
   void renderVectorballFrame(Vectorball &vb);
   void renderUnlimitedBobsFrame(const UnlimitedBobs &ub);
+  // Renders an RGB565 source frame using the same native-stripe path as the
+  // screensaver/demos. Source pixels are normal RGB565 in logical orientation.
+  void renderCameraRgb565Frame(const uint16_t *frame, int sourceWidth, int sourceHeight);
 
  private:
   bool initPanel();

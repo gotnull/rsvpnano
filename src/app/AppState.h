@@ -9,4 +9,5 @@ enum class AppState {
   Sleeping,
   Screensaver,
   DemoPlaying,
+  CameraStream,
 };

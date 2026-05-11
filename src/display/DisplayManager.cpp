@@ -3630,3 +3630,75 @@ void DisplayManager::renderUnlimitedBobsFrame(const UnlimitedBobs &ub) {
     }
   }
 }
+
+void DisplayManager::renderCameraRgb565Frame(const uint16_t *frame, int sourceWidth, int sourceHeight) {
+  if (!initialized_) return;
+  lastRenderKey_ = "";
+
+  if (frame == nullptr || sourceWidth <= 0 || sourceHeight <= 0) {
+    fillScreen(kTrueBlack);
+    return;
+  }
+
+  // Native-stripe camera blit. This mirrors the screensaver/demo architecture:
+  // compose directly into the panel's 172×640 orientation, then DMA each large
+  // stripe. For a 320×240 webcam frame, aspect-fit gives ~229×172 centered.
+  const int fitWByHeight = (sourceWidth * kDisplayHeight) / sourceHeight;
+  const int fitHByWidth = (sourceHeight * kDisplayWidth) / sourceWidth;
+  int visibleW = kDisplayWidth;
+  int visibleH = fitHByWidth;
+  if (fitWByHeight <= kDisplayWidth) {
+    visibleW = std::max(1, fitWByHeight);
+    visibleH = kDisplayHeight;
+  }
+  const int leftMargin = (kDisplayWidth - visibleW) / 2;
+  const int topMargin = (kDisplayHeight - visibleH) / 2;
+  const int rightEdge = leftMargin + visibleW;
+  const int bottomEdge = topMargin + visibleH;
+  const uint16_t black = panelColor(0x0000);
+
+  uint16_t srcXForLogicalX[kDisplayWidth];
+  for (int lx = 0; lx < kDisplayWidth; ++lx) {
+    int sx = 0;
+    if (lx >= leftMargin && lx < rightEdge) {
+      sx = ((lx - leftMargin) * sourceWidth) / visibleW;
+      if (sx >= sourceWidth) sx = sourceWidth - 1;
+    }
+    srcXForLogicalX[lx] = static_cast<uint16_t>(sx);
+  }
+
+  uint16_t srcYForLogicalY[kDisplayHeight];
+  for (int ly = 0; ly < kDisplayHeight; ++ly) {
+    int sy = 0;
+    if (ly >= topMargin && ly < bottomEdge) {
+      sy = ((ly - topMargin) * sourceHeight) / visibleH;
+      if (sy >= sourceHeight) sy = sourceHeight - 1;
+    }
+    srcYForLogicalY[ly] = static_cast<uint16_t>(sy);
+  }
+
+  for (int stripeStart = 0; stripeStart < kPanelNativeHeight;
+       stripeStart += kMaxChunkPhysicalRows) {
+    const int rows = std::min(kMaxChunkPhysicalRows, kPanelNativeHeight - stripeStart);
+
+    for (int nativeX = 0; nativeX < kPanelNativeWidth; ++nativeX) {
+      const int ly = (kDisplayHeight - 1) - nativeX;
+      const bool yInside = (ly >= topMargin && ly < bottomEdge);
+      const uint16_t *srcRow = yInside
+                                   ? frame + srcYForLogicalY[ly] * sourceWidth
+                                   : nullptr;
+      for (int localY = 0; localY < rows; ++localY) {
+        const int lx = stripeStart + localY;
+        uint16_t color = black;
+        if (srcRow != nullptr && lx >= leftMargin && lx < rightEdge) {
+          color = panelColor(srcRow[srcXForLogicalX[lx]]);
+        }
+        txBuffer_[localY * kPanelNativeWidth + nativeX] = color;
+      }
+    }
+
+    if (!drawBitmap(0, stripeStart, kPanelNativeWidth, stripeStart + rows, txBuffer_)) {
+      return;
+    }
+  }
+}

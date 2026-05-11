@@ -1,16 +1,22 @@
 #include "app/App.h"
 
+#include <HTTPClient.h>
+#include <JPEGDecoder.h>
 #include <SD_MMC.h>
+#include <WiFi.h>
 
+#include <esp_heap_caps.h>
 #include <esp_sleep.h>
 #include <esp_log.h>
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <iterator>
 #include <utility>
 #include <vector>
 
 #include "board/BoardConfig.h"
+#include "network/WifiConnector.h"
 
 #include <esp_ota_ops.h>
 
@@ -20,6 +26,18 @@
 
 #ifndef RSVP_USB_TRANSFER_AUTO_START
 #define RSVP_USB_TRANSFER_AUTO_START 0
+#endif
+
+#ifndef RSVP_CAMERA_SERVER_HOST
+#define RSVP_CAMERA_SERVER_HOST "192.168.5.77"
+#endif
+
+#ifndef RSVP_CAMERA_SERVER_PORT
+#define RSVP_CAMERA_SERVER_PORT 8080
+#endif
+
+#ifndef RSVP_CAMERA_SNAPSHOT_PATH
+#define RSVP_CAMERA_SNAPSHOT_PATH "/snapshot.jpg"
 #endif
 
 static const char *kAppTag = "app";
@@ -172,6 +190,7 @@ namespace
   constexpr size_t kSettingsHomeModulesIndex = 13;
   constexpr size_t kSettingsHomeDemoMusicIndex = 14;
   constexpr size_t kSettingsHomeModPackIndex = 15;
+  constexpr size_t kSettingsHomeCameraIndex = 16;
   // Demo picker layout: Back at 0, then one row per demo. Order must match
   // the dispatch in selectDemoPickerItem.
   constexpr size_t kDemoPickerBackIndex = 0;
@@ -197,6 +216,12 @@ namespace
   constexpr size_t kSettingsPacingComplexityIndex = 2;
   constexpr size_t kSettingsPacingPunctuationIndex = 3;
   constexpr size_t kSettingsPacingResetIndex = 4;
+  constexpr uint32_t kCameraFrameIntervalMs = 100;  // snapshot polling target: 10 fps
+  constexpr uint32_t kCameraHttpTimeoutMs = 2500;
+  constexpr uint32_t kCameraWifiTimeoutMs = 12000;
+  constexpr size_t kCameraMaxJpegBytes = 96 * 1024;
+  constexpr int kCameraMaxFrameWidth = 320;
+  constexpr int kCameraMaxFrameHeight = 240;
 
   constexpr size_t kBookPickerBackIndex = 0;
   constexpr size_t kChapterPickerBackIndex = 0;
@@ -648,6 +673,7 @@ void App::update(uint32_t nowMs)
   // word — so it gates only on touch / button input, not on Playing state.
   if (screensaverIndex_ > 0 && screensaverIndex_ < kScreensaverOptionCount &&
       state_ != AppState::Screensaver && state_ != AppState::DemoPlaying &&
+      state_ != AppState::CameraStream &&
       state_ != AppState::Booting && state_ != AppState::UsbTransfer &&
       state_ != AppState::Sleeping && !powerOffStarted_)
   {
@@ -682,6 +708,12 @@ void App::update(uint32_t nowMs)
     renderDemoFrame(nowMs);
     trackStage("demo", micros() - s, 35000);
   }
+  if (state_ == AppState::CameraStream)
+  {
+    const uint32_t s = micros();
+    updateCameraStream(nowMs);
+    trackStage("camera", micros() - s, 60000);
+  }
 
   // Auto-power-off: enterPowerOff after the configured idle window. Active
   // reading (state_ == Playing) and ongoing button holds count as activity, so
@@ -689,6 +721,7 @@ void App::update(uint32_t nowMs)
   if (autoPowerOffIndex_ > 0 && autoPowerOffIndex_ < kAutoPowerOffOptionCount &&
       state_ != AppState::Playing && state_ != AppState::Booting &&
       state_ != AppState::UsbTransfer && state_ != AppState::Sleeping &&
+      state_ != AppState::CameraStream &&
       !powerOffStarted_)
   {
     const uint32_t idleLimitMs =
@@ -879,6 +912,8 @@ const char *App::stateName(AppState state) const
     return "Screensaver";
   case AppState::DemoPlaying:
     return "DemoPlaying";
+  case AppState::CameraStream:
+    return "CameraStream";
   }
   return "Unknown";
 }
@@ -965,6 +1000,9 @@ void App::setState(AppState nextState, uint32_t nowMs)
     break;
   case AppState::DemoPlaying:
     // Same: first frame comes from the next update() tick.
+    break;
+  case AppState::CameraStream:
+    // Camera updates perform network I/O and render on the periodic update tick.
     break;
   }
 
@@ -1207,6 +1245,12 @@ void App::toggleMenuFromPowerButton(uint32_t nowMs)
   if (state_ == AppState::Booting || state_ == AppState::UsbTransfer ||
       state_ == AppState::Sleeping)
   {
+    return;
+  }
+
+  if (state_ == AppState::CameraStream)
+  {
+    exitCameraStream(nowMs);
     return;
   }
 
@@ -1514,6 +1558,13 @@ void App::handleTouch(uint32_t nowMs)
   {
     Serial.println("[demo] dismissed by touch");
     exitDemoPlayback(nowMs);
+    dismissTouchPending_ = true;
+    return;
+  }
+  if (state_ == AppState::CameraStream)
+  {
+    Serial.println("[camera] dismissed by touch");
+    exitCameraStream(nowMs);
     dismissTouchPending_ = true;
     return;
   }
@@ -2200,6 +2251,9 @@ void App::selectSettingsItem(uint32_t nowMs)
       downloadModStarterPack();
       renderSettings();
       return;
+    case kSettingsHomeCameraIndex:
+      enterCameraStream(nowMs);
+      return;
     case kSettingsHomeRemountSdIndex:
     {
       display_.renderStatus("SD", "Unmounting", "");
@@ -2468,6 +2522,7 @@ void App::rebuildSettingsMenuItems()
         (demoMusicMode_ == 0) ? "Off" : (demoMusicMode_ == 1) ? "Shuffle" : "Picked";
     settingsMenuItems_.push_back(String("Demo music: ") + musicLabel);
     settingsMenuItems_.push_back("Download MOD pack");
+    settingsMenuItems_.push_back("Camera test");
   }
   else if (menuScreen_ == MenuScreen::SettingsReadingSounds)
   {
@@ -3646,6 +3701,13 @@ bool App::startRandomModule(uint32_t nowMs)
   return modPlayer_.playFile(storage_.modulePath(names[pick]));
 }
 
+void App::downloadModStarterPack()
+{
+  Serial.println("[mods] starter pack download is not implemented in this build");
+  display_.renderStatus("Modules", "Download unavailable", "Copy MODs to /mods");
+  delay(1000);
+}
+
 void App::enterDemoPlayback(DemoKind kind, uint32_t nowMs)
 {
   currentDemo_ = kind;
@@ -3720,6 +3782,293 @@ void App::renderDemoFrame(uint32_t nowMs)
     case DemoKind::None:
       break;
   }
+}
+
+String App::cameraSnapshotUrl() const
+{
+  return String("http://") + RSVP_CAMERA_SERVER_HOST + ":" +
+         String(RSVP_CAMERA_SERVER_PORT) + RSVP_CAMERA_SNAPSHOT_PATH;
+}
+
+void App::enterCameraStream(uint32_t nowMs)
+{
+  cameraWifiConnected_ = false;
+  cameraLastFrameMs_ = 0;
+  cameraLastStatsMs_ = nowMs;
+  cameraFramesOk_ = 0;
+  cameraFramesFailed_ = 0;
+
+  display_.renderStatus("Camera", "Connecting WiFi", RSVP_CAMERA_SERVER_HOST);
+  if (!WifiConnector::connect(ota_.config().networks, kCameraWifiTimeoutMs, "camera"))
+  {
+    display_.renderStatus("Camera", "WiFi failed", "Check /wifi.json");
+    delay(1000);
+    settingsSelectedIndex_ = kSettingsHomeCameraIndex;
+    menuScreen_ = MenuScreen::SettingsHome;
+    rebuildSettingsMenuItems();
+    setState(AppState::Menu, nowMs);
+    return;
+  }
+
+  cameraWifiConnected_ = true;
+  Serial.printf("[camera] snapshot url=%s\n", cameraSnapshotUrl().c_str());
+  display_.renderStatus("Camera", "Opening stream", RSVP_CAMERA_SERVER_HOST);
+  setState(AppState::CameraStream, nowMs);
+}
+
+void App::exitCameraStream(uint32_t nowMs)
+{
+  WiFi.disconnect(true);
+  cameraWifiConnected_ = false;
+  settingsSelectedIndex_ = kSettingsHomeCameraIndex;
+  menuScreen_ = MenuScreen::SettingsHome;
+  rebuildSettingsMenuItems();
+  setState(AppState::Menu, nowMs);
+}
+
+void App::updateCameraStream(uint32_t nowMs)
+{
+  if (!cameraWifiConnected_ || WiFi.status() != WL_CONNECTED)
+  {
+    Serial.println("[camera] wifi dropped, reconnecting");
+    display_.renderStatus("Camera", "Reconnecting WiFi", "");
+    cameraWifiConnected_ =
+        WifiConnector::connect(ota_.config().networks, kCameraWifiTimeoutMs, "camera");
+    cameraLastFrameMs_ = nowMs;
+    if (!cameraWifiConnected_)
+    {
+      ++cameraFramesFailed_;
+      return;
+    }
+  }
+
+  if (nowMs - cameraLastFrameMs_ < kCameraFrameIntervalMs)
+  {
+    return;
+  }
+  cameraLastFrameMs_ = nowMs;
+
+  if (fetchCameraSnapshot(nowMs))
+  {
+    ++cameraFramesOk_;
+    if (cameraFrameBuffer_ != nullptr && cameraFrameWidth_ > 0 && cameraFrameHeight_ > 0)
+    {
+      display_.renderCameraRgb565Frame(cameraFrameBuffer_, cameraFrameWidth_, cameraFrameHeight_);
+    }
+  }
+  else
+  {
+    ++cameraFramesFailed_;
+  }
+
+  if (nowMs - cameraLastStatsMs_ >= 5000)
+  {
+    const float fps =
+        (cameraFramesOk_ * 1000.0f) / static_cast<float>(nowMs - cameraLastStatsMs_);
+    Serial.printf("[camera] ok=%lu fail=%lu fps=%.2f free8=%lu psram=%lu rssi=%d\n",
+                  static_cast<unsigned long>(cameraFramesOk_),
+                  static_cast<unsigned long>(cameraFramesFailed_), fps,
+                  static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_8BIT)),
+                  static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
+                  WiFi.RSSI());
+    cameraFramesOk_ = 0;
+    cameraFramesFailed_ = 0;
+    cameraLastStatsMs_ = nowMs;
+  }
+}
+
+bool App::ensureCameraBuffers(size_t jpegBytes, int frameWidth, int frameHeight)
+{
+  if (jpegBytes == 0 || jpegBytes > kCameraMaxJpegBytes)
+  {
+    Serial.printf("[camera] refusing jpeg bytes=%u max=%u\n",
+                  static_cast<unsigned>(jpegBytes),
+                  static_cast<unsigned>(kCameraMaxJpegBytes));
+    return false;
+  }
+  if (frameWidth <= 0 || frameHeight <= 0 ||
+      frameWidth > kCameraMaxFrameWidth || frameHeight > kCameraMaxFrameHeight)
+  {
+    Serial.printf("[camera] refusing frame %dx%d max=%dx%d\n",
+                  frameWidth, frameHeight, kCameraMaxFrameWidth, kCameraMaxFrameHeight);
+    return false;
+  }
+
+  if (cameraJpegBuffer_ == nullptr || cameraJpegCapacity_ < jpegBytes)
+  {
+    if (cameraJpegBuffer_ != nullptr)
+    {
+      heap_caps_free(cameraJpegBuffer_);
+      cameraJpegBuffer_ = nullptr;
+      cameraJpegCapacity_ = 0;
+    }
+    cameraJpegBuffer_ = static_cast<uint8_t *>(
+        heap_caps_malloc(jpegBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (cameraJpegBuffer_ == nullptr)
+    {
+      cameraJpegBuffer_ = static_cast<uint8_t *>(heap_caps_malloc(jpegBytes, MALLOC_CAP_8BIT));
+    }
+    if (cameraJpegBuffer_ == nullptr)
+    {
+      Serial.printf("[camera] jpeg alloc failed bytes=%u\n", static_cast<unsigned>(jpegBytes));
+      return false;
+    }
+    cameraJpegCapacity_ = jpegBytes;
+  }
+
+  const size_t framePixels = static_cast<size_t>(frameWidth) * frameHeight;
+  if (cameraFrameBuffer_ == nullptr || cameraFrameCapacityPixels_ < framePixels)
+  {
+    if (cameraFrameBuffer_ != nullptr)
+    {
+      heap_caps_free(cameraFrameBuffer_);
+      cameraFrameBuffer_ = nullptr;
+      cameraFrameCapacityPixels_ = 0;
+    }
+    cameraFrameBuffer_ = static_cast<uint16_t *>(
+        heap_caps_malloc(framePixels * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (cameraFrameBuffer_ == nullptr)
+    {
+      cameraFrameBuffer_ = static_cast<uint16_t *>(
+          heap_caps_malloc(framePixels * sizeof(uint16_t), MALLOC_CAP_8BIT));
+    }
+    if (cameraFrameBuffer_ == nullptr)
+    {
+      Serial.printf("[camera] frame alloc failed pixels=%u\n", static_cast<unsigned>(framePixels));
+      return false;
+    }
+    cameraFrameCapacityPixels_ = framePixels;
+  }
+
+  return true;
+}
+
+bool App::fetchCameraSnapshot(uint32_t nowMs)
+{
+  (void)nowMs;
+  HTTPClient http;
+  http.setTimeout(kCameraHttpTimeoutMs);
+  http.setReuse(false);
+
+  const String url = cameraSnapshotUrl();
+  if (!http.begin(url))
+  {
+    Serial.println("[camera] http begin failed");
+    return false;
+  }
+
+  const uint32_t startMs = millis();
+  const int status = http.GET();
+  if (status != HTTP_CODE_OK)
+  {
+    Serial.printf("[camera] http status=%d error=%s\n", status, http.errorToString(status).c_str());
+    http.end();
+    return false;
+  }
+
+  const int contentLength = http.getSize();
+  if (contentLength <= 0 || static_cast<size_t>(contentLength) > kCameraMaxJpegBytes)
+  {
+    Serial.printf("[camera] bad content length=%d\n", contentLength);
+    http.end();
+    return false;
+  }
+
+  if (!ensureCameraBuffers(static_cast<size_t>(contentLength),
+                           kCameraMaxFrameWidth, kCameraMaxFrameHeight))
+  {
+    http.end();
+    return false;
+  }
+
+  WiFiClient *stream = http.getStreamPtr();
+  size_t offset = 0;
+  uint32_t lastByteMs = millis();
+  while (offset < static_cast<size_t>(contentLength))
+  {
+    const int available = stream->available();
+    if (available > 0)
+    {
+      const size_t want =
+          std::min(static_cast<size_t>(available), static_cast<size_t>(contentLength) - offset);
+      const int got = stream->readBytes(cameraJpegBuffer_ + offset, want);
+      if (got > 0)
+      {
+        offset += static_cast<size_t>(got);
+        lastByteMs = millis();
+      }
+    }
+    else
+    {
+      if (millis() - lastByteMs > kCameraHttpTimeoutMs)
+      {
+        Serial.printf("[camera] read timeout bytes=%u/%d\n",
+                      static_cast<unsigned>(offset), contentLength);
+        http.end();
+        return false;
+      }
+      delay(1);
+      yield();
+    }
+  }
+  http.end();
+
+  const bool ok = decodeCameraSnapshot(cameraJpegBuffer_, offset);
+  Serial.printf("[camera] bytes=%u decode=%s total=%lu ms\n",
+                static_cast<unsigned>(offset), ok ? "ok" : "fail",
+                static_cast<unsigned long>(millis() - startMs));
+  return ok;
+}
+
+bool App::decodeCameraSnapshot(const uint8_t *data, size_t length)
+{
+  if (data == nullptr || length == 0)
+  {
+    return false;
+  }
+
+  if (!JpegDec.decodeArray(const_cast<uint8_t *>(data), static_cast<uint32_t>(length)))
+  {
+    Serial.println("[camera] jpeg decode failed");
+    return false;
+  }
+
+  if (JpegDec.width <= 0 || JpegDec.height <= 0 ||
+      JpegDec.width > kCameraMaxFrameWidth || JpegDec.height > kCameraMaxFrameHeight)
+  {
+    Serial.printf("[camera] unsupported jpeg size=%dx%d\n", JpegDec.width, JpegDec.height);
+    return false;
+  }
+
+  if (!ensureCameraBuffers(length, JpegDec.width, JpegDec.height))
+  {
+    return false;
+  }
+
+  cameraFrameWidth_ = JpegDec.width;
+  cameraFrameHeight_ = JpegDec.height;
+  std::memset(cameraFrameBuffer_, 0,
+              static_cast<size_t>(cameraFrameWidth_) * cameraFrameHeight_ * sizeof(uint16_t));
+
+  while (JpegDec.read())
+  {
+    const int32_t x = JpegDec.MCUx * JpegDec.MCUWidth;
+    const int32_t y = JpegDec.MCUy * JpegDec.MCUHeight;
+    int32_t w = JpegDec.MCUWidth;
+    int32_t h = JpegDec.MCUHeight;
+    if (x + w > cameraFrameWidth_) w = cameraFrameWidth_ - x;
+    if (y + h > cameraFrameHeight_) h = cameraFrameHeight_ - y;
+    if (w <= 0 || h <= 0) continue;
+
+    for (int32_t row = 0; row < h; ++row)
+    {
+      const uint16_t *src = JpegDec.pImage + row * JpegDec.MCUWidth;
+      uint16_t *dst = cameraFrameBuffer_ + (y + row) * cameraFrameWidth_ + x;
+      std::memcpy(dst, src, static_cast<size_t>(w) * sizeof(uint16_t));
+    }
+  }
+
+  return true;
 }
 
 void App::cycleNotificationVolume(uint32_t nowMs)
@@ -4433,6 +4782,10 @@ void App::renderSettings()
     if (settingsMenuItems_.size() > kSettingsHomeDemosIndex)
     {
       chevrons[kSettingsHomeDemosIndex] = true;
+    }
+    if (settingsMenuItems_.size() > kSettingsHomeCameraIndex)
+    {
+      chevrons[kSettingsHomeCameraIndex] = true;
     }
   }
   else if (menuScreen_ == MenuScreen::SettingsDisplay)
