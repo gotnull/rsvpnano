@@ -34,9 +34,14 @@ class ModPlayer {
   // and replaced.
   bool playFile(const String &path);
 
-  // Stops playback and releases the loaded module. The audio task stays
-  // alive and idles until the next playFile() call.
+  // Signals the audio task to stop and release the loaded module.
+  // Returns immediately — cleanup (xmp_end_player / xmp_release_module /
+  // xmp_free_context / heap_caps_free of the file buffer / i2s clock
+  // restore) happens on the audio task. Callers that need the cleanup
+  // synchronized (e.g. playFile() before installing a new context) call
+  // waitForStop() afterwards.
   void stop();
+  void waitForStop(uint32_t timeoutMs = 250);
 
   bool isPlaying() const { return running_; }
 

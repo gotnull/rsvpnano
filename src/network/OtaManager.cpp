@@ -172,22 +172,42 @@ bool OtaManager::runUpdate() {
   if (displayName.isEmpty()) displayName = "firmware.bin";
   notifyStatus("OTA", "Fetching", displayName.c_str(), 15);
 
+  // The GitHub `/releases/latest/download/firmware.bin` URL redirects
+  // through 2-3 hops (github.com → objects.githubusercontent.com via
+  // fastly). Arduino's HTTPClient doesn't reliably preserve the
+  // WiFiClientSecure across host changes — the second hop frequently
+  // returns -1 (HTTPC_ERROR_CONNECTION_REFUSED). Retry up to 3 times with
+  // a fresh client per attempt; each attempt logs the exact code so we
+  // can tell whether the failure is TLS handshake, DNS, or TCP connect.
+  constexpr int kOtaMaxAttempts = 3;
+  const bool useHttps = config_.firmwareUrl.startsWith("https://");
+  int code = -1;
   HTTPClient http;
   WiFiClientSecure secureClient;
-  secureClient.setInsecure();
-  http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
-  http.setTimeout(15000);
-  const bool useHttps = config_.firmwareUrl.startsWith("https://");
-  const bool beginOk = useHttps ? http.begin(secureClient, config_.firmwareUrl)
-                                : http.begin(config_.firmwareUrl);
-  if (!beginOk) {
-    lastError_ = "HTTPClient.begin failed";
-    notifyStatus("OTA", "URL invalid", config_.firmwareUrl.c_str(), 100);
-    WiFi.disconnect(true);
-    return false;
+  for (int attempt = 1; attempt <= kOtaMaxAttempts; ++attempt) {
+    http.end();
+    secureClient.stop();
+    secureClient.setInsecure();
+    http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+    http.setTimeout(20000);
+    http.setReuse(false);
+    const bool beginOk = useHttps ? http.begin(secureClient, config_.firmwareUrl)
+                                  : http.begin(config_.firmwareUrl);
+    if (!beginOk) {
+      lastError_ = "HTTPClient.begin failed";
+      notifyStatus("OTA", "URL invalid", config_.firmwareUrl.c_str(), 100);
+      WiFi.disconnect(true);
+      return false;
+    }
+    code = http.GET();
+    Serial.printf("[ota] attempt %d/%d → HTTP %d\n", attempt, kOtaMaxAttempts, code);
+    if (code == HTTP_CODE_OK) break;
+    if (attempt < kOtaMaxAttempts) {
+      String msg = String("Retry ") + attempt + "/" + kOtaMaxAttempts;
+      notifyStatus("OTA", msg.c_str(), (String("HTTP ") + code).c_str(), 20);
+      delay(800);
+    }
   }
-
-  const int code = http.GET();
   if (code != HTTP_CODE_OK) {
     lastError_ = String("HTTP ") + code;
     notifyStatus("OTA", "Server error", lastError_.c_str(), 100);

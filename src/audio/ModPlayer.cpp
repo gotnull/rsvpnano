@@ -64,8 +64,11 @@ bool ModPlayer::begin() {
 bool ModPlayer::playFile(const String &path) {
   if (!initialised_ && !begin()) return false;
 
-  // Stop anything currently playing before swapping modules.
+  // Signal stop and synchronously wait for the audio task to finish
+  // freeing the previous module — the new context can't share state with
+  // a half-released one.
   stop();
+  waitForStop();
 
   File f = SD_MMC.open(path);
   if (!f || f.isDirectory()) {
@@ -158,33 +161,25 @@ bool ModPlayer::playFile(const String &path) {
 
 void ModPlayer::stop() {
   if (!initialised_) return;
-  // Signal the task to stop; wait briefly for it to drain.
+  // Fire-and-forget signal — the audio task picks up stopRequested_ on its
+  // next loop iteration and does all the heavy cleanup (libxmp release,
+  // heap_caps_free of the file buffer, i2s_set_clk restore). The previous
+  // version blocked here for up to ~250 ms which the user saw as a multi-
+  // second touch-unresponsive window after dismissing the screensaver
+  // (setState calls stop() inside the touch handler).
+  if (!running_ && !xmpCtx_) return;
   stopRequested_ = true;
-  // Give the task a chance to notice on its next chunk boundary (~23 ms).
-  for (int i = 0; i < 10 && running_; ++i) {
-    vTaskDelay(pdMS_TO_TICKS(20));
-  }
+  xTaskNotifyGive(taskHandle_);
+}
 
-  xSemaphoreTake(lock_, portMAX_DELAY);
-  if (xmpCtx_) {
-    xmp_end_player(static_cast<xmp_context>(xmpCtx_));
-    xmp_release_module(static_cast<xmp_context>(xmpCtx_));
-    xmp_free_context(static_cast<xmp_context>(xmpCtx_));
-    xmpCtx_ = nullptr;
+void ModPlayer::waitForStop(uint32_t timeoutMs) {
+  // Used by playFile() before installing a new context so the renderer
+  // never sees a half-released libxmp state. Typical wait is <50 ms; the
+  // timeout is a safety net.
+  const uint32_t deadline = millis() + timeoutMs;
+  while ((running_ || xmpCtx_ != nullptr) && millis() < deadline) {
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
-  if (fileBuf_) {
-    heap_caps_free(fileBuf_);
-    fileBuf_ = nullptr;
-    fileBufBytes_ = 0;
-  }
-  currentTrack_ = "";
-  running_ = false;
-  stopRequested_ = false;
-  xSemaphoreGive(lock_);
-
-  // Restore AudioManager's default I2S clock (16 kHz mono) so subsequent
-  // RTTTL playback isn't pitched up.
-  i2s_set_clk(kI2sPort, 16000, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_MONO);
 }
 
 void ModPlayer::setVolumePercent(uint8_t pct) {
@@ -254,17 +249,41 @@ void ModPlayer::audioTaskLoop() {
   }
 
   for (;;) {
+    // Stop request — do *all* the cleanup here, on this task, so the main
+    // loop is never blocked by libxmp release / heap_caps_free / i2s_set_clk.
+    if (stopRequested_) {
+      const uint32_t cleanupStart = millis();
+      xSemaphoreTake(lock_, portMAX_DELAY);
+      if (xmpCtx_) {
+        xmp_end_player(static_cast<xmp_context>(xmpCtx_));
+        xmp_release_module(static_cast<xmp_context>(xmpCtx_));
+        xmp_free_context(static_cast<xmp_context>(xmpCtx_));
+        xmpCtx_ = nullptr;
+      }
+      if (fileBuf_) {
+        heap_caps_free(fileBuf_);
+        fileBuf_ = nullptr;
+        fileBufBytes_ = 0;
+      }
+      currentTrack_ = "";
+      running_ = false;
+      stopRequested_ = false;
+      xSemaphoreGive(lock_);
+      // Restore AudioManager's default I2S clock so RTTTL/WAV playback
+      // started after a MOD stop plays at the right rate.
+      i2s_set_clk(kI2sPort, 16000, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_MONO);
+      Serial.printf("[mod] task: cleanup took %lu ms\n",
+                    static_cast<unsigned long>(millis() - cleanupStart));
+      continue;
+    }
     if (!running_) {
       // Idle until playFile() notifies us.
       ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
       continue;
     }
-    if (stopRequested_) {
-      running_ = false;
-      continue;
-    }
 
-    // Render the next chunk under the lock so stop() doesn't pull the rug.
+    // Render the next chunk under the lock so playFile() doesn't pull the
+    // rug while xmp_play_buffer is reading from the old context.
     xSemaphoreTake(lock_, portMAX_DELAY);
     xmp_context ctx = static_cast<xmp_context>(xmpCtx_);
     int rc = -1;
@@ -275,10 +294,10 @@ void ModPlayer::audioTaskLoop() {
     xSemaphoreGive(lock_);
 
     if (rc < 0) {
-      // End of song or error — stop gracefully so the App can pick the
-      // next track on its own schedule.
-      running_ = false;
+      // End of song or error — request a clean shutdown so the next loop
+      // iteration runs the cleanup branch (free context + buffers).
       Serial.printf("[mod] track ended (rc=%d)\n", rc);
+      stopRequested_ = true;
       continue;
     }
     if (scale != 100) {

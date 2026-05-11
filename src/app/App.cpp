@@ -595,23 +595,20 @@ void App::begin()
   reader_.setWpm(savedWpm);
   display_.setCurrentWpm(savedWpm);
 
-  const uint8_t savedAppState = preferences_.getUChar(kPrefAppState,
-                                                      static_cast<uint8_t>(AppState::Paused));
-  const bool deferContentLoad =
-      (savedAppState == static_cast<uint8_t>(AppState::Menu));
-
+  // Boot now ALWAYS does a meta-only restore — we keep just enough state
+  // (book title for the Resume row) to surface "Resume from" in the main
+  // menu, but never auto-load the book content. The user explicitly
+  // requested this: getting dropped into a book on every restart, even
+  // when they were in Settings/Menu before the restart, is annoying and
+  // makes debugging unrelated subsystems slow (the indexing pass blocks
+  // boot for seconds on large libraries).
   bool haveBook = false;
   if (storageReady)
   {
-    if (deferContentLoad)
-    {
-      haveBook = prepareSavedBookMeta();
-    }
-    else
-    {
-      haveBook = restoreSavedBook(bootStartedMs_);
-    }
+    haveBook = prepareSavedBookMeta();
   }
+  const bool deferContentLoad = true;
+  (void)deferContentLoad;
 
   if (haveBook && !deferContentLoad)
   {
@@ -967,6 +964,10 @@ void App::setState(AppState nextState, uint32_t nowMs)
   }
 
   const AppState previousState = state_;
+  Serial.printf("[state] %s → %s (menuScreen=%d ms=%lu)\n",
+                stateName(state_), stateName(nextState),
+                static_cast<int>(menuScreen_),
+                static_cast<unsigned long>(nowMs));
 
   if (nextState != AppState::Paused)
   {
@@ -1061,18 +1062,13 @@ void App::updateState(uint32_t nowMs)
       setState(AppState::Playing, nowMs);
       return;
     }
-    const uint8_t savedState = preferences_.getUChar(kPrefAppState,
-                                                     static_cast<uint8_t>(AppState::Paused));
-    if (savedState == static_cast<uint8_t>(AppState::Menu))
-    {
-      menuScreen_ = MenuScreen::Main;
-      menuSelectedIndex_ = MenuResume;
-      setState(AppState::Menu, nowMs);
-    }
-    else
-    {
-      setState(AppState::Paused, nowMs);
-    }
+    // Always land on the main menu on boot. The saved app state used to
+    // be allowed to push us straight into Paused (reader on screen) — but
+    // that surprised the user repeatedly when they hadn't been reading
+    // before the restart. They can tap "Resume from" to load the book.
+    menuScreen_ = MenuScreen::Main;
+    menuSelectedIndex_ = MenuResume;
+    setState(AppState::Menu, nowMs);
     return;
   }
 
@@ -1691,17 +1687,27 @@ bool App::pollCameraExitTouch(uint32_t nowMs)
     if (ev.phase == TouchPhase::End)
     {
       cameraSuppressOpeningTouch_ = false;
+      Serial.println("[camera-touch] opening-touch suppression cleared");
     }
-    Serial.printf("[camera] ignored opening touch phase=%s\n", touchPhaseName(ev.phase));
+    else
+    {
+      Serial.printf("[camera-touch] suppressing opening-touch phase=%s\n",
+                    touchPhaseName(ev.phase));
+    }
     return false;
   }
 
   if (nowMs < cameraIgnoreTouchUntilMs_)
   {
+    Serial.printf("[camera-touch] ignored phase=%s (ignoreUntilMs=%lu now=%lu)\n",
+                  touchPhaseName(ev.phase),
+                  static_cast<unsigned long>(cameraIgnoreTouchUntilMs_),
+                  static_cast<unsigned long>(nowMs));
     return false;
   }
 
-  Serial.printf("[camera] preemptive touch exit phase=%s\n", touchPhaseName(ev.phase));
+  Serial.printf("[camera-touch] preemptive exit phase=%s x=%u y=%u\n",
+                touchPhaseName(ev.phase), ev.x, ev.y);
   cameraExitRequested_ = true;
   exitCameraStream(nowMs);
   dismissTouchPending_ = (ev.phase != TouchPhase::End);
@@ -2088,6 +2094,11 @@ void App::moveMenuSelection(int direction)
     itemCount = modulesMenuItems_.size();
   }
 
+  Serial.printf("[move] screen=%d direction=%d idxBefore=%u itemCount=%u\n",
+                static_cast<int>(menuScreen_), direction,
+                static_cast<unsigned>(*selectedIndex),
+                static_cast<unsigned>(itemCount));
+
   if (itemCount == 0)
   {
     return;
@@ -2107,7 +2118,21 @@ void App::moveMenuSelection(int direction)
     *selectedIndex = static_cast<size_t>(next);
   }
 
+  Serial.printf("[move] idxAfter=%u screen=%d\n",
+                static_cast<unsigned>(*selectedIndex),
+                static_cast<int>(menuScreen_));
   renderMenu();
+  if (menuScreen_ == MenuScreen::ModulesPicker)
+  {
+    const String &it =
+        modulesSelectedIndex_ < modulesMenuItems_.size()
+            ? modulesMenuItems_[modulesSelectedIndex_]
+            : String("?");
+    Serial.printf("[modules] selected[%u]=%s (items=%u)\n",
+                  static_cast<unsigned>(modulesSelectedIndex_),
+                  it.c_str(),
+                  static_cast<unsigned>(modulesMenuItems_.size()));
+  }
   if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
       menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsReadingSounds)
   {
@@ -3720,8 +3745,18 @@ void App::openModulesPicker()
   menuScreen_ = MenuScreen::ModulesPicker;
   modulesMenuItems_.clear();
   modulesMenuItems_.push_back("Back");
-  if (storage_.isMounted()) {
+  const bool mounted = storage_.isMounted();
+  Serial.printf("[modules-open] mounted=%d\n", mounted ? 1 : 0);
+  if (mounted) {
+    const uint32_t t0 = millis();
     auto names = storage_.listModuleNames();
+    Serial.printf("[modules-open] scanned /mods/ in %lu ms, found=%u files\n",
+                  static_cast<unsigned long>(millis() - t0),
+                  static_cast<unsigned>(names.size()));
+    for (size_t i = 0; i < names.size() && i < 4; ++i) {
+      Serial.printf("[modules-open] sample[%u]=%s\n",
+                    static_cast<unsigned>(i), names[i].c_str());
+    }
     for (auto &n : names) modulesMenuItems_.push_back(n);
   }
   if (modulesMenuItems_.size() == 1) {
@@ -3729,11 +3764,17 @@ void App::openModulesPicker()
     modulesMenuItems_.push_back("(no modules — drop .mod/.xm/.s3m into /mods/)");
   }
   if (modulesSelectedIndex_ >= modulesMenuItems_.size()) modulesSelectedIndex_ = 0;
+  Serial.printf("[modules-open] menu rows=%u idx=%u\n",
+                static_cast<unsigned>(modulesMenuItems_.size()),
+                static_cast<unsigned>(modulesSelectedIndex_));
   renderModulesPicker();
 }
 
 void App::renderModulesPicker()
 {
+  Serial.printf("[modules-render] idx=%u rows=%u\n",
+                static_cast<unsigned>(modulesSelectedIndex_),
+                static_cast<unsigned>(modulesMenuItems_.size()));
   std::vector<bool> chevrons(modulesMenuItems_.size(), true);
   chevrons[0] = false;  // Back
   // The "(no modules)" placeholder row isn't selectable in any useful way;
@@ -3974,6 +4015,11 @@ void App::enterCameraStream(uint32_t nowMs)
 
 void App::exitCameraStream(uint32_t nowMs)
 {
+  Serial.printf("[camera-exit] state=%s wifiConn=%d streamConn=%d framesOk=%lu framesFail=%lu\n",
+                stateName(state_), cameraWifiConnected_ ? 1 : 0,
+                cameraStreamConnected_ ? 1 : 0,
+                static_cast<unsigned long>(cameraFramesOk_),
+                static_cast<unsigned long>(cameraFramesFailed_));
   closeCameraMjpegStream();
   WiFi.disconnect(true);
   cameraWifiConnected_ = false;
@@ -3987,8 +4033,19 @@ void App::exitCameraStream(uint32_t nowMs)
 
 void App::updateCameraStream(uint32_t nowMs)
 {
+  static uint32_t sLastTickLogMs = 0;
+  if (nowMs - sLastTickLogMs > 1500) {
+    sLastTickLogMs = nowMs;
+    Serial.printf("[camera-tick] state=%s wifi=%d stream=%d framesOk=%lu fail=%lu\n",
+                  stateName(state_),
+                  cameraWifiConnected_ ? 1 : 0,
+                  cameraStreamConnected_ ? 1 : 0,
+                  static_cast<unsigned long>(cameraFramesOk_),
+                  static_cast<unsigned long>(cameraFramesFailed_));
+  }
   if (pollCameraExitTouch(nowMs) || state_ != AppState::CameraStream)
   {
+    Serial.println("[camera-tick] exit during pollCameraExitTouch");
     return;
   }
 
@@ -4268,6 +4325,8 @@ bool App::readCameraStreamBytes(uint8_t *dst, size_t length, uint32_t timeoutMs)
 
 bool App::parseCameraMjpegHeaders(int &contentLength, uint32_t deadlineMs)
 {
+  const uint32_t parseStartMs = millis();
+  size_t totalBytes = 0;
   // Fixed stack buffer — headers are tiny (≤ ~120 bytes for this server's
   // multipart frames). 320 bytes is generous and avoids any heap activity.
   static constexpr size_t kHeaderBufBytes = 320;
@@ -4279,6 +4338,7 @@ bool App::parseCameraMjpegHeaders(int &contentLength, uint32_t deadlineMs)
   {
     if (pollCameraExitTouch(millis()) || state_ != AppState::CameraStream)
     {
+      Serial.printf("[mjpg-hdr] aborted state=%s\n", stateName(state_));
       return false;
     }
     const int available = cameraStreamClient_.available();
@@ -4286,6 +4346,8 @@ bool App::parseCameraMjpegHeaders(int &contentLength, uint32_t deadlineMs)
     {
       if (!cameraStreamClient_.connected())
       {
+        Serial.printf("[mjpg-hdr] disconnect after %u bytes\n",
+                      static_cast<unsigned>(totalBytes));
         return false;
       }
       delay(1);
@@ -4294,11 +4356,12 @@ bool App::parseCameraMjpegHeaders(int &contentLength, uint32_t deadlineMs)
     }
     const int b = cameraStreamClient_.read();
     if (b < 0) continue;
+    ++totalBytes;
     if (hdrLen >= kHeaderBufBytes - 1)
     {
       // Headers overran our buffer — malformed stream. Bail so the
       // caller can reconnect.
-      Serial.println("[camera] header buffer overflow");
+      Serial.println("[mjpg-hdr] header buffer overflow");
       return false;
     }
     hdr[hdrLen++] = static_cast<char>(b);
@@ -4337,10 +4400,15 @@ bool App::parseCameraMjpegHeaders(int &contentLength, uint32_t deadlineMs)
         contentLength = v;
         break;
       }
+      Serial.printf("[mjpg-hdr] parsed cl=%d in %lu ms (%u bytes)\n",
+                    contentLength,
+                    static_cast<unsigned long>(millis() - parseStartMs),
+                    static_cast<unsigned>(totalBytes));
       return contentLength > 0;
     }
   }
-  Serial.println("[camera] header parse deadline");
+  Serial.printf("[mjpg-hdr] parse deadline (%u bytes buffered)\n",
+                static_cast<unsigned>(totalBytes));
   return false;
 }
 
@@ -5193,6 +5261,10 @@ void App::renderMenu()
   {
     renderDemoPicker();
   }
+  else if (menuScreen_ == MenuScreen::ModulesPicker)
+  {
+    renderModulesPicker();
+  }
   else
   {
     renderMainMenu();
@@ -5201,6 +5273,14 @@ void App::renderMenu()
 
 void App::renderMainMenu()
 {
+  if (menuScreen_ != MenuScreen::Main) {
+    // If we ever end up here with a non-Main screen, that's the bug the
+    // user is hitting — log loudly and bail to the right renderer.
+    Serial.printf("[render-bug] renderMainMenu called but menuScreen_=%d\n",
+                  static_cast<int>(menuScreen_));
+    renderMenu();
+    return;
+  }
   String accentTitle;
   std::vector<String> accentChips;
   const bool haveBookContext =
