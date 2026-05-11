@@ -2520,43 +2520,111 @@ void DisplayManager::renderMenu(const std::vector<String> &items, size_t selecte
   flushScaledFrame(scale, virtualWidth, virtualHeight);
 }
 
+void DisplayManager::drawTinyGlyphNativeStripe(int logicalX, int logicalY, char c,
+                                               int scale, uint16_t panelEncoded,
+                                               int stripeStart, int stripeRows,
+                                               int clipLeftLogicalX,
+                                               int clipRightLogicalX) {
+  // Coordinate mapping mirrors flushScaledFrame's slow path:
+  //   uiRotated_  → nativeY = logicalX,                 nativeX = (kDisplayHeight - 1) - logicalY
+  //   !uiRotated_ → nativeY = (kDisplayWidth - 1) - lx, nativeX = logicalY
+  const uint8_t *gRows = tinyRowsFor(c);
+  const int stripeEnd = stripeStart + stripeRows;
+  const bool rotated = uiRotated_;
+  for (int gy = 0; gy < kTinyGlyphHeight; ++gy) {
+    const uint8_t bits = gRows[gy];
+    if (bits == 0) continue;
+    for (int gx = 0; gx < kTinyGlyphWidth; ++gx) {
+      if ((bits & (1 << (kTinyGlyphWidth - 1 - gx))) == 0) continue;
+      for (int yy = 0; yy < scale; ++yy) {
+        const int ly = logicalY + gy * scale + yy;
+        if (ly < 0 || ly >= kDisplayHeight) continue;
+        const int nx = rotated ? ((kDisplayHeight - 1) - ly) : ly;
+        for (int xx = 0; xx < scale; ++xx) {
+          const int lx = logicalX + gx * scale + xx;
+          if (lx < clipLeftLogicalX || lx >= clipRightLogicalX) continue;
+          const int ny = rotated ? lx : ((kDisplayWidth - 1) - lx);
+          if (ny < stripeStart || ny >= stripeEnd) continue;
+          txBuffer_[(ny - stripeStart) * kPanelNativeWidth + nx] = panelEncoded;
+        }
+      }
+    }
+  }
+}
+
+void DisplayManager::drawTinyTextNativeStripe(const String &text, int logicalX,
+                                              int logicalY, int scale,
+                                              uint16_t panelEncoded,
+                                              int stripeStart, int stripeRows,
+                                              int clipLeftLogicalX,
+                                              int clipRightLogicalX) {
+  if (text.length() == 0) return;
+  // Whole-string early-out — map the entire run's logicalX extent into the
+  // native-Y axis (orientation aware), skip if it doesn't touch the stripe.
+  const bool rotated = uiRotated_;
+  const int textWidth = measureTinyTextWidth(text, scale);
+  const int textLeftLX = logicalX;
+  const int textRightLX = logicalX + textWidth;
+  const int aY = rotated ? textLeftLX : ((kDisplayWidth - 1) - textRightLX + 1);
+  const int bY = rotated ? textRightLX : ((kDisplayWidth - 1) - textLeftLX + 1);
+  const int textNyStart = std::min(aY, bY);
+  const int textNyEnd = std::max(aY, bY);
+  if (textNyEnd <= stripeStart || textNyStart >= stripeStart + stripeRows) return;
+
+  // Per-glyph: rely on drawTinyGlyphNativeStripe's per-pixel clip so this works
+  // for both orientations and for marquee-style negative cursor offsets.
+  const int charPitch = (kTinyGlyphWidth + kTinyGlyphSpacing) * scale;
+  int cursorX = logicalX;
+  for (size_t i = 0; i < text.length(); ++i) {
+    drawTinyGlyphNativeStripe(cursorX, logicalY, text[i], scale, panelEncoded,
+                              stripeStart, stripeRows, clipLeftLogicalX,
+                              clipRightLogicalX);
+    cursorX += charPitch;
+  }
+}
+
+namespace {
+
+// 565 alpha blend — alpha=0 → a, alpha=255 → b. Used to build per-bar gradient
+// stops and the soft halo around peak markers.
+inline uint16_t blend565(uint16_t a, uint16_t b, uint8_t alpha) {
+  const uint16_t inv = static_cast<uint16_t>(255 - alpha);
+  const uint16_t ar = (a >> 11) & 0x1F, ag = (a >> 5) & 0x3F, ab = a & 0x1F;
+  const uint16_t br = (b >> 11) & 0x1F, bg = (b >> 5) & 0x3F, bb = b & 0x1F;
+  const uint16_t r = static_cast<uint16_t>((ar * inv + br * alpha) >> 8) & 0x1F;
+  const uint16_t g = static_cast<uint16_t>((ag * inv + bg * alpha) >> 8) & 0x3F;
+  const uint16_t bbo = static_cast<uint16_t>((ab * inv + bb * alpha) >> 8) & 0x1F;
+  return static_cast<uint16_t>((r << 11) | (g << 5) | bbo);
+}
+
+}  // namespace
+
 void DisplayManager::renderModulePlayerFrame(const char *fileName,
                                              const char *title,
                                              const char *format,
                                              int bpm, int speed,
                                              int pos, int row, int numRows,
                                              const uint8_t *barLevels,
+                                             const uint8_t *peakLevels,
                                              int barCount) {
   if (!initialized_) return;
   // Animation forces a full repaint each frame.
   lastRenderKey_ = "";
 
-  const int virtualWidth = kDisplayWidth;
-  const int virtualHeight = kDisplayHeight;
-  clearVirtualBuffer(virtualWidth, virtualHeight);
+#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
+  const uint32_t t0 = micros();
+  uint32_t composeUs = 0;
+  uint32_t spiUs = 0;
+#endif
 
-  // Header strip — module title (or file name if title is empty).
+  // ---- 1) Build display strings. ----
   const String fileText = fileName ? String(fileName) : String("");
   String headline = title ? String(title) : String("");
   headline.trim();
   if (headline.isEmpty()) headline = fileText;
-  // Row 1 — headline. Marquee if it overflows.
-  const int headlineY = 4;
-  const int headlineLeftX = 14;
-  const int headlineRightX = virtualWidth - kFooterMarginX - 12;
-  const int headlineWidth = measureTinyTextWidth(headline, kTinyScale);
-  if (headlineWidth <= headlineRightX - headlineLeftX) {
-    drawTinyTextAt(headline, headlineLeftX, headlineY, focusColor(), kTinyScale);
-  } else {
-    drawTinyMarquee(headline, headlineLeftX, headlineRightX, headlineY,
-                    focusColor(), backgroundColor());
-  }
 
-  // Row 2 — meta line: "<file.ext> · <format> · BPM ## · POS pp/qq".
   String meta;
-  if (!fileText.isEmpty() && fileText != headline) {
-    meta += fileText;
-  }
+  if (!fileText.isEmpty() && fileText != headline) meta += fileText;
   if (format && format[0]) {
     if (meta.length() > 0) meta += "  ";
     meta += format;
@@ -2574,51 +2642,309 @@ void DisplayManager::renderModulePlayerFrame(const char *fileName,
     meta += "  ROW "; meta += String(row);
     meta += "/"; meta += String(numRows);
   }
-  if (!meta.isEmpty()) {
-    const int metaY = headlineY + (kTinyGlyphHeight * kTinyScale) + 6;
-    drawTinyTextAt(meta, headlineLeftX, metaY, dimColor(), 1);
-  }
 
-  // Bars area — vertical channel level meters along the bottom 60 % of the
-  // panel. Heights are proportional to libxmp's per-channel volume (0..64).
-  const int barsTopY = 50;
-  const int barsBottomY = virtualHeight - 6;
-  const int barsHeight = barsBottomY - barsTopY;
-  const int barsLeftX = 12;
-  const int barsRightX = virtualWidth - kFooterMarginX - 12;
-  const int barsWidth = barsRightX - barsLeftX;
+  // ---- 2) Logical-coord layout. ----
+  constexpr int kHeadlineLogicalY = 4;
+  constexpr int kHeadlineLeftLogicalX = 22;   // leaves room for the play pulse glyph
+  constexpr int kHeadlineRightLogicalX = kDisplayWidth - kFooterMarginX - 12;
+  constexpr int kMetaLogicalY = kHeadlineLogicalY + (kTinyGlyphHeight * kTinyScale) + 6;
+  constexpr int kBarsTopLogicalY = 50;
+  constexpr int kBarsBottomLogicalY = kDisplayHeight - 6;          // 166
+  constexpr int kBarsLeftLogicalX = 12;
+  constexpr int kBarsRightLogicalX = kDisplayWidth - kFooterMarginX - 12;
+  constexpr int kBarsHeight = kBarsBottomLogicalY - kBarsTopLogicalY;  // 116
+  constexpr int kBarsLogicalWidth = kBarsRightLogicalX - kBarsLeftLogicalX;
+  constexpr int kProgressLogicalY = 1;          // pattern-row progress hairline
+  constexpr int kPlayPulseLogicalX = 10;        // left of the headline
+  constexpr int kPlayPulseLogicalY = kHeadlineLogicalY + (kTinyGlyphHeight * kTinyScale) / 2;
+
+  // ---- 3) Orientation-aware native coord helpers. ----
+  // Mirrors flushScaledFrame's slow path so the module player renders right
+  // side up regardless of the user's display-flip preference.
+  const bool rotated = uiRotated_;
+  auto lxToNy = [rotated](int lx) -> int {
+    return rotated ? lx : ((kDisplayWidth - 1) - lx);
+  };
+  auto lyToNx = [rotated](int ly) -> int {
+    return rotated ? ((kDisplayHeight - 1) - ly) : ly;
+  };
+
+  // ---- 4) Bar geometry, projected once into native space. ----
   if (barCount < 1) barCount = 4;
   if (barCount > 32) barCount = 32;
-  // Per-bar pitch must leave at least 2 px of bar body; if not, halve count.
+  constexpr int kMinBarPitchPx = 6;
   int effectiveBars = barCount;
-  while (effectiveBars > 1 && barsWidth / effectiveBars < 6) effectiveBars /= 2;
-  const int pitch = barsWidth / effectiveBars;
+  while (effectiveBars > 1 && kBarsLogicalWidth / effectiveBars < kMinBarPitchPx) {
+    effectiveBars /= 2;
+  }
+  const int pitch = kBarsLogicalWidth / effectiveBars;
   const int barBodyW = std::max(2, pitch - 4);
 
-  // Track bar palette — cycle through Pico-8-ish rainbow so adjacent
-  // channels are visually distinct.
+  // Pico-8-ish rainbow so adjacent channels read as distinct columns.
   static const uint16_t kBarPalette[] = {
       0xF810, 0xFD60, 0xFFE0, 0x07E6, 0x2B7F, 0xC618, 0xFFFB, 0xFE36,
   };
-  static constexpr int kBarPaletteSize = sizeof(kBarPalette) / sizeof(kBarPalette[0]);
+  constexpr int kBarPaletteSize = sizeof(kBarPalette) / sizeof(kBarPalette[0]);
 
+  // 32 channels × 116 px gradient column cache. Function-scope static = 7.4 KB
+  // in BSS, recomputed once per frame for the live bars only. Saves ~10 ms of
+  // re-blending across 14 stripes vs. computing inline per-pixel.
+  static uint16_t sBarFillCache[32 * kBarsHeight];
+
+  struct BarGeom {
+    int16_t nyStart;        // native-row range that covers the bar's width
+    int16_t nyEnd;
+    int16_t nxBaseline;     // native column of the bar's baseline pixel
+    int16_t h;              // filled pixel count (0..kBarsHeight)
+    int16_t peakNxCore0;    // peak marker — first of two bright cells
+    int16_t peakNxCore1;    // second bright cell (or same as core0 if peakH==1)
+    int16_t peakNxHalo;     // 1-px halo above the marker (-1 if disabled)
+    uint16_t peakHaloColor;
+  };
+  BarGeom bars[32];
+  const int nxDir = rotated ? 1 : -1;  // direction "up the bar" in native X
+  const int railA = lyToNx(kBarsTopLogicalY);
+  const int railB = lyToNx(kBarsBottomLogicalY - 1);
+  const int kRailNxStart = std::min(railA, railB);
+  const int kRailNxEnd = std::max(railA, railB) + 1;
+  // 25 %, 50 %, 75 % grid ticks in the rail give the meter a sense of scale.
+  int gridNx[3];
+  gridNx[0] = lyToNx(kBarsBottomLogicalY - (kBarsHeight * 1) / 4);
+  gridNx[1] = lyToNx(kBarsBottomLogicalY - (kBarsHeight * 2) / 4);
+  gridNx[2] = lyToNx(kBarsBottomLogicalY - (kBarsHeight * 3) / 4);
+  const uint16_t railColor = panelColor(blend565(0x0000, dimColor(), 200));   // very dim
+  const uint16_t gridColor = panelColor(blend565(0x0000, dimColor(), 120));   // even dimmer ghost ticks
+  const uint16_t peakCoreColor = panelColor(0xFFFF);
+
+  const uint16_t white565 = 0xFFFF;
   for (int i = 0; i < effectiveBars; ++i) {
-    const int x = barsLeftX + i * pitch + (pitch - barBodyW) / 2;
-    // libxmp's tracker volume is 0..64; clamp + scale to bars height.
+    BarGeom &g = bars[i];
+    const int lx = kBarsLeftLogicalX + i * pitch + (pitch - barBodyW) / 2;
+    const int ny0 = lxToNy(lx);
+    const int ny1 = lxToNy(lx + barBodyW - 1);
+    g.nyStart = static_cast<int16_t>(std::min(ny0, ny1));
+    g.nyEnd = static_cast<int16_t>(std::max(ny0, ny1) + 1);
+    g.nxBaseline = static_cast<int16_t>(lyToNx(kBarsBottomLogicalY - 1));
+
     int v = (i < barCount && barLevels) ? barLevels[i] : 0;
     if (v > 64) v = 64;
-    const int h = (v * barsHeight) / 64;
-    // Dim baseline rail across the full bar height so empty channels still
-    // read as something rather than blank space.
-    fillVirtualRect(x, barsTopY, barBodyW, barsHeight, dimColor());
-    if (h > 0) {
-      fillVirtualRect(x, barsBottomY - h, barBodyW, h,
-                      kBarPalette[i % kBarPaletteSize]);
+    const int h = (v * kBarsHeight) / 64;
+    g.h = static_cast<int16_t>(h);
+
+    // 3-stop gradient: darkened base at the baseline, full base in the body,
+    // hard white in the top 12 % so the tip pops like a hot VU LED.
+    const uint16_t base565 = kBarPalette[i % kBarPaletteSize];
+    const uint16_t baseDim565 = blend565(0x0000, base565, 165);  // ~65 % base
+    uint16_t *fill = sBarFillCache + i * kBarsHeight;
+    const int hh = std::max(1, h);
+    for (int step = 0; step < h; ++step) {
+      const int t256 = (step * 255) / std::max(1, hh - 1);
+      uint16_t mid565;
+      if (t256 >= 224) {
+        const int hotFrac = std::min(255, (t256 - 224) * 8);
+        mid565 = blend565(base565, white565, static_cast<uint8_t>(hotFrac));
+      } else {
+        const int riseFrac = (t256 * 255) / 224;
+        mid565 = blend565(baseDim565, base565, static_cast<uint8_t>(riseFrac));
+      }
+      // Force the top 2 px to pure white so even short bars get a visible cap.
+      if (step >= h - 2) mid565 = white565;
+      fill[step] = panelColor(mid565);
+    }
+
+    // Peak-hold marker: 2-px white core + 1-px palette-tinted halo above.
+    int p = (i < barCount && peakLevels) ? peakLevels[i] : 0;
+    if (p > 64) p = 64;
+    const int peakH = (p * kBarsHeight) / 64;
+    if (peakH > h + 1 && peakH > 0) {
+      const int core0Step = std::max(0, peakH - 1);
+      const int core1Step = std::max(0, peakH - 2);
+      g.peakNxCore0 = static_cast<int16_t>(g.nxBaseline + core0Step * nxDir);
+      g.peakNxCore1 = static_cast<int16_t>(g.nxBaseline + core1Step * nxDir);
+      if (peakH < kBarsHeight) {
+        g.peakNxHalo = static_cast<int16_t>(g.nxBaseline + peakH * nxDir);
+        g.peakHaloColor = panelColor(blend565(base565, white565, 180));
+      } else {
+        g.peakNxHalo = -1;
+        g.peakHaloColor = 0;
+      }
+    } else {
+      g.peakNxCore0 = -1;
+      g.peakNxCore1 = -1;
+      g.peakNxHalo = -1;
+      g.peakHaloColor = 0;
     }
   }
 
-  drawBatteryBadge();
-  flushScaledFrame(1, virtualWidth, virtualHeight);
+  // ---- 5) Marquee offset for the headline if it overflows. ----
+  const int headlineBandWidth = kHeadlineRightLogicalX - kHeadlineLeftLogicalX;
+  const int headlineTextWidth = measureTinyTextWidth(headline, kTinyScale);
+  int headlineCursorX = kHeadlineLeftLogicalX;
+  if (headlineTextWidth > headlineBandWidth) {
+    headlineCursorX -= marqueePingPongOffset(headlineTextWidth - headlineBandWidth);
+  }
+  const uint16_t headlineColor = panelColor(focusColor());
+  const uint16_t metaColor = panelColor(dimColor());
+
+  // ---- 6) Play pulse — a soft heartbeat behind the title. ----
+  // 1.2 s sine-ish cycle; level in [0,255] drives a circle's brightness.
+  const uint32_t pulseMs = millis() % 1200;
+  const int pulseLevel = (pulseMs < 600)
+      ? static_cast<int>((pulseMs * 255) / 600)
+      : static_cast<int>(((1200 - pulseMs) * 255) / 600);
+  const uint16_t pulseColor = panelColor(
+      blend565(dimColor(), focusColor(), static_cast<uint8_t>(pulseLevel)));
+  const int pulseNxC = lyToNx(kPlayPulseLogicalY);
+  const int pulseNyC = lxToNy(kPlayPulseLogicalX);
+
+  // ---- 7) Pattern-row progress hairline native bounds. ----
+  const int progressNx = lyToNx(kProgressLogicalY);
+  const int progLeftLX = kHeadlineLeftLogicalX;
+  const int progRightLX = kHeadlineRightLogicalX;
+  const int progressWidth = progRightLX - progLeftLX;
+  // Use row/numRows when available; fall back to pos/256 for headers that
+  // skip per-pattern info.
+  const float progressFrac = (numRows > 0)
+      ? std::min(1.0f, std::max(0.0f, static_cast<float>(row) / static_cast<float>(numRows)))
+      : 0.0f;
+  const int progFilledLX = progLeftLX + static_cast<int>(progressFrac * progressWidth);
+  auto rangeNy = [&](int lxLeft, int lxRight, int &nyStart, int &nyEnd) {
+    const int a = lxToNy(lxLeft);
+    const int b = lxToNy(lxRight - 1);
+    nyStart = std::min(a, b);
+    nyEnd = std::max(a, b) + 1;
+  };
+  int progBgNyStart, progBgNyEnd, progFillNyStart, progFillNyEnd;
+  rangeNy(progLeftLX, progRightLX, progBgNyStart, progBgNyEnd);
+  if (progFilledLX > progLeftLX) {
+    rangeNy(progLeftLX, progFilledLX, progFillNyStart, progFillNyEnd);
+  } else {
+    progFillNyStart = progFillNyEnd = 0;
+  }
+  const uint16_t progBgColor = panelColor(blend565(0x0000, dimColor(), 110));
+  const uint16_t progFillColor = panelColor(focusColor());
+
+  // ---- 8) Stripe loop. Native-orientation compose, no virtualFrame_. ----
+  for (int stripeStart = 0; stripeStart < kPanelNativeHeight;
+       stripeStart += kMaxChunkPhysicalRows) {
+    const int rows = std::min(kMaxChunkPhysicalRows, kPanelNativeHeight - stripeStart);
+    const int stripeEnd = stripeStart + rows;
+    const size_t bytes = static_cast<size_t>(rows) * kPanelNativeWidth * sizeof(uint16_t);
+
+#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
+    const uint32_t cBegin = micros();
+#endif
+    std::memset(txBuffer_, 0, bytes);
+
+    // -- Bars -------------------------------------------------------------
+    for (int i = 0; i < effectiveBars; ++i) {
+      const BarGeom &g = bars[i];
+      if (g.nyEnd <= stripeStart || g.nyStart >= stripeEnd) continue;
+      const int rStart = std::max<int>(0, g.nyStart - stripeStart);
+      const int rEnd = std::min<int>(rows, g.nyEnd - stripeStart);
+
+      // Rail + grid ticks (rail spans the full bar height; grid pokes 3 px).
+      for (int r = rStart; r < rEnd; ++r) {
+        uint16_t *base = txBuffer_ + r * kPanelNativeWidth;
+        for (int c = kRailNxStart; c < kRailNxEnd; ++c) base[c] = railColor;
+        for (int gi = 0; gi < 3; ++gi) {
+          const int gnx = gridNx[gi];
+          if (gnx >= kRailNxStart && gnx < kRailNxEnd) base[gnx] = gridColor;
+        }
+      }
+
+      // Filled body — one gradient column per step, written across every
+      // row in the bar's native-Y span.
+      const uint16_t *fill = sBarFillCache + i * kBarsHeight;
+      for (int step = 0; step < g.h; ++step) {
+        const int nx = g.nxBaseline + step * nxDir;
+        const uint16_t col = fill[step];
+        for (int r = rStart; r < rEnd; ++r) {
+          txBuffer_[r * kPanelNativeWidth + nx] = col;
+        }
+      }
+
+      // Peak-hold marker (core + halo).
+      if (g.peakNxCore0 >= 0) {
+        for (int r = rStart; r < rEnd; ++r) {
+          uint16_t *base = txBuffer_ + r * kPanelNativeWidth;
+          base[g.peakNxCore0] = peakCoreColor;
+          base[g.peakNxCore1] = peakCoreColor;
+          if (g.peakNxHalo >= 0 && g.peakNxHalo < kPanelNativeWidth) {
+            base[g.peakNxHalo] = g.peakHaloColor;
+          }
+        }
+      }
+    }
+
+    // -- Pattern progress hairline ---------------------------------------
+    if (progressNx >= 0 && progressNx < kPanelNativeWidth) {
+      const int rBgStart = std::max(0, progBgNyStart - stripeStart);
+      const int rBgEnd = std::min(rows, progBgNyEnd - stripeStart);
+      for (int r = rBgStart; r < rBgEnd; ++r) {
+        txBuffer_[r * kPanelNativeWidth + progressNx] = progBgColor;
+      }
+      if (progFillNyEnd > progFillNyStart) {
+        const int rFStart = std::max(0, progFillNyStart - stripeStart);
+        const int rFEnd = std::min(rows, progFillNyEnd - stripeStart);
+        for (int r = rFStart; r < rFEnd; ++r) {
+          txBuffer_[r * kPanelNativeWidth + progressNx] = progFillColor;
+        }
+      }
+    }
+
+    // -- Play pulse: a 3×3 cross with a brighter center (cheap "♥" glyph) -
+    if (pulseNxC >= 0 && pulseNxC < kPanelNativeWidth) {
+      const int rCenter = pulseNyC - stripeStart;
+      for (int dy = -1; dy <= 1; ++dy) {
+        const int r = rCenter + dy;
+        if (r < 0 || r >= rows) continue;
+        uint16_t *base = txBuffer_ + r * kPanelNativeWidth;
+        for (int dx = -1; dx <= 1; ++dx) {
+          if (dy != 0 && dx != 0) continue;  // plus shape
+          const int nx = pulseNxC + dx;
+          if (nx >= 0 && nx < kPanelNativeWidth) base[nx] = pulseColor;
+        }
+      }
+    }
+
+    // -- Text -------------------------------------------------------------
+    drawTinyTextNativeStripe(headline, headlineCursorX, kHeadlineLogicalY,
+                             kTinyScale, headlineColor, stripeStart, rows,
+                             kHeadlineLeftLogicalX, kHeadlineRightLogicalX);
+    if (meta.length() > 0) {
+      drawTinyTextNativeStripe(meta, kHeadlineLeftLogicalX, kMetaLogicalY, 1,
+                               metaColor, stripeStart, rows,
+                               kHeadlineLeftLogicalX, kHeadlineRightLogicalX);
+    }
+
+#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
+    composeUs += micros() - cBegin;
+    const uint32_t sBegin = micros();
+#endif
+    if (!drawBitmap(0, stripeStart, kPanelNativeWidth, stripeEnd, txBuffer_)) {
+      return;
+    }
+#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
+    spiUs += micros() - sBegin;
+#endif
+  }
+
+#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
+  static uint32_t sFrameLogMs = 0;
+  static uint32_t sFrames = 0;
+  ++sFrames;
+  if (millis() - sFrameLogMs >= 1000) {
+    Serial.printf("[modplayer] compose=%lu spi=%lu total=%lu us fps=%lu rot=%d\n",
+                  static_cast<unsigned long>(composeUs),
+                  static_cast<unsigned long>(spiUs),
+                  static_cast<unsigned long>(micros() - t0),
+                  static_cast<unsigned long>(sFrames),
+                  rotated ? 1 : 0);
+    sFrameLogMs = millis();
+    sFrames = 0;
+  }
+#endif
 }
 
 int DisplayManager::libraryLetterAtY(const std::vector<char> &letterAnchors, int y) {

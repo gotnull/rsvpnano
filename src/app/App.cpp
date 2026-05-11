@@ -467,6 +467,10 @@ void App::begin()
   // I2S channel without racing the first lazy AudioManager call.
   audio_.begin();
   modPlayer_.begin();
+  // Tracker modules sum many channels at full scale — without this they ship
+  // at libxmp's ~80 % default regardless of the user's setting, which reads
+  // as "blastingly loud". Same percent the user already chose for tones/WAVs.
+  modPlayer_.setVolumePercent(notificationVolume_);
 
   // Scene architecture — Milestone 1. Register concrete scenes, bring up
   // the dispatcher, and subscribe to the events we need to react to from
@@ -747,15 +751,13 @@ void App::update(uint32_t nowMs)
   }
   if (state_ == AppState::ModulePlaying)
   {
-    // ~30 fps cap for the now-playing UI. Bars + marquee don't need more,
-    // and the panel flush dominates anyway.
-    constexpr uint32_t kModulePlayerMinIntervalMs = 33;
-    if (nowMs - modulePlayerLastRenderMs_ >= kModulePlayerMinIntervalMs) {
-      modulePlayerLastRenderMs_ = nowMs;
-      const uint32_t s = micros();
-      renderModulePlayerFrame(nowMs);
-      trackStage("modplay", micros() - s, 30000);
-    }
+    // Drive the now-playing UI at panel rate. The native-stripe renderer
+    // composes in ~1-2 ms and SPI is the floor (~11.5 ms), so an unthrottled
+    // call lands around the 16.7 ms / 60 fps slot naturally.
+    const uint32_t s = micros();
+    renderModulePlayerFrame(nowMs);
+    trackStage("modplay", micros() - s, 20000);
+    modulePlayerLastRenderMs_ = nowMs;
   }
 
   // Auto-power-off: enterPowerOff after the configured idle window. Active
@@ -3871,6 +3873,8 @@ void App::enterModulePlayback(const String &path, uint32_t nowMs)
   demoMusicPickedTrack_ = name;
   preferences_.putString("demoMusicTr", demoMusicPickedTrack_);
   std::memset(modulePlayerBarLevels_, 0, sizeof(modulePlayerBarLevels_));
+  std::memset(modulePlayerPeakLevels_, 0, sizeof(modulePlayerPeakLevels_));
+  std::memset(modulePlayerPeakHoldFrames_, 0, sizeof(modulePlayerPeakHoldFrames_));
   modulePlayerLastRenderMs_ = 0;
   // Re-use screensaver/demo previous-state plumbing so the dismiss handler
   // knows where to return after touch.
@@ -3892,17 +3896,29 @@ void App::renderModulePlayerFrame(uint32_t nowMs)
 {
   ModPlayer::NowPlaying np;
   modPlayer_.getNowPlaying(np);
-  // Decay then bump bars — tracker channels naturally fade as samples loop
-  // out; instant snap-up + slow fall-off reads as a level meter rather
-  // than raw volume readings.
-  constexpr uint8_t kBarDecay = 6;
+  // VU-meter dynamics at 60 fps: instant attack, ~0.5 s fall on the body
+  // (~2 units/frame over 64), peak marker holds ~0.3 s then drops a unit per
+  // frame. Reads like a hardware level meter rather than raw volumes.
+  constexpr uint8_t kBarDecay = 2;
+  constexpr uint8_t kPeakHoldFrames = 18;
+  constexpr uint8_t kPeakDecay = 1;
   for (int i = 0; i < 32; ++i) {
     uint8_t cur = modulePlayerBarLevels_[i];
-    if (cur > kBarDecay) cur -= kBarDecay; else cur = 0;
-    if (i < np.channelCount && np.channelVolumes[i] > cur) {
-      cur = np.channelVolumes[i];
-    }
+    cur = (cur > kBarDecay) ? static_cast<uint8_t>(cur - kBarDecay) : 0;
+    const uint8_t incoming = (i < np.channelCount) ? np.channelVolumes[i] : 0;
+    if (incoming > cur) cur = incoming;
     modulePlayerBarLevels_[i] = cur;
+
+    uint8_t peak = modulePlayerPeakLevels_[i];
+    if (cur >= peak) {
+      peak = cur;
+      modulePlayerPeakHoldFrames_[i] = kPeakHoldFrames;
+    } else if (modulePlayerPeakHoldFrames_[i] > 0) {
+      --modulePlayerPeakHoldFrames_[i];
+    } else {
+      peak = (peak > kPeakDecay) ? static_cast<uint8_t>(peak - kPeakDecay) : 0;
+    }
+    modulePlayerPeakLevels_[i] = peak;
   }
   // libxmp emits track playback once it ends; if the track stopped on its
   // own, drop back to the picker so the user isn't stuck looking at static
@@ -3915,6 +3931,7 @@ void App::renderModulePlayerFrame(uint32_t nowMs)
                                    np.title, np.format, np.bpm, np.speed,
                                    np.pos, np.row, np.numRows,
                                    modulePlayerBarLevels_,
+                                   modulePlayerPeakLevels_,
                                    np.channelCount > 0 ? np.channelCount : 4);
 }
 
@@ -4723,6 +4740,7 @@ void App::cycleNotificationVolume(uint32_t nowMs)
   notificationVolume_ = next;
   preferences_.putUChar(kPrefNotifVolume, notificationVolume_);
   audio_.setVolumePercent(notificationVolume_);
+  modPlayer_.setVolumePercent(notificationVolume_);
   rebuildSettingsMenuItems();
   renderSettings();
   if (notificationVolume_ > 0)

@@ -109,15 +109,18 @@ class DisplayManager {
   // Renders an RGB565 source frame using the same native-stripe path as the
   // screensaver/demos. Source pixels are normal RGB565 in logical orientation.
   void renderCameraRgb565Frame(const uint16_t *frame, int sourceWidth, int sourceHeight);
-  // Fullscreen tracker player. Shows file name (marquee if it overflows),
-  // module title + format, BPM/speed, position/row counters, and a row of
-  // channel volume bars (levels 0..64 per libxmp's xmp_channel_info.volume).
+  // Fullscreen tracker player. Native-stripe renderer (no virtualFrame_, no
+  // transpose) so the level meters animate at panel-rate. Shows file name
+  // (marquee if it overflows), module title + format, BPM/speed, position/row
+  // counters, and a row of channel volume bars with peak-hold markers
+  // (levels 0..64 per libxmp's xmp_channel_info.volume).
   void renderModulePlayerFrame(const char *fileName,
                                const char *title,
                                const char *format,
                                int bpm, int speed,
                                int pos, int row, int numRows,
                                const uint8_t *barLevels,
+                               const uint8_t *peakLevels,
                                int barCount);
 
  private:
@@ -170,6 +173,19 @@ class DisplayManager {
   // instead of re-implementing the offset+per-glyph loop.
   void drawTinyMarquee(const String &text, int leftX, int rightX, int textY,
                        uint16_t color, uint16_t fadeColor);
+  // Native-stripe text helpers. Same logical (x, y) input as drawTinyTextAt,
+  // but rasterise directly into txBuffer_ (panel-native orientation) for the
+  // current stripe. panelEncoded must already be panelColor()-applied. Clips
+  // logical X to [clipLeftLogicalX, clipRightLogicalX) so marquee-style
+  // negative offsets don't bleed out of the intended band.
+  void drawTinyGlyphNativeStripe(int logicalX, int logicalY, char c, int scale,
+                                 uint16_t panelEncoded, int stripeStart,
+                                 int stripeRows, int clipLeftLogicalX,
+                                 int clipRightLogicalX);
+  void drawTinyTextNativeStripe(const String &text, int logicalX, int logicalY,
+                                int scale, uint16_t panelEncoded,
+                                int stripeStart, int stripeRows,
+                                int clipLeftLogicalX, int clipRightLogicalX);
   void drawTinyTextCentered(const String &text, int y, uint16_t color, int scale);
   void drawBatteryBadge(bool leftAlign = false);
   void drawFooter(const String &chapterLabel, uint8_t progressPercent);

@@ -305,8 +305,12 @@ class App {
   uint32_t modulePlayerLastRenderMs_ = 0;
   // Smoothed channel-bar heights for the now-playing UI. Decayed each frame
   // and bumped to the current channel_info volume so taps + cut-offs read
-  // as bars dropping, not jumping.
+  // as bars dropping, not jumping. The peak array holds a "ghost" marker
+  // that snaps up with the body but lingers for ~0.3 s before decaying, the
+  // way a hardware VU meter floats a peak indicator.
   uint8_t modulePlayerBarLevels_[32] = {0};
+  uint8_t modulePlayerPeakLevels_[32] = {0};
+  uint8_t modulePlayerPeakHoldFrames_[32] = {0};
   // Demo-music mode: 0 = Off, 1 = Shuffle (random track on Screensaver/Demo
   // entry), 2 = Picked (always replay the last picked track). Persisted as
   // kPrefDemoMusic.

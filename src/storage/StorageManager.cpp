@@ -1907,7 +1907,12 @@ void StorageManager::refreshBookPaths() {
 
   Serial.println("[storage] refreshBookPaths: collectBookPaths begin");
   const uint32_t collectStartMs = millis();
-  notifyStatus("SD", "Reading library", "", 50);
+  // Display status during library scan removed — the "SD / Reading library /
+  // Indexing books" screen used to flash on every boot AND every OTA retry,
+  // which was murder during debug. The work still happens silently; serial
+  // timing logs below are enough to see progress. If we ever need a first-
+  // boot welcome screen back, add it from App during the initial mount, not
+  // from inside the storage scan path.
   bookPaths_ = collectBookPaths();
   Serial.printf("[storage] refreshBookPaths: collectBookPaths done in %lu ms, %u paths\n",
                 static_cast<unsigned long>(millis() - collectStartMs),
@@ -1919,7 +1924,6 @@ void StorageManager::refreshBookPaths() {
   Serial.printf("[storage] refreshBookPaths: header read loop begin (%u files)\n",
                 static_cast<unsigned>(count));
   const uint32_t headerLoopStartMs = millis();
-  uint32_t lastStatusMs = millis();
   for (size_t i = 0; i < count; ++i) {
     if (hasRsvpExtension(bookPaths_[i])) {
       readRsvpHeader(bookPaths_[i], bookMeta_[i]);
@@ -1934,12 +1938,6 @@ void StorageManager::refreshBookPaths() {
     if ((i & 0x1F) == 0x1F) {
       Serial.printf("[storage]   headers %u/%u\n", static_cast<unsigned>(i + 1),
                     static_cast<unsigned>(count));
-    }
-    const uint32_t now = millis();
-    if (now - lastStatusMs >= 200) {
-      const int percent = static_cast<int>(((i + 1) * 50ULL) / std::max<size_t>(1, count)) + 50;
-      notifyStatus("SD", "Indexing books", "", std::min(percent, 99));
-      lastStatusMs = now;
     }
   }
   Serial.printf("[storage] refreshBookPaths: header loop done in %lu ms\n",
