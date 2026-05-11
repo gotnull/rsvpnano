@@ -2589,6 +2589,47 @@ void App::openSettings()
   renderSettings();
 }
 
+// Per-Settings-tab openers — used by the Settings TabGroup so a horizontal
+// swipe between tabs lands on a fresh items list for the new sub-screen.
+// Selection resets to row 0 (Back) on each tab change; preserving per-tab
+// position can come later if it turns out to be wanted.
+void App::openSettingsHome()
+{
+  menuScreen_ = MenuScreen::SettingsHome;
+  settingsSelectedIndex_ = 0;
+  rebuildSettingsMenuItems();
+  renderSettings();
+}
+
+void App::openSettingsDisplay()
+{
+  menuScreen_ = MenuScreen::SettingsDisplay;
+  settingsSelectedIndex_ = 0;
+  rebuildSettingsMenuItems();
+  renderSettings();
+}
+
+void App::openSettingsPacing()
+{
+  menuScreen_ = MenuScreen::SettingsPacing;
+  settingsSelectedIndex_ = 0;
+  rebuildSettingsMenuItems();
+  renderSettings();
+}
+
+void App::openSettingsReadingSounds()
+{
+  menuScreen_ = MenuScreen::SettingsReadingSounds;
+  settingsSelectedIndex_ = 0;
+  rebuildSettingsMenuItems();
+  renderSettings();
+}
+
+void App::openRemoteBookPickerTab()
+{
+  openRemoteBookPicker(millis());
+}
+
 void App::selectSettingsItem(uint32_t nowMs)
 {
   if (settingsMenuItems_.empty())
@@ -4017,7 +4058,13 @@ void App::renderDemoPicker()
   // All demo rows drill in to fullscreen playback; Back returns to settings.
   std::vector<bool> chevrons(items.size(), true);
   chevrons[kDemoPickerBackIndex] = false;
-  display_.renderMenu(items, demoSelectedIndex_, chevrons);
+  // Now part of the Effects TabGroup (Demos | Modules | Favorites).
+  const std::vector<String> tabLabels = {"Demos", "Modules", "Favorites"};
+  const int slotW = BoardConfig::DISPLAY_WIDTH / static_cast<int>(tabLabels.size());
+  display_.renderMenuWithTabs(items, demoSelectedIndex_, chevrons, tabLabels,
+                              /*activeIdx=*/0,
+                              currentTabUnderlineX(slotW, static_cast<int>(tabLabels.size())),
+                              currentTabUnderlineW(slotW));
 }
 
 void App::selectDemoPickerItem(uint32_t nowMs)
@@ -4065,22 +4112,40 @@ void App::selectDemoPickerItem(uint32_t nowMs)
 // MenuScreen.
 // ---------------------------------------------------------------------------
 
-const App::TabDescriptor App::kModulesTabsData[] = {
+const App::TabDescriptor App::kEffectsTabsData[] = {
+    {"Demos", MenuScreen::DemoPicker, &App::openDemoPicker},
     {"Modules", MenuScreen::ModulesPicker, &App::openModulesPicker},
     {"Favorites", MenuScreen::ModulesFavorites, &App::openModulesFavorites},
 };
-const App::TabGroup App::kModulesTabGroup = {
-    kModulesTabsData,
-    sizeof(kModulesTabsData) / sizeof(kModulesTabsData[0]),
+const App::TabGroup App::kEffectsTabGroup = {
+    kEffectsTabsData,
+    sizeof(kEffectsTabsData) / sizeof(kEffectsTabsData[0]),
+};
+
+const App::TabDescriptor App::kSettingsTabsData[] = {
+    {"Home",    MenuScreen::SettingsHome,          &App::openSettingsHome},
+    {"Display", MenuScreen::SettingsDisplay,       &App::openSettingsDisplay},
+    {"Pacing",  MenuScreen::SettingsPacing,        &App::openSettingsPacing},
+    {"Sounds",  MenuScreen::SettingsReadingSounds, &App::openSettingsReadingSounds},
+};
+const App::TabGroup App::kSettingsTabGroup = {
+    kSettingsTabsData,
+    sizeof(kSettingsTabsData) / sizeof(kSettingsTabsData[0]),
 };
 
 const App::TabGroup *App::tabGroupFor(MenuScreen screen) const
 {
   switch (screen)
   {
+    case MenuScreen::DemoPicker:
     case MenuScreen::ModulesPicker:
     case MenuScreen::ModulesFavorites:
-      return &kModulesTabGroup;
+      return &kEffectsTabGroup;
+    case MenuScreen::SettingsHome:
+    case MenuScreen::SettingsDisplay:
+    case MenuScreen::SettingsPacing:
+    case MenuScreen::SettingsReadingSounds:
+      return &kSettingsTabGroup;
     default:
       return nullptr;
   }
@@ -4275,10 +4340,10 @@ void App::renderModulesPicker()
   for (size_t i = kTabbedFirstItemRow; i < modulesMenuItems_.size(); ++i) {
     if (modulesMenuItems_[i].startsWith("(")) chevrons[i] = false;
   }
-  const std::vector<String> tabLabels = {"Modules", "Favorites"};
+  const std::vector<String> tabLabels = {"Demos", "Modules", "Favorites"};
   const int slotW = BoardConfig::DISPLAY_WIDTH / static_cast<int>(tabLabels.size());
   display_.renderMenuWithTabs(modulesMenuItems_, modulesSelectedIndex_, chevrons,
-                              tabLabels, 0,
+                              tabLabels, /*activeIdx=*/1,
                               currentTabUnderlineX(slotW, static_cast<int>(tabLabels.size())),
                               currentTabUnderlineW(slotW));
 }
@@ -4372,10 +4437,10 @@ void App::renderModulesFavorites()
   for (size_t i = kTabbedFirstItemRow; i < modulesFavoritesMenuItems_.size(); ++i) {
     if (modulesFavoritesMenuItems_[i].startsWith("(")) chevrons[i] = false;
   }
-  const std::vector<String> tabLabels = {"Modules", "Favorites"};
+  const std::vector<String> tabLabels = {"Demos", "Modules", "Favorites"};
   const int slotW = BoardConfig::DISPLAY_WIDTH / static_cast<int>(tabLabels.size());
   display_.renderMenuWithTabs(modulesFavoritesMenuItems_, modulesFavoritesSelectedIndex_,
-                              chevrons, tabLabels, 1,
+                              chevrons, tabLabels, /*activeIdx=*/2,
                               currentTabUnderlineX(slotW, static_cast<int>(tabLabels.size())),
                               currentTabUnderlineW(slotW));
 }
@@ -6145,6 +6210,22 @@ void App::renderSettings()
     {
       chevrons[kSettingsDisplayTypographyIndex] = true;
     }
+  }
+  // Settings sub-screens belong to the Settings TabGroup — switch to the
+  // tab-bar renderer so the user can swipe between Home / Display / Pacing
+  // / Sounds instead of drilling in/out.
+  const TabGroup *settingsGroup = tabGroupFor(menuScreen_);
+  if (settingsGroup == &kSettingsTabGroup) {
+    const int activeIdx = tabIndexInGroup(*settingsGroup, menuScreen_);
+    const std::vector<String> tabLabels = {"Home", "Display", "Pacing", "Sounds"};
+    const int slotCount = static_cast<int>(tabLabels.size());
+    const int slotW = BoardConfig::DISPLAY_WIDTH / slotCount;
+    display_.renderMenuWithTabs(settingsMenuItems_, settingsSelectedIndex_,
+                                chevrons, tabLabels,
+                                std::max(0, activeIdx),
+                                currentTabUnderlineX(slotW, slotCount),
+                                currentTabUnderlineW(slotW));
+    return;
   }
   display_.renderMenu(settingsMenuItems_, settingsSelectedIndex_, chevrons);
 }

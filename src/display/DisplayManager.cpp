@@ -2314,8 +2314,13 @@ void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemC
       renderKey += c;
     }
     if (measureTinyTextWidth(accentText, kTinyScale) > 200) {
+      // Marquee re-render cadence. /30 (~33 fps) churned through the slow
+      // virtualFrame_ flush continuously and made the device feel sluggish
+      // when landing on Resume with a long title. /50 (~20 fps) still reads
+      // as smooth marquee motion but leaves the main loop room to breathe
+      // for touch input.
       renderKey += "|p:";
-      renderKey += String(millis() / 30);
+      renderKey += String(millis() / 50);
     }
   }
 

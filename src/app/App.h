@@ -98,8 +98,10 @@ class App {
     const TabDescriptor *tabs;
     size_t tabCount;
   };
-  static const TabDescriptor kModulesTabsData[];
-  static const TabGroup kModulesTabGroup;
+  static const TabDescriptor kEffectsTabsData[];
+  static const TabGroup kEffectsTabGroup;
+  static const TabDescriptor kSettingsTabsData[];
+  static const TabGroup kSettingsTabGroup;
   // Resolve the tab group a menu screen belongs to, or nullptr if the
   // screen is single-tab (no tab strip rendered).
   const TabGroup *tabGroupFor(MenuScreen screen) const;
@@ -153,6 +155,16 @@ class App {
   // Returns false if the current screen has no parent (e.g. Main). Used by
   // the left-swipe shortcut so the user never has to scroll to the Back row.
   bool goBack(uint32_t nowMs);
+  // Per-Settings-tab openers used by the Settings TabGroup. Each one sets
+  // menuScreen_, resets the settings selection index, rebuilds items, and
+  // re-renders. Mirrors the pattern openModulesPicker / openModulesFavorites.
+  void openSettingsHome();
+  void openSettingsDisplay();
+  void openSettingsPacing();
+  void openSettingsReadingSounds();
+  // No-arg wrapper for RemoteBookPicker so the opener matches the
+  // TabDescriptor signature (which is void(App::*)()).
+  void openRemoteBookPickerTab();
   void openSettings();
   void selectSettingsItem(uint32_t nowMs);
   void openTypographyTuning();
