@@ -107,7 +107,11 @@ class DisplayManager {
   void renderLibrary(const std::vector<LibraryItem> &items, size_t selectedIndex,
                      const std::vector<char> &letterAnchors = std::vector<char>(),
                      int focusedLetterIdx = -1,
-                     const std::vector<char> &scrubLetters = std::vector<char>());
+                     const std::vector<char> &scrubLetters = std::vector<char>(),
+                     const std::vector<String> &tabLabels = std::vector<String>(),
+                     int activeTabIdx = -1,
+                     int underlineXPx = -1,
+                     int underlineWPx = -1);
 
   static constexpr int kLibraryLetterStripWidth = 22;
   static constexpr int kLibraryLetterScrubWidth = 140;
@@ -230,6 +234,12 @@ class DisplayManager {
                                 int clipLeftLogicalX, int clipRightLogicalX);
   void drawTinyTextCentered(const String &text, int y, uint16_t color, int scale);
   void drawBatteryBadge(bool leftAlign = false);
+  // Shared top tab band — drawn at the top of any tabbed picker
+  // (renderMenuWithTabs, renderLibrary, ...). Honours the shared
+  // tabUnderlineXForTab/Width geometry so labels and underlines always
+  // share the same slice and never overlap the right-side battery chip.
+  void drawTabBand(const std::vector<String> &tabLabels, int activeTabIdx,
+                   int underlineXPx, int underlineWPx);
   void drawFooter(const String &chapterLabel, uint8_t progressPercent);
   void drawRsvpAnchorGuide(int anchorX, int textY, int textHeight);
   void drawWordAt(const String &word, int x, int y, uint16_t color);

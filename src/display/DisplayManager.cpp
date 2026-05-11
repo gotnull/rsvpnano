@@ -71,12 +71,11 @@ constexpr int kTabUnderlineH = 2;
 // Underline top sits ON the divider row (z-ordered above it so the highlight
 // overlaps + replaces the gray), extending 1 px below for the 2-px bar.
 constexpr int kTabUnderlineY = kTabDividerY;
-// Symmetric side margins for the gray divider hairline. The right side has
-// to clear the right-aligned battery chip (chip right edge =
-// panelWidth − kFooterMarginX − kLibraryLetterStripWidth, widest chip "100%"
-// is ~58 px wide + small visual gap = ~100 px). The left mirrors it so the
-// divider reads as a centred element on the band.
-constexpr int kTabDividerSideMarginPx = 12 + 22 + 58 + 8;  // = 100
+// Symmetric side margins for the gray divider hairline. Tabbed pickers
+// suppress the right-aligned battery chip (drawTabBand is the marker for
+// "this picker is tabbed"), so the line and tab slots can span almost the
+// full panel width with just a touch of breathing room on each side.
+constexpr int kTabDividerSideMarginPx = 10;
 constexpr int kTabDividerLeftMarginPx = kTabDividerSideMarginPx;
 constexpr int kTabDividerRightMarginPx = kTabDividerSideMarginPx;
 constexpr int kTabMenuGapPx = 4;
@@ -2570,15 +2569,57 @@ void DisplayManager::renderMenu(const std::vector<String> &items, size_t selecte
   flushScaledFrame(scale, virtualWidth, virtualHeight);
 }
 
+// Underline tracks the label slot (panelWidth / tabCount) so it sits exactly
+// under its label. Small inset on each side keeps it from butting against
+// adjacent tabs' slot edges.
+namespace { constexpr int kTabUnderlineSlotInsetPx = 20; }
+
 int DisplayManager::tabUnderlineWidth(int tabCount) {
   if (tabCount <= 0) return 0;
-  const int grayW = kDisplayWidth - kTabDividerLeftMarginPx - kTabDividerRightMarginPx;
-  return grayW > 0 ? grayW / tabCount : 0;
+  const int slotW = kDisplayWidth / tabCount;
+  return std::max(24, slotW - kTabUnderlineSlotInsetPx * 2);
 }
 
 int DisplayManager::tabUnderlineXForTab(int tabIdx, int tabCount) {
-  if (tabCount <= 0) return kTabDividerLeftMarginPx;
-  return kTabDividerLeftMarginPx + tabIdx * tabUnderlineWidth(tabCount);
+  if (tabCount <= 0) return kTabUnderlineSlotInsetPx;
+  const int slotW = kDisplayWidth / tabCount;
+  const int slotCenter = tabIdx * slotW + slotW / 2;
+  return slotCenter - tabUnderlineWidth(tabCount) / 2;
+}
+
+void DisplayManager::drawTabBand(const std::vector<String> &tabLabels,
+                                 int activeTabIdx,
+                                 int underlineXPx, int underlineWPx) {
+  const int tabCount = static_cast<int>(tabLabels.size());
+  if (tabCount <= 0) return;
+  const int virtualWidth = kDisplayWidth;
+
+  // Labels are centred in evenly-divided panel slots (panelWidth / tabCount).
+  // Underlines are positioned to share each slot's centre — they're slightly
+  // narrower than the slot so adjacent underlines don't kiss. Tabbed pickers
+  // suppress the right-aligned battery chip, so the full width is fair game.
+  const int slotW = virtualWidth / tabCount;
+  for (int i = 0; i < tabCount; ++i) {
+    const String &label = tabLabels[i];
+    const int labelW = measureTinyTextWidth(label, kTinyScale);
+    const int slotCenter = i * slotW + slotW / 2;
+    const int labelX = std::max(0, slotCenter - labelW / 2);
+    const uint16_t color = (i == activeTabIdx) ? focusColor() : dimColor();
+    drawTinyTextAt(label, labelX, kTabLabelY, color, kTinyScale);
+  }
+  // Divider first, underline on top so the highlight visibly overlaps.
+  const int dividerWidth =
+      virtualWidth - kTabDividerLeftMarginPx - kTabDividerRightMarginPx;
+  if (dividerWidth > 0) {
+    fillVirtualRect(kTabDividerLeftMarginPx, kTabDividerY, dividerWidth, 1,
+                    dimColor());
+  }
+  if (underlineWPx > 0 && underlineXPx >= 0) {
+    const int clampedX = std::max(0, std::min(underlineXPx, virtualWidth - 1));
+    const int clampedW = std::min(underlineWPx, virtualWidth - clampedX);
+    fillVirtualRect(clampedX, kTabUnderlineY, clampedW, kTabUnderlineH,
+                    focusColor());
+  }
 }
 
 void DisplayManager::renderMenuWithTabs(const std::vector<String> &items,
@@ -2606,36 +2647,7 @@ void DisplayManager::renderMenuWithTabs(const std::vector<String> &items,
   // (the partial-strip animation overlay) shares the exact same geometry.
   clearVirtualBuffer(virtualWidth, virtualHeight);
 
-  // ---- Tab band ----
-  const int tabCount = static_cast<int>(tabLabels.size());
-  if (tabCount > 0) {
-    const int slotW = virtualWidth / tabCount;
-    for (int i = 0; i < tabCount; ++i) {
-      const String &label = tabLabels[i];
-      const int labelW = measureTinyTextWidth(label, kTinyScale);
-      const int slotCenter = i * slotW + slotW / 2;
-      const int labelX = std::max(0, slotCenter - labelW / 2);
-      const uint16_t color = (i == activeTabIdx) ? focusColor() : dimColor();
-      drawTinyTextAt(label, labelX, kTabLabelY, color, kTinyScale);
-    }
-    // Draw the divider FIRST so the bright underline z-paints on top of it.
-    // Hairline is inset on both sides; right inset is wider than purely
-    // aesthetic — it has to clear the right-aligned battery chip.
-    const int dividerWidth =
-        virtualWidth - kTabDividerLeftMarginPx - kTabDividerRightMarginPx;
-    if (dividerWidth > 0) {
-      fillVirtualRect(kTabDividerLeftMarginPx, kTabDividerY, dividerWidth, 1,
-                      dimColor());
-    }
-    // Active tab's underline — drawn AFTER the divider so it cleanly overlaps
-    // (highlights) the corresponding slice of the gray line.
-    if (underlineWPx > 0 && underlineXPx >= 0) {
-      const int clampedX = std::max(0, std::min(underlineXPx, virtualWidth - 1));
-      const int clampedW = std::min(underlineWPx, virtualWidth - clampedX);
-      fillVirtualRect(clampedX, kTabUnderlineY, clampedW, kTabUnderlineH,
-                      focusColor());
-    }
-  }
+  drawTabBand(tabLabels, activeTabIdx, underlineXPx, underlineWPx);
 
   // ---- Menu rows below the tab band ----
   const int menuTopY = kTabBandHeight + kTabMenuGapPx;
@@ -2695,7 +2707,9 @@ void DisplayManager::renderMenuWithTabs(const std::vector<String> &items,
     y += rowHeight;
   }
 
-  drawBatteryBadge();
+  // Tabbed pickers intentionally suppress the battery chip — with 4 tabs
+  // spread across the panel, the right-aligned chip overlapped the rightmost
+  // label. Battery is still visible on every non-tabbed screen.
   flushScaledFrame(scale, virtualWidth, virtualHeight);
 }
 
@@ -3510,7 +3524,11 @@ int DisplayManager::libraryScrubLetterAtY(const std::vector<char> &letterAnchors
 void DisplayManager::renderLibrary(const std::vector<LibraryItem> &items, size_t selectedIndex,
                                    const std::vector<char> &letterAnchors,
                                    int focusedLetterIdx,
-                                   const std::vector<char> &scrubLetters) {
+                                   const std::vector<char> &scrubLetters,
+                                   const std::vector<String> &tabLabels,
+                                   int activeTabIdx,
+                                   int underlineXPx,
+                                   int underlineWPx) {
   if (items.empty()) {
     renderCenteredWord("LIBRARY");
     return;
@@ -3554,6 +3572,12 @@ void DisplayManager::renderLibrary(const std::vector<LibraryItem> &items, size_t
       renderKey += String(focusedLetterIdx);
     }
   }
+  const bool libraryHasTabs = !tabLabels.empty();
+  if (libraryHasTabs) {
+    // Tab band is animatable — bypass cache when present so underline
+    // slides repaint per frame.
+    lastRenderKey_ = "";
+  }
 
   if (!initialized_ || renderKey == lastRenderKey_) {
     return;
@@ -3565,7 +3589,12 @@ void DisplayManager::renderLibrary(const std::vector<LibraryItem> &items, size_t
   const int virtualWidth = kDisplayWidth;
   const int virtualHeight = kDisplayHeight;
   const size_t itemCount = items.size();
-  const int usableHeight = std::max(kLibraryRowHeight, virtualHeight - (2 * kLibraryScreenPaddingY));
+  // When tabs are present, push items down by the tab-band height so the
+  // bar sits at the very top of the panel and the rows live below it.
+  const int topInset = libraryHasTabs ? (kTabBandHeight + kTabMenuGapPx)
+                                      : kLibraryScreenPaddingY;
+  const int botInset = kLibraryScreenPaddingY;
+  const int usableHeight = std::max(kLibraryRowHeight, virtualHeight - topInset - botInset);
   const size_t visibleCount =
       std::min(itemCount, static_cast<size_t>(std::max(1, usableHeight / kLibraryRowHeight)));
   size_t firstVisible = 0;
@@ -3576,10 +3605,13 @@ void DisplayManager::renderLibrary(const std::vector<LibraryItem> &items, size_t
     firstVisible = itemCount - visibleCount;
   }
 
-  const int totalHeight = kLibraryRowHeight * static_cast<int>(visibleCount);
-  int y = std::max(kLibraryScreenPaddingY, (virtualHeight - totalHeight) / 2);
+  // Top-align under the tab band (same rule as renderMenu / renderMenuWithTabs).
+  int y = topInset;
 
   clearVirtualBuffer(virtualWidth, virtualHeight);
+  if (libraryHasTabs) {
+    drawTabBand(tabLabels, activeTabIdx, underlineXPx, underlineWPx);
+  }
 
   const int chipH = kTinyGlyphHeight * kTinyScale + kLibraryChipPadY * 2;
 
@@ -3724,7 +3756,11 @@ void DisplayManager::renderLibrary(const std::vector<LibraryItem> &items, size_t
     }
   }
 
-  drawBatteryBadge();
+  // Tabbed pickers hide the battery chip — see the matching note in
+  // renderMenuWithTabs. Non-tabbed library still gets it at top-right.
+  if (!libraryHasTabs) {
+    drawBatteryBadge();
+  }
   flushScaledFrame(scale, virtualWidth, virtualHeight);
 }
 

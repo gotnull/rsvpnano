@@ -2170,13 +2170,22 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs)
   // Generic horizontal-swipe → tab cycle for any menu screen that belongs
   // to a TabGroup. Directional, no wrap: left-swipe moves to the previous
   // tab (or no-op at the leftmost), right-swipe moves to the next tab (or
-  // no-op at the rightmost).
+  // no-op at the rightmost). Skipped when the gesture started inside the
+  // right-edge letter-scrub strip used by BookPicker / AuthorPicker — that
+  // zone owns the touch for alphabetic scrubbing.
   if (currentScreenHasTabs() &&
       absDeltaX >= static_cast<int>(kSwipeThresholdPx) &&
       absDeltaX > absDeltaY + static_cast<int>(kAxisBiasPx))
   {
-    cycleTabs(deltaX < 0 ? -1 : 1);
-    return;
+    const int letterStripStartX =
+        BoardConfig::DISPLAY_WIDTH - DisplayManager::kLibraryLetterStripWidth;
+    const bool startedInLetterStrip =
+        pausedTouch_.startX >= letterStripStartX;
+    if (!startedInLetterStrip && !letterScrubActive_)
+    {
+      cycleTabs(deltaX < 0 ? -1 : 1);
+      return;
+    }
   }
 
   // Leftward swipe on a non-tabbed menu with a Back affordance = navigate
@@ -3218,8 +3227,12 @@ void App::renderAuthorPicker()
   const int focus = (letterScrubActive_ && menuScreen_ == MenuScreen::AuthorPicker)
                         ? letterScrubFocusIdx_
                         : -1;
+  const auto tabs = tabRenderArgsForCurrentScreen();
   display_.renderLibrary(authorMenuItems_, authorPickerSelectedIndex_,
-                         authorPickerLetterAnchors_, focus);
+                         authorPickerLetterAnchors_, focus,
+                         std::vector<char>{},
+                         tabs.labels, tabs.activeIdx,
+                         tabs.underlineX, tabs.underlineW);
 }
 
 void App::selectAuthorPickerItem(uint32_t nowMs)
@@ -3928,7 +3941,11 @@ void App::openRemoteBookPicker(uint32_t nowMs)
 
 void App::renderRemoteBookPicker()
 {
-  display_.renderLibrary(remoteBookMenuItems_, remoteBookSelectedIndex_);
+  const auto tabs = tabRenderArgsForCurrentScreen();
+  display_.renderLibrary(remoteBookMenuItems_, remoteBookSelectedIndex_,
+                         std::vector<char>{}, -1, std::vector<char>{},
+                         tabs.labels, tabs.activeIdx,
+                         tabs.underlineX, tabs.underlineW);
 }
 
 void App::selectRemoteBookPickerItem(uint32_t nowMs)
@@ -4059,12 +4076,10 @@ void App::renderDemoPicker()
   std::vector<bool> chevrons(items.size(), true);
   chevrons[kDemoPickerBackIndex] = false;
   // Now part of the Effects TabGroup (Demos | Modules | Favorites).
-  const std::vector<String> tabLabels = {"Demos", "Modules", "Favorites"};
-  const int slotW = BoardConfig::DISPLAY_WIDTH / static_cast<int>(tabLabels.size());
-  display_.renderMenuWithTabs(items, demoSelectedIndex_, chevrons, tabLabels,
-                              /*activeIdx=*/0,
-                              currentTabUnderlineX(slotW, static_cast<int>(tabLabels.size())),
-                              currentTabUnderlineW(slotW));
+  const auto tabs = tabRenderArgsForCurrentScreen();
+  display_.renderMenuWithTabs(items, demoSelectedIndex_, chevrons,
+                              tabs.labels, tabs.activeIdx,
+                              tabs.underlineX, tabs.underlineW);
 }
 
 void App::selectDemoPickerItem(uint32_t nowMs)
@@ -4133,6 +4148,16 @@ const App::TabGroup App::kSettingsTabGroup = {
     sizeof(kSettingsTabsData) / sizeof(kSettingsTabsData[0]),
 };
 
+const App::TabDescriptor App::kBooksTabsData[] = {
+    {"All",     MenuScreen::BookPicker,       &App::openBookPicker},
+    {"Authors", MenuScreen::AuthorPicker,     &App::openAuthorPicker},
+    {"Cloud",   MenuScreen::RemoteBookPicker, &App::openRemoteBookPickerTab},
+};
+const App::TabGroup App::kBooksTabGroup = {
+    kBooksTabsData,
+    sizeof(kBooksTabsData) / sizeof(kBooksTabsData[0]),
+};
+
 const App::TabGroup *App::tabGroupFor(MenuScreen screen) const
 {
   switch (screen)
@@ -4146,6 +4171,10 @@ const App::TabGroup *App::tabGroupFor(MenuScreen screen) const
     case MenuScreen::SettingsPacing:
     case MenuScreen::SettingsReadingSounds:
       return &kSettingsTabGroup;
+    case MenuScreen::BookPicker:
+    case MenuScreen::AuthorPicker:
+    case MenuScreen::RemoteBookPicker:
+      return &kBooksTabGroup;
     default:
       return nullptr;
   }
@@ -4158,6 +4187,24 @@ int App::tabIndexInGroup(const TabGroup &group, MenuScreen screen) const
     if (group.tabs[i].screen == screen) return static_cast<int>(i);
   }
   return -1;
+}
+
+App::TabRenderArgs App::tabRenderArgsForCurrentScreen() const
+{
+  TabRenderArgs out;
+  const TabGroup *group = tabGroupFor(menuScreen_);
+  if (!group) return out;  // no tab band — caller passes empty args
+  out.labels.reserve(group->tabCount);
+  for (size_t i = 0; i < group->tabCount; ++i)
+  {
+    out.labels.push_back(String(group->tabs[i].label));
+  }
+  out.activeIdx = std::max(0, tabIndexInGroup(*group, menuScreen_));
+  const int slotCount = static_cast<int>(group->tabCount);
+  const int slotW = BoardConfig::DISPLAY_WIDTH / std::max(1, slotCount);
+  out.underlineX = currentTabUnderlineX(slotW, slotCount);
+  out.underlineW = currentTabUnderlineW(slotW);
+  return out;
 }
 
 String App::buildTabStripLabel(const TabGroup &group, int activeIdx) const
@@ -4340,12 +4387,10 @@ void App::renderModulesPicker()
   for (size_t i = kTabbedFirstItemRow; i < modulesMenuItems_.size(); ++i) {
     if (modulesMenuItems_[i].startsWith("(")) chevrons[i] = false;
   }
-  const std::vector<String> tabLabels = {"Demos", "Modules", "Favorites"};
-  const int slotW = BoardConfig::DISPLAY_WIDTH / static_cast<int>(tabLabels.size());
+  const auto tabs = tabRenderArgsForCurrentScreen();
   display_.renderMenuWithTabs(modulesMenuItems_, modulesSelectedIndex_, chevrons,
-                              tabLabels, /*activeIdx=*/1,
-                              currentTabUnderlineX(slotW, static_cast<int>(tabLabels.size())),
-                              currentTabUnderlineW(slotW));
+                              tabs.labels, tabs.activeIdx,
+                              tabs.underlineX, tabs.underlineW);
 }
 
 void App::selectModulesPickerItem(uint32_t nowMs)
@@ -4437,12 +4482,10 @@ void App::renderModulesFavorites()
   for (size_t i = kTabbedFirstItemRow; i < modulesFavoritesMenuItems_.size(); ++i) {
     if (modulesFavoritesMenuItems_[i].startsWith("(")) chevrons[i] = false;
   }
-  const std::vector<String> tabLabels = {"Demos", "Modules", "Favorites"};
-  const int slotW = BoardConfig::DISPLAY_WIDTH / static_cast<int>(tabLabels.size());
+  const auto tabs = tabRenderArgsForCurrentScreen();
   display_.renderMenuWithTabs(modulesFavoritesMenuItems_, modulesFavoritesSelectedIndex_,
-                              chevrons, tabLabels, /*activeIdx=*/2,
-                              currentTabUnderlineX(slotW, static_cast<int>(tabLabels.size())),
-                              currentTabUnderlineW(slotW));
+                              chevrons, tabs.labels, tabs.activeIdx,
+                              tabs.underlineX, tabs.underlineW);
 }
 
 void App::selectModulesFavoritesItem(uint32_t nowMs)
@@ -6211,20 +6254,14 @@ void App::renderSettings()
       chevrons[kSettingsDisplayTypographyIndex] = true;
     }
   }
-  // Settings sub-screens belong to the Settings TabGroup — switch to the
-  // tab-bar renderer so the user can swipe between Home / Display / Pacing
-  // / Sounds instead of drilling in/out.
-  const TabGroup *settingsGroup = tabGroupFor(menuScreen_);
-  if (settingsGroup == &kSettingsTabGroup) {
-    const int activeIdx = tabIndexInGroup(*settingsGroup, menuScreen_);
-    const std::vector<String> tabLabels = {"Home", "Display", "Pacing", "Sounds"};
-    const int slotCount = static_cast<int>(tabLabels.size());
-    const int slotW = BoardConfig::DISPLAY_WIDTH / slotCount;
+  // Settings sub-screens belong to the Settings TabGroup — swipe between
+  // Home / Display / Pacing / Sounds instead of drilling in/out. Tab args
+  // come from the shared helper so labels + underline always match.
+  if (tabGroupFor(menuScreen_) == &kSettingsTabGroup) {
+    const auto tabs = tabRenderArgsForCurrentScreen();
     display_.renderMenuWithTabs(settingsMenuItems_, settingsSelectedIndex_,
-                                chevrons, tabLabels,
-                                std::max(0, activeIdx),
-                                currentTabUnderlineX(slotW, slotCount),
-                                currentTabUnderlineW(slotW));
+                                chevrons, tabs.labels, tabs.activeIdx,
+                                tabs.underlineX, tabs.underlineW);
     return;
   }
   display_.renderMenu(settingsMenuItems_, settingsSelectedIndex_, chevrons);
@@ -6277,8 +6314,12 @@ void App::renderBookPicker()
   const int focus = (letterScrubActive_ && menuScreen_ == MenuScreen::BookPicker)
                         ? letterScrubFocusIdx_
                         : -1;
-  display_.renderLibrary(bookMenuItems_, bookPickerSelectedIndex_, bookPickerLetterAnchors_,
-                         focus);
+  const auto tabs = tabRenderArgsForCurrentScreen();
+  display_.renderLibrary(bookMenuItems_, bookPickerSelectedIndex_,
+                         bookPickerLetterAnchors_, focus,
+                         std::vector<char>{},
+                         tabs.labels, tabs.activeIdx,
+                         tabs.underlineX, tabs.underlineW);
 }
 
 void App::renderChapterPicker()

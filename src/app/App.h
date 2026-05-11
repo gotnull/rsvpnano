@@ -102,6 +102,20 @@ class App {
   static const TabGroup kEffectsTabGroup;
   static const TabDescriptor kSettingsTabsData[];
   static const TabGroup kSettingsTabGroup;
+  static const TabDescriptor kBooksTabsData[];
+  static const TabGroup kBooksTabGroup;
+  // Bundled tab args every render call passes through to DisplayManager.
+  // If the current screen isn't in any TabGroup the labels vector is empty
+  // and activeIdx/underline* are -1 — both renderMenuWithTabs and
+  // renderLibrary treat that as "no tab band, render normally".
+  struct TabRenderArgs {
+    std::vector<String> labels;
+    int activeIdx = -1;
+    int underlineX = -1;
+    int underlineW = -1;
+  };
+  TabRenderArgs tabRenderArgsForCurrentScreen() const;
+
   // Resolve the tab group a menu screen belongs to, or nullptr if the
   // screen is single-tab (no tab strip rendered).
   const TabGroup *tabGroupFor(MenuScreen screen) const;
