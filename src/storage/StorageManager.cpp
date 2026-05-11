@@ -1107,8 +1107,10 @@ bool StorageManager::begin() {
       const uint64_t sizeMb = SD_MMC.cardSize() / (1024ULL * 1024ULL);
       Serial.printf("[storage] SD initialized (%llu MB) at %d kHz on attempt %d\n",
                     sizeMb, frequencyKhz, attempt + 1);
-      notifyStatus("SD", "Scanning books", "EPUB converts on open", 10);
-      refreshBookPaths();
+      // No library scan on mount. refreshBookPaths() (called via
+      // listBooks()) is now driven lazily by App when the user opens the
+      // book/author picker or taps Resume — boot must not pay this cost
+      // when the user isn't going near a book.
       return true;
     }
   }

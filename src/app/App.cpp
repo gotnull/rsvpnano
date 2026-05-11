@@ -377,7 +377,12 @@ namespace
 
 } // namespace
 
-App::App() : button_(BoardConfig::PIN_BOOT_BUTTON), powerButton_(BoardConfig::PIN_PWR_BUTTON) {}
+App::App()
+    : button_(BoardConfig::PIN_BOOT_BUTTON),
+      powerButton_(BoardConfig::PIN_PWR_BUTTON),
+      // SceneContext aggregate-initializes its four service refs from
+      // the App members declared just above it in App.h.
+      sceneCtx_{display_, screensaver_, modPlayer_, events_} {}
 
 void App::begin()
 {
@@ -462,6 +467,15 @@ void App::begin()
   // I2S channel without racing the first lazy AudioManager call.
   audio_.begin();
   modPlayer_.begin();
+
+  // Scene architecture — Milestone 1. Register concrete scenes, bring up
+  // the dispatcher, and subscribe to the events we need to react to from
+  // the legacy state machine.
+  sceneManager_.registerScene(SceneId::Legacy, &legacyScene_);
+  sceneManager_.registerScene(SceneId::Screensaver, &screensaverScene_);
+  events_.subscribe(EventType::ScreensaverExited,
+                    &App::onScreensaverExitedTrampoline, this);
+  sceneManager_.begin(sceneCtx_, bootStartedMs_);
   notificationTone_ = preferences_.getString(kPrefNotifTone, "");
   notifications_.setLastSeenTs(preferences_.getUInt(kPrefNotifLastTs, 0));
   soundEnabled_ = preferences_.getBool(kPrefSoundEnabled, soundEnabled_);
@@ -507,9 +521,12 @@ void App::begin()
   return;
 #endif
 
-  display_.renderProgress("SD", "Loading books", "Use SD converter for EPUB", 0);
+  // Boot deliberately does NOT scan the library. listBooks() used to run
+  // here and triggered "SD / Reading library / Indexing books" on every
+  // restart even when the user wasn't going near a book. The scan is now
+  // lazy — it fires the first time the user opens the book/author picker
+  // (openBookPicker, openAuthorPicker) or actually taps Resume.
   const bool storageReady = storage_.begin();
-  storage_.listBooks();
   if (!storageReady) {
     // Schedule the first auto-remount attempt 30 s after boot. Subsequent
     // retries land every 30 s while the device is in Paused/Menu and SD is
@@ -686,21 +703,25 @@ void App::update(uint32_t nowMs)
       Serial.printf("[screensaver] idle %lu ms, entering\n",
                     static_cast<unsigned long>(nowMs - lastActivityMs_));
       screensaverPreviousState_ = state_;
-      screensaver_.begin(nowMs);
+      // Activate the migrated ScreensaverScene; it owns screensaver_.begin()
+      // and the 60-fps frame cap. We still flip AppState::Screensaver so
+      // unmigrated checks (auto-power-off gate, notification poll gate,
+      // music-shuffle hook in setState) keep working until those states
+      // also move to scenes.
+      sceneManager_.requestTransition(SceneId::Screensaver, "idle", nowMs);
       setState(AppState::Screensaver, nowMs);
     }
   }
-  if (state_ == AppState::Screensaver)
+  // Drive the active scene. Called unconditionally — the manager itself
+  // gates on the active scene (Legacy::tick is a no-op) and processes
+  // pending transitions at the start of tick(). Earlier we gated this
+  // call on `active() == Screensaver`, which created a chicken-and-egg
+  // where the pending Legacy→Screensaver transition could never run
+  // because tick() was never called.
   {
-    // Min interval = 60fps target. The renderScreensaverFrame call blocks
-    // for the full SPI flush (~12 ms after native-stripe rewrite), so this
-    // throttle now actually engages and caps real frame rate at 60.
-    constexpr uint32_t kScreensaverMinIntervalMs = 16;
-    static uint32_t sLastScreensaverMs = 0;
-    if (nowMs - sLastScreensaverMs >= kScreensaverMinIntervalMs) {
-      sLastScreensaverMs = nowMs;
-      const uint32_t s = micros();
-      display_.renderScreensaverFrame(screensaver_);
+    const uint32_t s = micros();
+    sceneManager_.tick(nowMs);
+    if (sceneManager_.active() == SceneId::Screensaver) {
       trackStage("saver", micros() - s, 25000);
     }
   }
@@ -902,6 +923,24 @@ void App::update(uint32_t nowMs)
   }
 }
 
+void App::onScreensaverExitedTrampoline(const Event& ev, void* userdata) {
+  static_cast<App*>(userdata)->onScreensaverExited(ev);
+}
+
+void App::onScreensaverExited(const Event& ev) {
+  // Legacy state-machine side of the dismiss. The ScreensaverScene has
+  // already stopped rendering and the mod-cleanup task (if a track was
+  // playing) is doing its work on core 0. We just restore the previous
+  // AppState and repaint whatever was underneath.
+  const uint32_t nowMs = ev.timestampMs ? ev.timestampMs : millis();
+  setState(screensaverPreviousState_, nowMs);
+  if (state_ == AppState::Menu) {
+    renderMenu();
+  } else {
+    renderReaderWord();
+  }
+}
+
 void App::trackStage(const char *name, uint32_t dtUs, uint32_t warnUs)
 {
   if (dtUs > loopWorstUs_) {
@@ -1079,11 +1118,15 @@ void App::updateState(uint32_t nowMs)
   }
 
   if (state_ == AppState::Menu || state_ == AppState::Sleeping ||
-      state_ == AppState::Screensaver || state_ == AppState::DemoPlaying)
+      state_ == AppState::Screensaver || state_ == AppState::DemoPlaying ||
+      state_ == AppState::CameraStream || state_ == AppState::ModulePlaying ||
+      state_ == AppState::UsbTransfer)
   {
-    // These states are exited by direct input only; don't auto-bounce back to
-    // Paused/Playing. (Forgetting to add DemoPlaying here was the bug that
-    // made every demo flash for 2 ms and immediately drop to Paused.)
+    // These states are exited by direct input (touch, button, completion
+    // event) only; don't auto-bounce back to Paused/Playing. Forgetting to
+    // add a state here caused: DemoPlaying flashing for 2 ms then dropping
+    // to Paused; CameraStream rendering one frame then bouncing to the
+    // reader; ModulePlaying ending instantly on entry.
     return;
   }
 
@@ -1561,20 +1604,16 @@ void App::handleTouch(uint32_t nowMs)
   // Any touch counts as activity for the auto-power-off timer.
   lastActivityMs_ = nowMs;
 
-  // Screensaver: any touch dismisses it. Restore the previous state and let
-  // the periodic refresh repaint the underlying screen.
+  // Screensaver: route the touch to the migrated ScreensaverScene. The
+  // scene's onTouch() requests exit on any phase; the SceneManager runs
+  // the transition (exit() publishes ScreensaverExited) before returning.
+  // App's `onScreensaverExited` subscriber then handles the legacy
+  // setState/render side. Net effect: zero-latency dismissal because no
+  // synchronous cleanup blocks this handler.
   if (state_ == AppState::Screensaver)
   {
     Serial.println("[screensaver] dismissed by touch");
-    setState(screensaverPreviousState_, nowMs);
-    if (state_ == AppState::Menu)
-    {
-      renderMenu();
-    }
-    else
-    {
-      renderReaderWord();
-    }
+    sceneManager_.dispatchTouch(ev, nowMs);
     // Suppress the rest of this finger-down so the underlying menu doesn't
     // pick up Move/End events from the dismiss tap as one of its own.
     dismissTouchPending_ = (ev.phase != TouchPhase::End);
@@ -2773,6 +2812,12 @@ String App::typographyTuningValueLabel() const
 
 void App::openAuthorPicker()
 {
+  // Lazy library scan — boot deliberately skips this; we only pay the
+  // cost when the user opens the picker.
+  if (storage_.bookCount() == 0) {
+    Serial.println("[app] lazy listBooks() for AuthorPicker");
+    storage_.listBooks();
+  }
   authorMenuItems_.clear();
   authorPickerNames_.clear();
 
@@ -2904,6 +2949,12 @@ void App::openBookPickerForAuthor(const String &author)
 
 void App::openBookPicker()
 {
+  // Lazy library scan — boot skips listBooks() so the device lands on
+  // the menu instantly. We pay the cost here on first picker open.
+  if (storage_.bookCount() == 0) {
+    Serial.println("[app] lazy listBooks() for BookPicker");
+    storage_.listBooks();
+  }
   bookMenuItems_.clear();
   bookPickerBookIndices_.clear();
   DisplayManager::LibraryItem bookBackItem;
@@ -4862,23 +4913,20 @@ bool App::prepareSavedBookMeta()
   {
     return false;
   }
-  const int idx = findBookIndexByPath(savedPath);
-  if (idx < 0)
-  {
-    Serial.printf("[app] saved book not found for meta-only: %s\n", savedPath.c_str());
-    return false;
-  }
-  currentBookIndex_ = static_cast<size_t>(idx);
+  // No library scan on boot — derive the Resume label from the saved file's
+  // basename directly. When the user actually taps Resume,
+  // ensureCurrentBookLoaded() / loadBookAtIndex() does the lazy listBooks()
+  // and re-resolves the storage index then.
   currentBookPath_ = savedPath;
-  currentBookTitle_ = storage_.bookDisplayName(currentBookIndex_);
-  if (currentBookTitle_.isEmpty())
-  {
-    currentBookTitle_ = "Resume";
-  }
+  const int slash = savedPath.lastIndexOf('/');
+  String basename = (slash >= 0) ? savedPath.substring(slash + 1) : savedPath;
+  const int dot = basename.lastIndexOf('.');
+  if (dot > 0) basename = basename.substring(0, dot);
+  currentBookTitle_ = basename.isEmpty() ? String("Resume") : basename;
+  currentBookIndex_ = 0;  // unknown until lazy library scan resolves it
   bookMetaOnly_ = true;
   usingStorageBook_ = false;
-  Serial.printf("[app] meta-only restored: %s (idx=%u)\n", currentBookPath_.c_str(),
-                static_cast<unsigned int>(currentBookIndex_));
+  Serial.printf("[app] meta-only (no scan): %s\n", currentBookPath_.c_str());
   return true;
 }
 
@@ -4892,6 +4940,18 @@ bool App::ensureCurrentBookLoaded(uint32_t nowMs)
   {
     return false;
   }
+  // Lazy library scan — only runs the first time the user actually
+  // tries to resume a book, not on every boot.
+  if (storage_.bookCount() == 0) {
+    Serial.println("[app] lazy listBooks() for resume");
+    storage_.listBooks();
+  }
+  const int idx = findBookIndexByPath(currentBookPath_);
+  if (idx < 0) {
+    Serial.printf("[app] resume failed: book not found %s\n", currentBookPath_.c_str());
+    return false;
+  }
+  currentBookIndex_ = static_cast<size_t>(idx);
   if (loadBookAtIndex(currentBookIndex_, nowMs, true))
   {
     bookMetaOnly_ = false;

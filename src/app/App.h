@@ -6,6 +6,12 @@
 #include <vector>
 
 #include "app/AppState.h"
+#include "app/event/EventBus.h"
+#include "app/event/Events.h"
+#include "app/scene/LegacyScene.h"
+#include "app/scene/SceneContext.h"
+#include "app/scene/SceneManager.h"
+#include "app/scene/ScreensaverScene.h"
 #include "audio/AudioManager.h"
 #include "audio/ModPlayer.h"
 #include "demos/Plasma.h"
@@ -164,6 +170,10 @@ class App {
   // Picks a random track from /mods/ and starts background playback.
   // Used by the Demo-music shuffle hook on entering Screensaver/DemoPlaying.
   bool startRandomModule(uint32_t nowMs);
+  // Event-bus subscribers. Static trampolines unpack `userdata` (set to
+  // `this` at subscribe time) and call the member function.
+  void onScreensaverExited(const Event& ev);
+  static void onScreensaverExitedTrampoline(const Event& ev, void* userdata);
   // Fetches the starter MOD pack (5 tracks) from the gotnull/rsvpnano
   // mods-pack-v1 GitHub release into /mods/. Skips files already present.
   // Renders progress to the display; blocks until done.
@@ -404,6 +414,15 @@ class App {
   uint32_t nextSdRemountAtMs_ = 0;
   AppState screensaverPreviousState_ = AppState::Paused;
   Screensaver screensaver_;
+  // Scene architecture — Milestone 1. Order matters: SceneContext holds
+  // references to display_/screensaver_/modPlayer_/events_, all of which
+  // are declared above this block, so the C++ member-initializer order
+  // (declaration order) is correct.
+  EventBus events_;
+  LegacyScene legacyScene_;
+  ScreensaverScene screensaverScene_;
+  SceneContext sceneCtx_;
+  SceneManager sceneManager_;
   // All four demos live as stack-resident members so swapping is allocation-free.
   // Total state cost ~6 KB; cheaper than the screensaver. DemoKind::None means
   // we are not currently in DemoPlaying state.

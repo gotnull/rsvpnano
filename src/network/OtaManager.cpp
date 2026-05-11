@@ -153,6 +153,66 @@ bool OtaManager::connectWifi() {
   return false;
 }
 
+String OtaManager::resolveGithubLatestAssetUrl(const String &assetName) {
+  // Derive api.github.com URL from the configured /releases/latest/download
+  // URL. config_.firmwareUrl shape:
+  //   https://github.com/<owner>/<repo>/releases/latest/download/<asset>
+  // We slice out <owner>/<repo> and build:
+  //   https://api.github.com/repos/<owner>/<repo>/releases/latest
+  const String prefix = "https://github.com/";
+  if (!config_.firmwareUrl.startsWith(prefix)) return "";
+  const int repoEnd = config_.firmwareUrl.indexOf("/releases/", prefix.length());
+  if (repoEnd < 0) return "";
+  const String ownerRepo = config_.firmwareUrl.substring(prefix.length(), repoEnd);
+  const String apiUrl = String("https://api.github.com/repos/") + ownerRepo + "/releases/latest";
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.setTimeout(15000);
+  http.setReuse(false);
+  http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+  // GitHub API requires a User-Agent; otherwise it 403s.
+  http.setUserAgent("rsvp-nano-ota/1.0");
+  if (!http.begin(client, apiUrl)) {
+    Serial.println("[ota] api: http.begin failed");
+    return "";
+  }
+  const int code = http.GET();
+  Serial.printf("[ota] api %s → HTTP %d\n", apiUrl.c_str(), code);
+  if (code != HTTP_CODE_OK) {
+    http.end();
+    return "";
+  }
+  // The release JSON typically runs 4-8 KB. We don't need full parsing —
+  // just scan for the assets-array entry whose "name" matches our asset
+  // file, then grab the "browser_download_url" that follows it within the
+  // same asset object.
+  const String body = http.getString();
+  http.end();
+
+  // Find the entry where "name":"<assetName>" appears, then look forward
+  // for the next "browser_download_url":"<url>" — that pair is always in
+  // the same object in GitHub's response.
+  const String nameKey = String("\"name\":\"") + assetName + "\"";
+  const int nameIdx = body.indexOf(nameKey);
+  if (nameIdx < 0) {
+    Serial.printf("[ota] api: asset %s not in response (body=%u bytes)\n",
+                  assetName.c_str(), static_cast<unsigned>(body.length()));
+    return "";
+  }
+  const String urlKey = "\"browser_download_url\":\"";
+  const int urlIdx = body.indexOf(urlKey, nameIdx);
+  if (urlIdx < 0) {
+    Serial.println("[ota] api: browser_download_url missing after asset name");
+    return "";
+  }
+  const int urlStart = urlIdx + urlKey.length();
+  const int urlEnd = body.indexOf('"', urlStart);
+  if (urlEnd < 0) return "";
+  return body.substring(urlStart, urlEnd);
+}
+
 bool OtaManager::runUpdate() {
   lastError_ = "";
   // App::begin already populated config_ from SD or NVS fallback. Don't try to
@@ -170,17 +230,36 @@ bool OtaManager::runUpdate() {
   const int lastSlash = displayName.lastIndexOf('/');
   if (lastSlash >= 0) displayName = displayName.substring(lastSlash + 1);
   if (displayName.isEmpty()) displayName = "firmware.bin";
+
+  // Resolve the actual asset URL via the GitHub API when the configured URL
+  // is the `/releases/latest/download/<asset>` form. That URL chains
+  // through 2-3 redirects (github.com → objects.githubusercontent.com via
+  // fastly); HTTPClient + WiFiClientSecure historically choke on the
+  // cross-host hop with HTTP -1. Hitting api.github.com directly returns a
+  // single-response JSON we can parse for the artifact's signed
+  // `browser_download_url` and fetch in one shot — no cross-host redirect.
+  String fetchUrl = config_.firmwareUrl;
+  if (config_.firmwareUrl.startsWith("https://github.com/") &&
+      config_.firmwareUrl.indexOf("/releases/latest/download/") > 0) {
+    notifyStatus("OTA", "Resolving", "api.github.com", 10);
+    const String resolved = resolveGithubLatestAssetUrl(displayName);
+    if (!resolved.isEmpty()) {
+      Serial.printf("[ota] resolved asset URL via API: %s\n", resolved.c_str());
+      fetchUrl = resolved;
+    } else {
+      Serial.println("[ota] API resolve failed — falling back to /latest/download URL");
+    }
+  }
+
   notifyStatus("OTA", "Fetching", displayName.c_str(), 15);
 
-  // The GitHub `/releases/latest/download/firmware.bin` URL redirects
-  // through 2-3 hops (github.com → objects.githubusercontent.com via
-  // fastly). Arduino's HTTPClient doesn't reliably preserve the
-  // WiFiClientSecure across host changes — the second hop frequently
-  // returns -1 (HTTPC_ERROR_CONNECTION_REFUSED). Retry up to 3 times with
-  // a fresh client per attempt; each attempt logs the exact code so we
-  // can tell whether the failure is TLS handshake, DNS, or TCP connect.
+  // Three attempts with a fresh client each, plus a *small* TLS buffer
+  // (4 KB rx / 1 KB tx) so the handshake heap requirement drops from
+  // ~30 KB to ~8 KB — that's the actual flake source on tight heap
+  // (scene infra + audio task have eaten into free heap since OTA was
+  // first written).
   constexpr int kOtaMaxAttempts = 3;
-  const bool useHttps = config_.firmwareUrl.startsWith("https://");
+  const bool useHttps = fetchUrl.startsWith("https://");
   int code = -1;
   HTTPClient http;
   WiFiClientSecure secureClient;
@@ -188,14 +267,14 @@ bool OtaManager::runUpdate() {
     http.end();
     secureClient.stop();
     secureClient.setInsecure();
-    http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+      http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
     http.setTimeout(20000);
     http.setReuse(false);
-    const bool beginOk = useHttps ? http.begin(secureClient, config_.firmwareUrl)
-                                  : http.begin(config_.firmwareUrl);
+    const bool beginOk = useHttps ? http.begin(secureClient, fetchUrl)
+                                  : http.begin(fetchUrl);
     if (!beginOk) {
       lastError_ = "HTTPClient.begin failed";
-      notifyStatus("OTA", "URL invalid", config_.firmwareUrl.c_str(), 100);
+      notifyStatus("OTA", "URL invalid", fetchUrl.c_str(), 100);
       WiFi.disconnect(true);
       return false;
     }
