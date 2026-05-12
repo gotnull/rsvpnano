@@ -20,6 +20,7 @@
 #include "demos/SineScroller.h"
 #include "demos/Starfield.h"
 #include "demos/Pupul.h"
+#include "demos/OldschoolIntro.h"
 #include "demos/UnlimitedBobs.h"
 #include "demos/Vectorball.h"
 #include "display/DisplayManager.h"
@@ -140,6 +141,7 @@ class App {
     Vectorball,
     UnlimitedBobs,
     Pupul,
+    OldschoolIntro,
   };
 
   void setState(AppState nextState, uint32_t nowMs);
@@ -598,6 +600,7 @@ class App {
   Vectorball demoVectorball_;
   UnlimitedBobs demoUnlimitedBobs_;
   Pupul demoPupul_;
+  OldschoolIntro demoOldschoolIntro_;
   uint8_t *cameraJpegBuffer_ = nullptr;
   size_t cameraJpegCapacity_ = 0;
   uint16_t *cameraFrameBuffer_ = nullptr;

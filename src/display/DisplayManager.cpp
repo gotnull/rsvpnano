@@ -6,6 +6,7 @@
 #include "demos/SineScroller.h"
 #include "demos/Starfield.h"
 #include "demos/Pupul.h"
+#include "demos/OldschoolIntro.h"
 #include "demos/UnlimitedBobs.h"
 #include "demos/Vectorball.h"
 #include "demos/VectorballData.h"
@@ -4758,6 +4759,49 @@ void DisplayManager::renderPupulFrame(const Pupul &p) {
     sFrames = 0;
   }
 #endif
+}
+
+void DisplayManager::renderOldschoolIntroFrame(const OldschoolIntro &oi) {
+  if (!initialized_) return;
+  lastRenderKey_ = "";
+  const uint8_t *canvas = oi.framebuffer();
+  const uint16_t *palette = oi.palette565();
+  if (canvas == nullptr || palette == nullptr) return;
+
+  constexpr int kSrcW = OldschoolIntro::kCanvasW;  // 320
+  constexpr int kSrcH = OldschoolIntro::kCanvasH;  // 200
+  static_assert(kPanelNativeWidth == 172,
+                "OldschoolIntro mapping assumes 172-wide panel");
+
+  const bool rotated = uiRotated_;
+  int srcYForCol[kPanelNativeWidth];
+  for (int c = 0; c < kPanelNativeWidth; ++c) {
+    const int ly = rotated ? (kDisplayHeight - 1 - c) : c;
+    int sy = (ly * kSrcH) / kDisplayHeight;
+    if (sy < 0) sy = 0;
+    if (sy >= kSrcH) sy = kSrcH - 1;
+    srcYForCol[c] = sy;
+  }
+
+  for (int stripeStart = 0; stripeStart < kPanelNativeHeight;
+       stripeStart += kMaxChunkPhysicalRows) {
+    const int rows = std::min(kMaxChunkPhysicalRows, kPanelNativeHeight - stripeStart);
+    for (int r = 0; r < rows; ++r) {
+      const int ny = stripeStart + r;
+      int lx = rotated ? ny : (kDisplayWidth - 1 - ny);
+      int sx = lx >> 1;
+      if (sx < 0) sx = 0;
+      if (sx >= kSrcW) sx = kSrcW - 1;
+      uint16_t *out = txBuffer_ + r * kPanelNativeWidth;
+      for (int c = 0; c < kPanelNativeWidth; ++c) {
+        const int sy = srcYForCol[c];
+        out[c] = panelColor(palette[canvas[sy * kSrcW + sx]]);
+      }
+    }
+    if (!drawBitmap(0, stripeStart, kPanelNativeWidth, stripeStart + rows, txBuffer_)) {
+      return;
+    }
+  }
 }
 
 void DisplayManager::renderCameraRgb565Frame(const uint16_t *frame, int sourceWidth, int sourceHeight) {

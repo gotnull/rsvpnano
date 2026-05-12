@@ -14,6 +14,7 @@ class ShadeBobs;
 class Vectorball;
 class UnlimitedBobs;
 class Pupul;
+class OldschoolIntro;
 
 class DisplayManager {
  public:
@@ -141,6 +142,10 @@ class DisplayManager {
   // 640×172 panel: 2× horizontal scale (logicalX/2 → srcX) and 0.75×
   // vertical squash (logicalY * 228 / 172 → srcY).
   void renderPupulFrame(const Pupul &p);
+  // OldschoolIntro (Equinox Scrolls88 / Keops 2000, eqx=1). Reads the demo's
+  // 320×200 indexed framebuffer + 256-entry RGB565 palette and maps to the
+  // 640×172 panel (2× horizontal scale, 200→172 vertical squash).
+  void renderOldschoolIntroFrame(const OldschoolIntro &oi);
   // Renders an RGB565 source frame using the same native-stripe path as the
   // screensaver/demos. Source pixels are normal RGB565 in logical orientation.
   void renderCameraRgb565Frame(const uint16_t *frame, int sourceWidth, int sourceHeight);
