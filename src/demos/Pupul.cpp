@@ -216,7 +216,12 @@ void Pupul::tick(uint32_t nowMs) {
   (void)nowMs;
   if (!initialised_) return;
   ++ar_;
-  restoreBarRows();
+  // Restore the entire pristine background each frame. The Java applet's
+  // equivalent is `drawImage(a_[0], 0, 73, 320, 200, ...)` after the bar
+  // restore — it re-blits the bg buffer wholesale BEFORE dragons are
+  // drawn, so dragon stamps never leave trails. Earlier ports only
+  // restored bar rows and got the "dragons paint a trail" bug.
+  std::memcpy(frame_, ac_, kCanvasW * kCanvasBgH * sizeof(uint16_t));
   advanceBarsAndPaintStrip();
   paintBottomBorder();
   advanceDragonFsm();
@@ -245,25 +250,6 @@ void Pupul::tick(uint32_t nowMs) {
         dstRow[xStart + col] = srcRow[col];
       }
     }
-  }
-}
-
-void Pupul::restoreBarRows() {
-  // For each bar that painted last frame, copy the pristine bg back into
-  // those rows so the next pass can re-XOR over a clean canvas.
-  for (int i = 0; i < 10; ++i) {
-    const int top = z_[i * 2 + 1];
-    const int bot = z_[i * 2];
-    int rowCount;
-    if (bot < kCanvasBgH) {
-      rowCount = bot - top;
-    } else {
-      rowCount = kCanvasBgH - top;
-    }
-    if (rowCount <= 0) continue;
-    const size_t offset = static_cast<size_t>(top) * kCanvasW;
-    const size_t copyBytes = static_cast<size_t>(rowCount) * kCanvasW * sizeof(uint16_t);
-    std::memcpy(frame_ + offset, ac_ + offset, copyBytes);
   }
 }
 

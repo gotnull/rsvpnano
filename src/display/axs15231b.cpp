@@ -69,6 +69,13 @@ void sendCommand(uint8_t command, const uint8_t *data, uint32_t length) {
     return;
   }
 
+  // IMPORTANT: ESP-IDF's spi_master doesn't reliably mix polling-mode and
+  // queued-mode transactions on the same device — polling can stall if the
+  // queue has any leftover state. Since axs15231bPushColorsBegin uses
+  // queue_trans for pixel chunks, EVERY transaction here (init commands,
+  // setColumnWindow before each push) must also go through queue_trans +
+  // get_trans_result. Pre-D this was polling_transmit and "worked" because
+  // it was the only path; mixing modes broke the screensaver intermittently.
   spi_transaction_t transaction = {};
   transaction.flags = SPI_TRANS_MULTILINE_CMD | SPI_TRANS_MULTILINE_ADDR;
   transaction.cmd = 0x02;
@@ -78,7 +85,11 @@ void sendCommand(uint8_t command, const uint8_t *data, uint32_t length) {
     transaction.length = length * 8;
   }
 
-  ESP_ERROR_CHECK(spi_device_polling_transmit(gSpi, &transaction));
+  // Queue + wait synchronously so the local `transaction` struct stays
+  // valid for the duration the driver needs the pointer.
+  ESP_ERROR_CHECK(spi_device_queue_trans(gSpi, &transaction, portMAX_DELAY));
+  spi_transaction_t *finished = nullptr;
+  ESP_ERROR_CHECK(spi_device_get_trans_result(gSpi, &finished, portMAX_DELAY));
 }
 
 void setColumnWindow(uint16_t x1, uint16_t x2) {

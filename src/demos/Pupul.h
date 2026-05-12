@@ -53,7 +53,6 @@ class Pupul {
   void blitBackgroundIntoFrame();
 
   // Per-frame helpers (mirror Pupul.b() steps).
-  void restoreBarRows();
   void advanceBarsAndPaintStrip();
   void paintBottomBorder();
   void advanceDragonFsm();
