@@ -4291,25 +4291,22 @@ const App::TabGroup *App::tabGroupFor(MenuScreen screen) const
 {
   switch (screen)
   {
-    // Home-level screens — share one 5-tab strip so Demos / Modules are one
-    // tap from anywhere on the top level.
+    // All five home-level sections share the same 5-tab strip so a single
+    // horizontal swipe takes the user through Read → Books → Demos → Modules
+    // → Settings without losing the band.
     case MenuScreen::Main:
+    case MenuScreen::BookPicker:
     case MenuScreen::DemoPicker:
     case MenuScreen::ModulesPicker:
-      return &kHomeTabGroup;
-    // Books tab drills into the Books picker, which keeps its sub-tab strip
-    // (All | Authors | Cloud) for filtering. Same pattern as Settings.
-    case MenuScreen::BookPicker:
-    case MenuScreen::AuthorPicker:
-    case MenuScreen::RemoteBookPicker:
-      return &kBooksTabGroup;
-    // Settings tab drills into SettingsHome with its sub-tab strip.
     case MenuScreen::SettingsHome:
+      return &kHomeTabGroup;
+    // Deeper screens — the Settings sub-tab strip stays for Display / Pacing
+    // / Sounds because that's the swipe-tunable area; AuthorPicker / Cloud
+    // become drill-in screens from BookPicker rows (no tab band).
     case MenuScreen::SettingsDisplay:
     case MenuScreen::SettingsPacing:
     case MenuScreen::SettingsReadingSounds:
       return &kSettingsTabGroup;
-    // ModulesFavorites is now a drill-in from ModulesPicker — no tab strip.
     default:
       return nullptr;
   }

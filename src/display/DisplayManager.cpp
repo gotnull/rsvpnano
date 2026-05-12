@@ -2501,7 +2501,10 @@ void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemC
     y += rowHeight;
   }
 
-  drawBatteryBadge();
+  // Tabbed pickers suppress the battery chip — with 5 tabs across the panel
+  // the right-aligned chip overlaps the Settings label. Same rule as
+  // renderMenuWithTabs.
+  if (!hasTabs) drawBatteryBadge();
   flushScaledFrame(scale, virtualWidth, virtualHeight);
 }
 

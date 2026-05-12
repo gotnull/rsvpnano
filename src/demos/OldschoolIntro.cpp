@@ -409,7 +409,10 @@ void OldschoolIntro::blitVerticalGlyph(int slot, int xShift, int glyphOffset) {
 }
 
 void OldschoolIntro::drawVerticalScroller() {
-  // i() — 12 glyphs vertically stacked (mirrored at +272 px in ay).
+  // i() — 12 glyphs vertically stacked (mirrored at +272 px in ay). Java reads
+  // bs[ai++] per glyph and then rewinds by the count of chars read so `ai`
+  // only advances when the sub-pixel `ah` shift wraps (drains one char's
+  // worth of vertical offset). The rewind cancels out the per-read advance.
   if (smallAi_ < 0) smallAi_ = 0;
   smallAh_ -= 2;
   if (smallAh_ <= -16) {
@@ -418,21 +421,22 @@ void OldschoolIntro::drawVerticalScroller() {
   }
   const char *bs = oldschool::kTextBsVert;
   const int bsLen = static_cast<int>(strlen(bs));
-  int cursor = smallAi_;
-  int consumed = 0;
+  int readCount = 0;
   for (int n2 = 0; n2 < 12; ++n2) {
-    if (cursor >= bsLen) {
-      cursor = 0;
-      consumed = 0;
+    const int rawCh = static_cast<uint8_t>(bs[smallAi_]);
+    ++smallAi_;
+    if (smallAi_ >= bsLen) {
+      smallAi_ = 0;
+      readCount = 0;
     }
-    int ch = substituteChar(bs[cursor++], /*bigFont=*/false);
-    ++consumed;
+    ++readCount;
+    const int ch = substituteChar(static_cast<char>(rawCh), /*bigFont=*/false);
     const int glyph = ch - 65;
     if (glyph >= 0 && glyph < kSmallGlyphCount) {
       blitVerticalGlyph(n2, smallAh_, glyph * kSmallGlyphStride + 15);
     }
   }
-  smallAi_ -= consumed;
+  smallAi_ -= readCount;
   if (smallAi_ < 0) smallAi_ = 0;
 }
 
@@ -491,7 +495,9 @@ void OldschoolIntro::blitHorizontalGlyph(int slot, int xShift, int glyphOffset) 
 }
 
 void OldschoolIntro::drawHorizontalScroller() {
-  // k() — 21 glyphs of bu waving across the canvas.
+  // k() — 21 glyphs of bu waving across the canvas. Java reads bu[f++] per
+  // glyph and rewinds by the read count; `f` only advances when smallE_
+  // wraps. Same idiom as drawVerticalScroller above.
   if (smallF_ < 0) smallF_ = 0;
   smallE_ -= 2;
   if (smallE_ <= -15) {
@@ -501,15 +507,16 @@ void OldschoolIntro::drawHorizontalScroller() {
   }
   const char *bu = oldschool::kTextBuLarge;
   const int buLen = static_cast<int>(strlen(bu));
-  int cursor = smallF_;
-  int consumed = 0;
+  int readCount = 0;
   for (int n2 = 0; n2 < 21; ++n2) {
-    if (cursor >= buLen) {
-      cursor = 0;
-      consumed = 0;
+    const int rawCh = static_cast<uint8_t>(bu[smallF_]);
+    ++smallF_;
+    if (smallF_ >= buLen) {
+      smallF_ = 0;
+      readCount = 0;
     }
-    int ch = substituteChar(bu[cursor++], /*bigFont=*/false);
-    ++consumed;
+    ++readCount;
+    const int ch = substituteChar(static_cast<char>(rawCh), /*bigFont=*/false);
     const int glyph = ch - 65;
     if (glyph >= 0 && glyph < kSmallGlyphCount) {
       blitHorizontalGlyph(n2, smallE_, glyph * kSmallGlyphStride);
@@ -517,12 +524,11 @@ void OldschoolIntro::drawHorizontalScroller() {
       ++adCursor_;
     }
   }
+  smallF_ -= readCount;
+  if (smallF_ < 0) smallF_ = 0;
   adCursor_ -= 20;
   if (adCursor_ >= 500) adCursor_ -= 500;
   if (adCursor_ < 0) adCursor_ = 0;
-
-  smallF_ -= consumed;
-  if (smallF_ < 0) smallF_ = 0;
 }
 
 void OldschoolIntro::drawBannerOverlay() {
