@@ -3383,6 +3383,21 @@ void App::openBookPickerForAuthor(const String &author)
 
 void App::openBookPicker()
 {
+  // Paint the tab + a "Loading library…" placeholder BEFORE the slow SD scan
+  // / sort / item-build so the user sees the swipe land instantly. The real
+  // list replaces the placeholder when build finishes.
+  menuScreen_ = MenuScreen::BookPicker;
+  bookMenuItems_.clear();
+  bookPickerBookIndices_.clear();
+  {
+    DisplayManager::LibraryItem placeholder;
+    placeholder.title = "Loading library…";
+    bookMenuItems_.push_back(placeholder);
+  }
+  bookPickerSelectedIndex_ = 0;
+  renderBookPicker();
+  yield();
+
   // Lazy library scan — boot skips listBooks() so the device lands on
   // the menu instantly. We pay the cost here on first picker open.
   if (storage_.bookCount() == 0) {
@@ -4566,9 +4581,18 @@ void App::invalidateModulesListCache()
 
 void App::openModulesPicker()
 {
+  // Paint the tab + a "Loading modules…" placeholder BEFORE building the
+  // cached-list + favorites prefix so the swipe lands instantly. The real
+  // list replaces the placeholder once the SD scan / cache is ready.
   menuScreen_ = MenuScreen::ModulesPicker;
   modulesMenuItems_.clear();
-  // Row 0 — Back. Rows 1+ — modules. (Tab band lives outside the items list.)
+  modulesMenuItems_.push_back("Back");
+  modulesMenuItems_.push_back("Loading modules…");
+  modulesSelectedIndex_ = kTabbedBackRow;
+  renderModulesPicker();
+  yield();
+
+  modulesMenuItems_.clear();
   modulesMenuItems_.push_back("Back");
   const bool mounted = storage_.isMounted();
   const auto &names = cachedModuleList();
