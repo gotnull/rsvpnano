@@ -3469,6 +3469,9 @@ void App::openBookPicker()
   {
     if ((pickerYieldCounter++ & 0x07) == 0)
     {
+      // Re-paint the spinner with a fresh tick so the dot rotates while we
+      // build the library item list.
+      display_.renderLoadingOverlay("Library", "Scanning books…", millis());
       yield();
     }
     bookPickerBookIndices_.push_back(bookIndex);
@@ -4576,7 +4579,13 @@ void App::openModulesPicker()
                 mounted ? 1 : 0,
                 static_cast<unsigned>(moduleFavorites_.size()),
                 static_cast<unsigned>(names.size()));
+  size_t modCounter = 0;
   for (const auto &n : names) {
+    if ((modCounter++ & 0x1F) == 0) {
+      // Tick the spinner every ~32 items so it visibly rotates on big libraries.
+      display_.renderLoadingOverlay("Modules", "Scanning /mods/…", millis());
+      yield();
+    }
     modulesMenuItems_.push_back(isModuleFavorite(n) ? (String("* ") + n) : n);
   }
   if (modulesMenuItems_.empty()) {

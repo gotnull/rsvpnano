@@ -3857,47 +3857,7 @@ void DisplayManager::renderStatus(const String &title, const String &line1, cons
   flushScaledFrame(scale, virtualWidth, virtualHeight);
 }
 
-void DisplayManager::renderLoadingOverlay(const String &title, const String &detail,
-                                          uint32_t tickMs) {
-  // Always repaints — caller drives the spinner phase via `tickMs`.
-  lastRenderKey_ = "";
-
-  const int scale = 1;
-  const int virtualWidth = kDisplayWidth;
-  const int virtualHeight = kDisplayHeight;
-  clearVirtualBuffer(virtualWidth, virtualHeight);
-
-  // Dot-ring spinner: 8 dots arranged in a small circle, one accent dot.
-  constexpr int kDotCount = 8;
-  constexpr int kDotRadius = 3;
-  const int ringRadius = 18;
-  const int cx = virtualWidth / 2;
-  const int cy = virtualHeight / 2 - 12;
-  const int accent = static_cast<int>((tickMs / 100U) % kDotCount);
-  const uint16_t baseColor = dimColor();
-  const uint16_t accentColor = focusColor();
-  for (int i = 0; i < kDotCount; ++i) {
-    const float a = static_cast<float>(i) / kDotCount * 6.28318f;
-    const int dx = cx + static_cast<int>(std::cos(a) * ringRadius) - kDotRadius;
-    const int dy = cy + static_cast<int>(std::sin(a) * ringRadius) - kDotRadius;
-    fillVirtualRect(dx, dy, kDotRadius * 2, kDotRadius * 2,
-                    i == accent ? accentColor : baseColor);
-  }
-
-  const int titleY = cy + ringRadius + 12;
-  const int textMaxWidth = virtualWidth - 24;
-  if (!title.isEmpty()) {
-    drawTinyTextCentered(fitTinyText(title, textMaxWidth, kTinyScale), titleY,
-                         focusColor(), kTinyScale);
-  }
-  if (!detail.isEmpty()) {
-    drawTinyTextCentered(fitTinyText(detail, textMaxWidth, kTinyScale),
-                         titleY + kTinyGlyphHeight * kTinyScale + 6,
-                         dimColor(), kTinyScale);
-  }
-
-  flushScaledFrame(scale, virtualWidth, virtualHeight);
-}
+// renderLoadingOverlay lives in DisplayManager_loading.cpp.
 
 void DisplayManager::renderProgress(const String &title, const String &line1, const String &line2,
                                     int progressPercent) {
@@ -4663,78 +4623,7 @@ void DisplayManager::renderVectorballFrame(Vectorball &vb) {
   }
 }
 
-void DisplayManager::renderUnlimitedBobsFrame(const UnlimitedBobs &ub) {
-  if (!initialized_) return;
-  lastRenderKey_ = "";
-
-  // Letterbox the 320×200 framebuffer onto the 640×172 panel preserving
-  // aspect: scale = 172/200 = 0.86 → visible 275×172, centered horizontally
-  // with ~183 px black bars on each side.
-  const uint8_t *frame = ub.framebuffer();
-  if (frame == nullptr) {
-    for (int stripeStart = 0; stripeStart < kPanelNativeHeight;
-         stripeStart += kMaxChunkPhysicalRows) {
-      const int rows = std::min(kMaxChunkPhysicalRows, kPanelNativeHeight - stripeStart);
-      std::memset(txBuffer_, 0, static_cast<size_t>(rows) * kPanelNativeWidth * sizeof(uint16_t));
-      if (!drawBitmap(0, stripeStart, kPanelNativeWidth, stripeStart + rows, txBuffer_)) return;
-    }
-    return;
-  }
-
-  // Per-pixel shade is just (50, 50, shadeIndex) — bake the full 256-entry
-  // palette to panel byte order once per frame. 512 B of stack.
-  uint16_t pal[256];
-  for (int i = 0; i < 256; ++i) {
-    const uint16_t rgb565 =
-        static_cast<uint16_t>(((50 & 0xF8) << 8) | ((50 & 0xFC) << 3) | ((i & 0xFF) >> 3));
-    pal[i] = panelColor(rgb565);
-  }
-  const uint16_t kBlack = panelColor(0x0000);
-
-  // Letterbox geometry + source-coordinate lookup tables.
-  constexpr int kVisibleW = 275;                                 // 320 * 172 / 200
-  constexpr int kLeftMargin = (kDisplayWidth - kVisibleW) / 2;   // 182
-  constexpr int kRightEdge = kLeftMargin + kVisibleW;            // 457
-  uint16_t srcXForCol[kVisibleW];
-  for (int c = 0; c < kVisibleW; ++c) {
-    int sx = (c * UnlimitedBobs::kFrameWidth) / kVisibleW;
-    if (sx < 0) sx = 0;
-    if (sx >= UnlimitedBobs::kFrameWidth) sx = UnlimitedBobs::kFrameWidth - 1;
-    srcXForCol[c] = static_cast<uint16_t>(sx);
-  }
-  uint16_t srcYForLogicalY[kDisplayHeight];
-  for (int y = 0; y < kDisplayHeight; ++y) {
-    int sy = (y * UnlimitedBobs::kFrameHeight) / kDisplayHeight;
-    if (sy < 0) sy = 0;
-    if (sy >= UnlimitedBobs::kFrameHeight) sy = UnlimitedBobs::kFrameHeight - 1;
-    srcYForLogicalY[y] = static_cast<uint16_t>(sy);
-  }
-
-  for (int stripeStart = 0; stripeStart < kPanelNativeHeight;
-       stripeStart += kMaxChunkPhysicalRows) {
-    const int rows = std::min(kMaxChunkPhysicalRows, kPanelNativeHeight - stripeStart);
-
-    for (int nativeX = 0; nativeX < kPanelNativeWidth; ++nativeX) {
-      const int ly = (kDisplayHeight - 1) - nativeX;
-      const uint8_t *srcRow = frame + srcYForLogicalY[ly] * UnlimitedBobs::kFrameWidth;
-      for (int localY = 0; localY < rows; ++localY) {
-        const int lx = stripeStart + localY;
-        uint16_t color;
-        if (lx < kLeftMargin || lx >= kRightEdge) {
-          color = kBlack;
-        } else {
-          const uint8_t shade = srcRow[srcXForCol[lx - kLeftMargin]];
-          color = pal[shade];
-        }
-        txBuffer_[localY * kPanelNativeWidth + nativeX] = color;
-      }
-    }
-
-    if (!drawBitmap(0, stripeStart, kPanelNativeWidth, stripeStart + rows, txBuffer_)) {
-      return;
-    }
-  }
-}
+// renderUnlimitedBobsFrame lives in DisplayManager_unlimitedbobs.cpp.
 
 void DisplayManager::renderPupulFrame(const Pupul &p) {
   if (!initialized_) return;
