@@ -272,8 +272,9 @@ namespace
   constexpr size_t kSettingsHomeScreensaverIndex = 11;
   // Demos / Modules used to live here; they are now top-level Home tabs.
   constexpr size_t kSettingsHomeDemoMusicIndex = 12;
-  constexpr size_t kSettingsHomeModPackIndex = 13;
-  constexpr size_t kSettingsHomeCameraIndex = 14;
+  constexpr size_t kSettingsHomeCrtShaderIndex = 13;
+  constexpr size_t kSettingsHomeModPackIndex = 14;
+  constexpr size_t kSettingsHomeCameraIndex = 15;
   // Demo picker layout: one row per demo. Home tab strip provides back nav
   // (swipe back gesture or tap another tab), so no in-list Back row.
   constexpr size_t kDemoPickerRasterbarsIndex = 0;
@@ -329,6 +330,7 @@ namespace
   constexpr const char *kPrefNotifVolume = "nvol";
   constexpr const char *kPrefNotifLastTs = "nlast";
   constexpr const char *kPrefSoundEnabled = "snden";
+  constexpr const char *kPrefCrtShader = "crtsh";
   constexpr const char *kPrefChapterChime = "chchm";
   constexpr const char *kPrefParagraphChime = "pgchm";
   constexpr const char *kPrefPageChime = "pgnchm";
@@ -568,6 +570,8 @@ void App::begin()
   notificationTone_ = preferences_.getString(kPrefNotifTone, "");
   notifications_.setLastSeenTs(preferences_.getUInt(kPrefNotifLastTs, 0));
   soundEnabled_ = preferences_.getBool(kPrefSoundEnabled, soundEnabled_);
+  crtShaderEnabled_ = preferences_.getBool(kPrefCrtShader, crtShaderEnabled_);
+  display_.setCrtShaderEnabled(crtShaderEnabled_);
   chapterChimeEnabled_ = preferences_.getBool(kPrefChapterChime, chapterChimeEnabled_);
   paragraphChimeEnabled_ = preferences_.getBool(kPrefParagraphChime, paragraphChimeEnabled_);
   pageChimeEnabled_ = preferences_.getBool(kPrefPageChime, pageChimeEnabled_);
@@ -2811,6 +2815,13 @@ void App::selectSettingsItem(uint32_t nowMs)
       rebuildSettingsMenuItems();
       renderSettings();
       return;
+    case kSettingsHomeCrtShaderIndex:
+      crtShaderEnabled_ = !crtShaderEnabled_;
+      preferences_.putBool(kPrefCrtShader, crtShaderEnabled_);
+      display_.setCrtShaderEnabled(crtShaderEnabled_);
+      rebuildSettingsMenuItems();
+      renderSettings();
+      return;
     case kSettingsHomeModPackIndex:
       downloadModStarterPack();
       renderSettings();
@@ -3088,6 +3099,7 @@ void App::rebuildSettingsMenuItems()
                              : (demoMusicMode_ == 2) ? "Picked"
                                                      : "Favorites";
     settingsMenuItems_.push_back(String("Demo music: ") + musicLabel);
+    settingsMenuItems_.push_back(String("CRT shader: ") + (crtShaderEnabled_ ? "On" : "Off"));
     settingsMenuItems_.push_back("Download MOD pack");
     settingsMenuItems_.push_back("Camera test");
   }

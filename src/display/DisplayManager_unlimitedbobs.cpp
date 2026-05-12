@@ -83,6 +83,7 @@ void DisplayManager::renderUnlimitedBobsFrame(const UnlimitedBobs &ub) {
         txBuffer_[localY * kPanelNativeWidth + nativeX] = color;
       }
     }
+    applyCrtToStripe(rows);
     if (!drawBitmap(0, stripeStart, kPanelNativeWidth, stripeStart + rows, txBuffer_)) {
       return;
     }

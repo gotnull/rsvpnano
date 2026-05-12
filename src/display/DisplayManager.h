@@ -132,6 +132,13 @@ class DisplayManager {
   // work and wants the screen to land instantly.
   void renderLoadingOverlay(const String &title, const String &detail,
                             uint32_t tickMs);
+  // CRT-shader post-process. When enabled, demo renderers call
+  // applyCrtToStripe() after composing each native-stripe txBuffer_ chunk to
+  // dim alternate logical-Y rows (horizontal scanlines on the rotated panel).
+  // No bezel — just the scanline darkening.
+  void setCrtShaderEnabled(bool on) { crtShaderEnabled_ = on; }
+  bool isCrtShaderEnabled() const { return crtShaderEnabled_; }
+  void applyCrtToStripe(int stripeRows);
   void renderProgress(const String &title, const String &line1 = "", const String &line2 = "",
                       int progressPercent = -1);
   // Renders a single frame of the dots/stars screensaver. Call once per frame
@@ -288,6 +295,7 @@ class DisplayManager {
   bool darkMode_ = true;
   bool nightMode_ = false;
   bool uiRotated_ = true;
+  bool crtShaderEnabled_ = false;
   String lastRenderKey_;
   String batteryLabel_;
   uint16_t currentWpm_ = 0;

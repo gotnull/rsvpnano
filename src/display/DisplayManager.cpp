@@ -4677,6 +4677,7 @@ void DisplayManager::renderPupulFrame(const Pupul &p) {
       }
     }
 
+    applyCrtToStripe(rows);
 #if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
     composeUs += micros() - cBegin;
     const uint32_t sBegin = micros();
@@ -4743,6 +4744,7 @@ void DisplayManager::renderOldschoolIntroFrame(const OldschoolIntro &oi) {
         out[c] = panelColor(palette[canvas[sy * kSrcW + sx]]);
       }
     }
+    applyCrtToStripe(rows);
     if (!drawBitmap(0, stripeStart, kPanelNativeWidth, stripeStart + rows, txBuffer_)) {
       return;
     }

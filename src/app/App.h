@@ -569,6 +569,7 @@ class App {
   bool displayFlipped_ = true;
   bool notificationsEnabled_ = true;
   bool soundEnabled_ = true;             // master audio switch — gates all playback
+  bool crtShaderEnabled_ = false;        // CRT scanline post-process for demos
   bool chapterChimeEnabled_ = false;     // play a tone when crossing chapter boundary
   bool paragraphChimeEnabled_ = false;   // play a tone when crossing paragraph boundary
   bool pageChimeEnabled_ = false;        // play a tone every kPageWordCount words
