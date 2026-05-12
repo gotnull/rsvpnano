@@ -1,3 +1,66 @@
+// =====================================================================
+// rsvpnano App — architecture rules (READ BEFORE EDITING)
+// ---------------------------------------------------------------------
+// The device must feel like a tiny OS, not an Arduino sketch. The four-
+// step refactor (OTAs A→D, May 2026) moved every long synchronous block
+// off the UI thread. The rules below MUST hold for any new code that
+// lands in this file.
+//
+//   1. The main loop is sacred.
+//      App::update() may COORDINATE work (dispatch events, kick workers,
+//      advance lightweight state machines) but it MUST NOT PERFORM slow
+//      work. Forbidden in update() and anything it calls synchronously:
+//        - SD scans (refreshBookPaths / listBooks SYNCHRONOUSLY).
+//        - delay() of any non-trivial duration. Hardware-timing delays
+//          (<200 ms, sleep prep, panel reset) are the only exception
+//          and live in init / power transition paths.
+//        - HTTP requests, WiFi connects.
+//        - Audio cleanup, libxmp release, file parsing.
+//        - Any spin loop waiting on an external condition.
+//
+//   2. Slow work belongs to dedicated FreeRTOS workers.
+//      Current workers:
+//        - StorageManager  (SD library scan)        — spawnScanTaskIfIdle
+//        - ModPlayer       (audio mix + cleanup)    — audioTaskTrampoline
+//      Planned workers (post-OTA-D architectural pass):
+//        - Downloader   (book + ringtone HTTP fetch)
+//        - Notifications (network poll)
+//        - OTA fetcher  (firmware download + flash)
+//      Pattern (the canonical example is StorageManager in
+//      src/storage/StorageManager.cpp):
+//        a) Worker is spawned via spawnXxxTaskIfIdle(). Idempotent.
+//        b) Worker writes results into a member field protected by an
+//           "in-progress" atomic and never publishes a half-built state.
+//        c) Worker sets a one-shot completion atomic on the way out.
+//        d) Main loop's tick test-and-clears the one-shot, then
+//           publishes a typed Event on events_ (see Events.h).
+//
+//   3. Rendering is dirty-region based.
+//      Static menu frame cached. Marquee redraws only the text strip
+//      (TODO: not yet wired — partial-overlay infrastructure is in
+//      DisplayManager but disabled pending re-architecture; see also
+//      OTA-A revert note in DisplayManager.cpp's renderMenuWithAccent).
+//      Tab underline animation re-pushes only its 2-row native-stripe.
+//      Full-frame flush only when the screen genuinely changes.
+//
+//   4. Status displays are non-blocking.
+//      Never `display_.renderStatus(...); delay(N); doX();` — use
+//      App::displayTransientStatus(..., durationMs, action). The tick
+//      polls the deadline and fires the deferred action from update().
+//
+//   5. Guardrail.
+//      App::update() times each tick and logs "[tick] SLOW …" if any
+//      iteration exceeds kSlowTickWarnUs (~33 ms / 30 fps floor). The
+//      heartbeat line logs the worst tick of the last second. If you
+//      see SLOW lines after your change, you've reintroduced blocking
+//      work — fix it before merging.
+//
+// See also:
+//   - feedback_main_loop_sacred.md (memory) — the user-facing rule.
+//   - feedback_performance_nonnegotiable.md (memory) — 60 fps target.
+//   - reference_patterns_doc.md (memory) — native-stripe rendering pattern.
+// =====================================================================
+
 #include "app/App.h"
 
 #include <HTTPClient.h>
@@ -514,7 +577,9 @@ void App::begin()
   screensaverIndex_ = preferences_.getUChar(kPrefScreensaver, screensaverIndex_);
   if (screensaverIndex_ >= kScreensaverOptionCount) screensaverIndex_ = 0;
   demoMusicMode_ = preferences_.getUChar("demoMusic", demoMusicMode_);
-  if (demoMusicMode_ > 2) demoMusicMode_ = 1;
+  // 0=Off / 1=Shuffle / 2=Picked / 3=Favorites — clamp any stale value to
+  // the safe default (Shuffle).
+  if (demoMusicMode_ > 3) demoMusicMode_ = 1;
   demoMusicPickedTrack_ = preferences_.getString("demoMusicTr", "");
   lastActivityMs_ = millis();
   applyDisplayPreferences(0, false);
@@ -700,23 +765,40 @@ void App::begin()
 
 void App::update(uint32_t nowMs)
 {
+  // -------- Main-loop guardrails --------
+  // The rule (memory: "Main loop is sacred"): this function must NEVER block.
+  // To catch regressions automatically we time the whole tick and warn when
+  // it exceeds the budget. Per-stage timing via trackStage() is finer-grained
+  // (each stage has its own threshold); this is the safety net for cases
+  // where every stage stays under its own warn level but together blow it.
+  const uint32_t tickStartUs = micros();
+  // Threshold for "slow tick" — anything over 33 ms drops the loop below
+  // 30 fps for that iteration. Picked low enough that any blocking I/O or
+  // delay() reintroduction screams in the log, high enough that a single
+  // virtualFrame_ flush (~14 ms with double-buffer) doesn't false-positive.
+  constexpr uint32_t kSlowTickWarnUs = 33000;
+
   // Diagnostic heartbeat — once per second so we can tell whether the main
   // loop is alive when the device "locks up". If this line stops printing,
   // the loop itself is wedged (panic / watchdog / infinite loop). If it
   // keeps printing but the screen is frozen, look at the renderer paths.
   static uint32_t sHbLastMs = 0;
   static uint32_t sHbTicks = 0;
+  static uint32_t sHbMaxTickUs = 0;
   ++sHbTicks;
   if (nowMs - sHbLastMs >= 1000) {
-    Serial.printf("[heart] t=%lu state=%d menu=%d ticks=%lu heap=%u min=%u\n",
-                  static_cast<unsigned long>(nowMs),
-                  static_cast<int>(state_),
-                  static_cast<int>(menuScreen_),
-                  static_cast<unsigned long>(sHbTicks),
-                  static_cast<unsigned>(ESP.getFreeHeap()),
-                  static_cast<unsigned>(ESP.getMinFreeHeap()));
+    Serial.printf(
+        "[heart] t=%lu state=%d menu=%d ticks=%lu heap=%u min=%u maxTick=%lu us\n",
+        static_cast<unsigned long>(nowMs),
+        static_cast<int>(state_),
+        static_cast<int>(menuScreen_),
+        static_cast<unsigned long>(sHbTicks),
+        static_cast<unsigned>(ESP.getFreeHeap()),
+        static_cast<unsigned>(ESP.getMinFreeHeap()),
+        static_cast<unsigned long>(sHbMaxTickUs));
     sHbLastMs = nowMs;
     sHbTicks = 0;
+    sHbMaxTickUs = 0;
   }
   button_.update(nowMs);
   powerButton_.update(nowMs);
@@ -965,6 +1047,21 @@ void App::update(uint32_t nowMs)
                   loopWorstStage_);
     loopWorstUs_ = 0;
     loopWorstStage_ = "(none)";
+  }
+
+  // Whole-tick guardrail. trackStage() catches individual stages exceeding
+  // their warn budget; this catches the case where every stage stays under
+  // its threshold but they collectively exceed our 30 fps floor. If this
+  // logs, look at the worst stage in the next heartbeat and at recent code
+  // changes for anything synchronous that should be a worker.
+  const uint32_t tickElapsedUs = micros() - tickStartUs;
+  if (tickElapsedUs > sHbMaxTickUs) {
+    sHbMaxTickUs = tickElapsedUs;
+  }
+  if (tickElapsedUs > kSlowTickWarnUs) {
+    Serial.printf("[tick] SLOW %lu us state=%s menu=%d worstStage=%s\n",
+                  static_cast<unsigned long>(tickElapsedUs), stateName(state_),
+                  static_cast<int>(menuScreen_), loopWorstStage_);
   }
 }
 
@@ -2710,7 +2807,8 @@ void App::selectSettingsItem(uint32_t nowMs)
       openModulesPicker();
       return;
     case kSettingsHomeDemoMusicIndex:
-      demoMusicMode_ = static_cast<uint8_t>((demoMusicMode_ + 1) % 3);
+      // Off → Shuffle → Picked → Favorites → Off → …
+      demoMusicMode_ = static_cast<uint8_t>((demoMusicMode_ + 1) % 4);
       preferences_.putUChar("demoMusic", demoMusicMode_);
       rebuildSettingsMenuItems();
       renderSettings();
@@ -2989,8 +3087,10 @@ void App::rebuildSettingsMenuItems()
     settingsMenuItems_.push_back(String("Screensaver: ") + savLabel);
     settingsMenuItems_.push_back("Demos");
     settingsMenuItems_.push_back("Modules");
-    const char *musicLabel =
-        (demoMusicMode_ == 0) ? "Off" : (demoMusicMode_ == 1) ? "Shuffle" : "Picked";
+    const char *musicLabel = (demoMusicMode_ == 0)   ? "Off"
+                             : (demoMusicMode_ == 1) ? "Shuffle"
+                             : (demoMusicMode_ == 2) ? "Picked"
+                                                     : "Favorites";
     settingsMenuItems_.push_back(String("Demo music: ") + musicLabel);
     settingsMenuItems_.push_back("Download MOD pack");
     settingsMenuItems_.push_back("Camera test");
@@ -4814,6 +4914,27 @@ bool App::startRandomModule(uint32_t nowMs)
       if (n == demoMusicPickedTrack_) {
         return modPlayer_.playFile(storage_.modulePath(n));
       }
+    }
+  }
+  // Favorites mode picks a random track from the user's favourites that's
+  // also actually on the SD. Empty favourites / no overlap with the SD
+  // contents falls through to plain shuffle so the device isn't silent.
+  if (demoMusicMode_ == 3 && !moduleFavorites_.empty()) {
+    std::vector<const String *> available;
+    available.reserve(moduleFavorites_.size());
+    for (const auto &fav : moduleFavorites_) {
+      for (const auto &n : names) {
+        if (n == fav) {
+          available.push_back(&fav);
+          break;
+        }
+      }
+    }
+    if (!available.empty()) {
+      const uint32_t pick = static_cast<uint32_t>(esp_random()) % available.size();
+      const String &chosen = *available[pick];
+      Serial.printf("[mod] favorites pick: %s\n", chosen.c_str());
+      return modPlayer_.playFile(storage_.modulePath(chosen));
     }
   }
   const uint32_t pick = static_cast<uint32_t>(esp_random()) % names.size();
