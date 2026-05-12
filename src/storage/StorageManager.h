@@ -2,6 +2,9 @@
 
 #include <Arduino.h>
 #include <FS.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <atomic>
 #include <vector>
 
 #include "reader/BookContent.h"
@@ -26,8 +29,28 @@ class StorageManager {
   // True if SD_MMC is currently mounted. Used by App for periodic auto-remount
   // attempts when the initial boot mount failed.
   bool isMounted() const { return mounted_; }
+  // Main-loop entry point. Spawns the SD scan on a dedicated FreeRTOS task
+  // and returns immediately so the UI thread is never blocked by SD I/O.
+  // Idempotent — subsequent calls while a scan is in progress (or after one
+  // has completed) are no-ops. See requestListBooksAsync() / isReady() /
+  // consumeScanCompleted() for status polling.
   void listBooks();
+  // Force a fresh scan (used after USB-transfer end / SD remount where the
+  // file set may have changed). Drops the listedOnce_ guard so the worker
+  // re-walks /books even if it ran before.
+  void requestRescanAsync();
   void refreshBooks();
+  bool isScanInProgress() const { return scanInProgress_.load(); }
+  // True once the worker has populated bookPaths_ at least once. While
+  // false, all bookCount() / bookPath() / bookDisplayName() / bookStats()
+  // accessors return safe defaults so the UI never reads a half-built list.
+  bool isReady() const { return scanReady_.load() && !scanInProgress_.load(); }
+  // Atomic test-and-clear, called from the main loop's update tick so it
+  // can re-render whichever picker was waiting on the scan.
+  bool consumeScanCompleted() {
+    bool expected = true;
+    return scanCompletedOneShot_.compare_exchange_strong(expected, false);
+  }
   bool loadFirstBookWords(std::vector<String> &words, String *loadedPath = nullptr);
   bool loadBookContent(size_t index, BookContent &book, String *loadedPath = nullptr,
                        size_t *loadedIndex = nullptr);
@@ -76,9 +99,24 @@ class StorageManager {
   void notifyStatus(const char *title, const char *line1 = "", const char *line2 = "",
                     int progressPercent = -1);
   const BookMeta &bookMeta(size_t index) const;
+  // Internal: spawn the scan task if one isn't running. Caller decides
+  // whether to reset listedOnce_ first (force re-scan vs. one-shot).
+  void spawnScanTaskIfIdle();
+  static void scanTaskTrampoline(void *arg);
+  void scanTaskRun();
 
   bool mounted_ = false;
   bool listedOnce_ = false;
+  // Worker-task lifecycle. scanInProgress_ is set true the moment the
+  // worker is spawned and false right before it self-deletes. scanReady_
+  // flips true after the FIRST successful scan and stays true thereafter
+  // (so accessors keep returning real data while a subsequent re-scan
+  // runs). scanCompletedOneShot_ is the main-loop wakeup signal —
+  // consumeScanCompleted() flips it back to false.
+  std::atomic<bool> scanInProgress_{false};
+  std::atomic<bool> scanReady_{false};
+  std::atomic<bool> scanCompletedOneShot_{false};
+  TaskHandle_t scanTaskHandle_ = nullptr;
   StatusCallback statusCallback_ = nullptr;
   void *statusContext_ = nullptr;
   std::vector<String> bookPaths_;

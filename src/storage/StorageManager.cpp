@@ -1130,33 +1130,88 @@ void StorageManager::end() {
 }
 
 void StorageManager::listBooks() {
-  if (!mounted_ || listedOnce_) {
+  // Main-thread entry point now spawns a FreeRTOS worker and returns
+  // immediately. Idempotent: if a scan is already running, or one has
+  // already completed (listedOnce_), this is a no-op. To force a fresh
+  // walk after USB transfer / SD remount, use requestRescanAsync() which
+  // clears the idempotency guard before spawning.
+  if (!mounted_ || listedOnce_) return;
+  spawnScanTaskIfIdle();
+}
+
+void StorageManager::requestRescanAsync() {
+  if (!mounted_) return;
+  // Drop the idempotency guard; the worker will re-walk /books from
+  // scratch. bookPaths_ is replaced wholesale by refreshBookPaths(); during
+  // the worker's run, accessors return safe defaults thanks to
+  // scanInProgress_.
+  listedOnce_ = false;
+  spawnScanTaskIfIdle();
+}
+
+void StorageManager::spawnScanTaskIfIdle() {
+  if (scanInProgress_.exchange(true)) {
+    // Another scan is already in flight — coalesce the request and let the
+    // running one finish.
     return;
   }
-  listedOnce_ = true;
+  if (scanTaskHandle_ != nullptr) {
+    // Stale handle from a previous run; defensive only.
+    scanTaskHandle_ = nullptr;
+  }
+  Serial.println("[storage] async scan: spawning worker task");
+  // Pinned to APP_CPU (core 1). Main loop runs there too but FreeRTOS
+  // preemptively schedules between tasks at every tick, so the worker can
+  // make progress without starving the UI. Stack 8 KB — refreshBookPaths
+  // builds a few vectors and reads headers, no heavy recursion.
+  BaseType_t ok = xTaskCreatePinnedToCore(
+      &StorageManager::scanTaskTrampoline,
+      "storage_scan",
+      8192,
+      this,
+      tskIDLE_PRIORITY + 1,
+      &scanTaskHandle_,
+      1);
+  if (ok != pdPASS) {
+    Serial.println("[storage] async scan: xTaskCreate FAILED, falling back to inline");
+    scanInProgress_.store(false);
+    scanTaskHandle_ = nullptr;
+    // Fall back to a synchronous scan so the library isn't permanently
+    // unavailable. Better a one-time block than a non-functional picker.
+    scanTaskRun();
+  }
+}
 
+void StorageManager::scanTaskTrampoline(void *arg) {
+  static_cast<StorageManager *>(arg)->scanTaskRun();
+  StorageManager *self = static_cast<StorageManager *>(arg);
+  self->scanTaskHandle_ = nullptr;
+  vTaskDelete(nullptr);
+}
+
+void StorageManager::scanTaskRun() {
+  const uint32_t startMs = millis();
   if (!booksDirectoryExists()) {
-    Serial.println("[storage] /books directory not found");
+    Serial.println("[storage-worker] /books directory not found");
+    listedOnce_ = true;
+    scanReady_.store(true);
+    scanCompletedOneShot_.store(true);
+    scanInProgress_.store(false);
     return;
   }
-
-  Serial.println("[storage] listBooks: starting refreshBookPaths");
-  if (bookPaths_.empty()) {
-    refreshBookPaths();
-  }
-  Serial.printf("[storage] listBooks: refresh complete, %u paths\n",
+  Serial.println("[storage-worker] refreshBookPaths begin");
+  refreshBookPaths();
+  listedOnce_ = true;
+  scanReady_.store(true);
+  Serial.printf("[storage-worker] scan complete in %lu ms, %u paths\n",
+                static_cast<unsigned long>(millis() - startMs),
                 static_cast<unsigned>(bookPaths_.size()));
-  if (bookPaths_.empty()) {
-    Serial.println("[storage] No readable .rsvp, .txt, or .epub books found under /books");
-    return;
-  }
-
-  // Oversized .rsvp files are split LAZILY — at the moment the user opens the
-  // book — so boot doesn't sit on a multi-minute "Indexing" screen. See
-  // App::loadBookAtIndex which calls splitOversizedRsvp() before loading if
-  // the .rsvp exceeds the per-part word budget.
-  Serial.printf("[storage] Library has %u books under /books\n",
-                static_cast<unsigned int>(bookPaths_.size()));
+  // One-shot signal for the UI loop's update tick. Test-and-clear via
+  // consumeScanCompleted(); main loop publishes a render-refresh from
+  // there. Order matters — set ready before clearing scanInProgress_ so
+  // any accessor that races sees consistent state.
+  scanCompletedOneShot_.store(true);
+  scanInProgress_.store(false);
 }
 
 void StorageManager::refreshBooks() {
@@ -1167,9 +1222,16 @@ bool StorageManager::loadFirstBookWords(std::vector<String> &words, String *load
   return loadBookWords(0, words, loadedPath);
 }
 
-size_t StorageManager::bookCount() const { return bookPaths_.size(); }
+size_t StorageManager::bookCount() const {
+  // While the worker is scanning, hide the half-built vector — callers see
+  // an empty library and can render a "Scanning…" state. After the first
+  // scan finishes, accessors return real data even if a re-scan runs.
+  if (scanInProgress_.load()) return 0;
+  return bookPaths_.size();
+}
 
 String StorageManager::bookPath(size_t index) const {
+  if (scanInProgress_.load()) return "";
   if (index >= bookPaths_.size()) {
     return "";
   }

@@ -2312,23 +2312,21 @@ void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemC
       renderKey += "|c:";
       renderKey += c;
     }
-    // NOTE: previously we appended `millis() / 50` to the cache key whenever
-    // the accent title overflowed, which forced the entire menu to re-flush
-    // every ~50 ms. That was the source of the Resume lock-up — the full
-    // virtualFrame_ + flushScaledFrame round-trip takes ~30-50 ms and starved
-    // the main loop of touch processing. The marquee is now driven by
-    // renderMainMenuMarqueeOverlay() (a partial native-stripe push that
-    // costs ~1-2 ms), so the full menu only re-renders on real data change.
+    if (measureTinyTextWidth(accentText, kTinyScale) > 200) {
+      // ~20 fps marquee re-render — slow but stable. The native-stripe
+      // partial-overlay approach (formerly OTA A) introduced visual glitches
+      // that need the broader event-bus / dirty-rect architecture before
+      // they can be solved properly. Returning to the safe path until B/C/D
+      // land and we revisit rendering as a whole.
+      renderKey += "|p:";
+      renderKey += String(millis() / 50);
+    }
   }
 
   if (!initialized_ || renderKey == lastRenderKey_) {
-    return;  // cache hit — marquee state from the prior render is still valid
+    return;
   }
   lastRenderKey_ = renderKey;
-  // Reset marquee state — the per-row pass below sets it true only when the
-  // accent row actually needs to scroll. Cache hits skip this reset so the
-  // marquee state persists between data-change repaints.
-  mainMenuMarqueeActive_ = false;
 
   const int scale = 1;
   const int virtualWidth = kDisplayWidth;
@@ -2438,19 +2436,6 @@ void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemC
 
       const int titleMaxWidth = std::max(0, titleEndX - titleStartX);
       if (titleMaxWidth > 0 && !accentText.isEmpty()) {
-        const int accentTextW = measureTinyTextWidth(accentText, kTinyScale);
-        if (accentTextW > titleMaxWidth) {
-          // Cache marquee params for the partial overlay tick. Active flag
-          // was reset to false at the top of renderMenuWithAccent.
-          mainMenuMarqueeActive_ = true;
-          mainMenuMarqueeText_ = accentText;
-          mainMenuMarqueeLeftX_ = titleStartX;
-          mainMenuMarqueeRightX_ = titleEndX;
-          mainMenuMarqueeTextY_ = y + 3;
-          mainMenuMarqueeColor_ = accentColor;
-          mainMenuMarqueeFadeColor_ = backgroundColor();
-          mainMenuMarqueeFadeWidthPx_ = std::min(10, titleMaxWidth / 5);
-        }
         drawTinyMarquee(accentText, titleStartX, titleEndX, y + 3, accentColor,
                         backgroundColor());
       }
@@ -2778,154 +2763,6 @@ void DisplayManager::renderTabUnderlineStrip(int underlineXPx, int underlineWPx)
   }
 
   drawBitmap(nxStart, 0, nxEnd, kPanelNativeHeight, txBuffer_);
-}
-
-namespace {
-// Local copy of the file-scope 565 alpha blend so this overlay (defined
-// earlier in the file than the demos' anonymous-namespace blend565) has the
-// helper available without re-arranging existing code. Same math, kept
-// trivially inlinable so the compiler can fold the duplicate away.
-inline uint16_t marqueeBlend565(uint16_t a, uint16_t b, uint8_t alpha) {
-  const uint16_t inv = static_cast<uint16_t>(255 - alpha);
-  const uint16_t ar = (a >> 11) & 0x1F, ag = (a >> 5) & 0x3F, ab = a & 0x1F;
-  const uint16_t br = (b >> 11) & 0x1F, bg = (b >> 5) & 0x3F, bb = b & 0x1F;
-  const uint16_t r = static_cast<uint16_t>((ar * inv + br * alpha) >> 8) & 0x1F;
-  const uint16_t g = static_cast<uint16_t>((ag * inv + bg * alpha) >> 8) & 0x3F;
-  const uint16_t bbo = static_cast<uint16_t>((ab * inv + bb * alpha) >> 8) & 0x1F;
-  return static_cast<uint16_t>((r << 11) | (g << 5) | bbo);
-}
-}  // namespace
-
-void DisplayManager::renderMainMenuMarqueeOverlay() {
-  if (!initialized_ || txBuffer_ == nullptr) return;
-  if (!mainMenuMarqueeActive_) return;
-
-  const String &text = mainMenuMarqueeText_;
-  if (text.isEmpty()) return;
-  const int leftX = mainMenuMarqueeLeftX_;
-  const int rightX = mainMenuMarqueeRightX_;
-  const int textY = mainMenuMarqueeTextY_;
-  if (rightX <= leftX) return;
-
-  const int scale = kTinyScale;
-  const int textH = kTinyGlyphHeight * scale;
-  const int maxWidth = rightX - leftX;
-  const int textWidth = measureTinyTextWidth(text, scale);
-  if (textWidth <= maxWidth) return;  // no longer overflowing
-
-  const bool rotated = uiRotated_;
-  // Map the strip's logical rect into the panel's native rectangle. Native-X
-  // covers the (small) logical-Y band; native-Y covers the (wider) logical-X
-  // range that the marquee occupies.
-  int nxA, nxB;
-  if (rotated) {
-    nxA = (kDisplayHeight - 1) - textY;
-    nxB = (kDisplayHeight - 1) - (textY + textH - 1);
-  } else {
-    nxA = textY;
-    nxB = textY + textH - 1;
-  }
-  int nyA, nyB;
-  if (rotated) {
-    nyA = leftX;
-    nyB = rightX - 1;
-  } else {
-    nyA = (kDisplayWidth - 1) - leftX;
-    nyB = (kDisplayWidth - 1) - (rightX - 1);
-  }
-  const int nxStart = std::max(0, std::min(nxA, nxB));
-  const int nxEnd = std::min(kPanelNativeWidth, std::max(nxA, nxB) + 1);
-  const int nyStart = std::max(0, std::min(nyA, nyB));
-  const int nyEnd = std::min(kPanelNativeHeight, std::max(nyA, nyB) + 1);
-  const int cols = nxEnd - nxStart;
-  const int rows = nyEnd - nyStart;
-  if (cols <= 0 || rows <= 0) return;
-  if (static_cast<size_t>(cols) * static_cast<size_t>(rows) > kTxBufferPixels) {
-    return;  // strip too big for the DMA scratch (shouldn't happen at our sizes)
-  }
-
-#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
-  const uint32_t composeStart = micros();
-#endif
-
-  const uint16_t bgEncoded = panelColor(mainMenuMarqueeFadeColor_);
-  const uint16_t textEncoded = panelColor(mainMenuMarqueeColor_);
-  const uint16_t bgRaw = mainMenuMarqueeFadeColor_;
-  const uint16_t fgRaw = mainMenuMarqueeColor_;
-  const int fadeWidth = std::max(1, mainMenuMarqueeFadeWidthPx_);
-
-  // Clear the strip to bg. This is the "erase last frame" pass.
-  const size_t totalPixels = static_cast<size_t>(cols) * static_cast<size_t>(rows);
-  for (size_t i = 0; i < totalPixels; ++i) txBuffer_[i] = bgEncoded;
-
-  // Per-frame marquee scroll offset — same math drawTinyMarquee uses, so the
-  // overlay and the cached full-render frame stay phase-locked.
-  const int offsetPx = marqueePingPongOffset(textWidth - maxWidth);
-
-  const int charPitch = (kTinyGlyphWidth + kTinyGlyphSpacing) * scale;
-  const int charBodyW = kTinyGlyphWidth * scale;
-  for (size_t ci = 0; ci < text.length(); ++ci) {
-    const int charLogicalX = leftX - offsetPx + static_cast<int>(ci) * charPitch;
-    const int charRight = charLogicalX + charBodyW;
-    if (charLogicalX >= rightX) break;
-    if (charRight <= leftX) continue;
-    const uint8_t *gRows = tinyRowsFor(text[ci]);
-    for (int gy = 0; gy < kTinyGlyphHeight; ++gy) {
-      const uint8_t bits = gRows[gy];
-      if (bits == 0) continue;
-      for (int gx = 0; gx < kTinyGlyphWidth; ++gx) {
-        if ((bits & (1 << (kTinyGlyphWidth - 1 - gx))) == 0) continue;
-        for (int yy = 0; yy < scale; ++yy) {
-          const int ly = textY + gy * scale + yy;
-          if (ly < textY || ly >= textY + textH) continue;
-          const int nx = rotated ? ((kDisplayHeight - 1) - ly) : ly;
-          if (nx < nxStart || nx >= nxEnd) continue;
-          for (int xx = 0; xx < scale; ++xx) {
-            const int lx = charLogicalX + gx * scale + xx;
-            if (lx < leftX || lx >= rightX) continue;
-            const int ny = rotated ? lx : ((kDisplayWidth - 1) - lx);
-            if (ny < nyStart || ny >= nyEnd) continue;
-            // Soft fade at the strip edges so glyphs dissolve into bg
-            // instead of clipping abruptly.
-            uint8_t alpha = 255;
-            if (lx < leftX + fadeWidth) {
-              alpha = static_cast<uint8_t>(((lx - leftX) * 255) /
-                                           std::max(1, fadeWidth));
-            } else if (lx >= rightX - fadeWidth) {
-              alpha = static_cast<uint8_t>(((rightX - 1 - lx) * 255) /
-                                           std::max(1, fadeWidth));
-            }
-            const uint16_t pixel =
-                (alpha == 255) ? textEncoded
-                               : panelColor(marqueeBlend565(bgRaw, fgRaw, alpha));
-            const int c = nx - nxStart;
-            const int r = ny - nyStart;
-            txBuffer_[r * cols + c] = pixel;
-          }
-        }
-      }
-    }
-  }
-
-#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
-  const uint32_t composeUs = micros() - composeStart;
-  const uint32_t spiStart = micros();
-#endif
-  drawBitmap(nxStart, nyStart, nxEnd, nyEnd, txBuffer_);
-#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
-  const uint32_t spiUs = micros() - spiStart;
-  static uint32_t sLastLogMs = 0;
-  static uint32_t sFrames = 0;
-  ++sFrames;
-  if (millis() - sLastLogMs >= 1000) {
-    Serial.printf("[marquee-overlay] compose=%lu spi=%lu us fps=%lu cols=%d rows=%d\n",
-                  static_cast<unsigned long>(composeUs),
-                  static_cast<unsigned long>(spiUs),
-                  static_cast<unsigned long>(sFrames), cols, rows);
-    sLastLogMs = millis();
-    sFrames = 0;
-  }
-#endif
 }
 
 void DisplayManager::drawTinyGlyphNativeStripe(int logicalX, int logicalY, char c,

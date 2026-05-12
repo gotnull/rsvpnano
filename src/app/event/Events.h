@@ -16,6 +16,8 @@ enum class EventType : uint8_t {
   ModCleanupFinished,
   OtaAttempt,               // a = attempt number (1..3), b = HTTP code
   OtaResult,                // a = success(1)/fail(0), b = HTTP code
+  StorageScanStarted,       // background SD library scan kicked off
+  StorageScanComplete,      // a = book count, b = duration ms
 };
 
 struct Event {

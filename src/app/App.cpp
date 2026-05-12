@@ -725,7 +725,7 @@ void App::update(uint32_t nowMs)
     lastActivityMs_ = nowMs;
   }
   tickTabAnimation(nowMs);
-  tickMainMenuMarquee(nowMs);
+  handleStorageScanCompletion();
   handleBootButton(nowMs);
   handlePowerButton(nowMs);
   if (powerOffStarted_)
@@ -889,7 +889,7 @@ void App::update(uint32_t nowMs)
     Serial.println("[storage] auto-remount: retrying SD mount");
     if (storage_.begin()) {
       Serial.println("[storage] auto-remount: SUCCESS, refreshing library");
-      storage_.listBooks();
+      storage_.requestRescanAsync();  // background worker — main loop stays responsive
       bookProgressInfo_.clear();
       // One-shot: don't keep retrying once we're back. If it later fails for
       // another reason, the user can hit Settings → Remount SD.
@@ -2731,9 +2731,12 @@ void App::selectSettingsItem(uint32_t nowMs)
       invalidateModulesListCache();  // /mods/ may differ on the re-mounted card
       if (ok)
       {
-        storage_.listBooks();
+        storage_.requestRescanAsync();  // background — UI stays responsive
         bookProgressInfo_.clear();
-        display_.renderStatus("SD", "Mounted", String(static_cast<unsigned>(storage_.bookCount())).c_str());
+        // bookCount() returns 0 while the worker is mid-scan; the status
+        // line below is informational only and updates when the user next
+        // opens the picker (handleStorageScanCompletion re-renders).
+        display_.renderStatus("SD", "Mounted", "scanning in background");
       }
       else
       {
@@ -3208,6 +3211,18 @@ void App::openAuthorPicker()
     authorPickerNames_.push_back(authors[idx]);
   }
 
+  // While the storage worker is mid-scan, surface a placeholder row so the
+  // picker reads as "loading", not "empty library". handleStorageScanCompletion()
+  // re-opens the picker once data is ready.
+  if (storage_.isScanInProgress() && count == 0)
+  {
+    DisplayManager::LibraryItem scanning;
+    scanning.title = "Scanning library…";
+    scanning.subtitle = "Please wait";
+    authorMenuItems_.push_back(scanning);
+    authorPickerNames_.push_back("");
+  }
+
   menuScreen_ = MenuScreen::AuthorPicker;
   if (authorPickerSelectedIndex_ >= authorMenuItems_.size())
   {
@@ -3358,6 +3373,16 @@ void App::openBookPicker()
   if (count == 0)
   {
     Serial.println("[book-picker] No SD books available");
+  }
+  // While the storage worker is still walking /books, render a placeholder
+  // so the picker reads as "loading", not "empty library".
+  // handleStorageScanCompletion() re-opens the picker once data is ready.
+  if (storage_.isScanInProgress() && bookMenuItems_.size() <= 1)
+  {
+    DisplayManager::LibraryItem scanning;
+    scanning.title = "Scanning library…";
+    scanning.subtitle = "Please wait";
+    bookMenuItems_.push_back(scanning);
   }
 
   menuScreen_ = MenuScreen::BookPicker;
@@ -4300,16 +4325,36 @@ int App::currentTabUnderlineX(int slotW, int slotCount) const
   return x;
 }
 
-void App::tickMainMenuMarquee(uint32_t nowMs)
+void App::handleStorageScanCompletion()
 {
-  // Only paint the overlay when we're actually on the Main menu — keeps
-  // stale strip pixels off unrelated screens, and lets DisplayManager's
-  // own state guard handle the "no marquee needed" short-circuit.
-  if (state_ != AppState::Menu || menuScreen_ != MenuScreen::Main) return;
-  constexpr uint32_t kMarqueeFrameMs = 16;  // ~60 fps
-  if (nowMs - mainMenuMarqueeLastFrameMs_ < kMarqueeFrameMs) return;
-  mainMenuMarqueeLastFrameMs_ = nowMs;
-  display_.renderMainMenuMarqueeOverlay();
+  if (!storage_.consumeScanCompleted()) return;
+  Serial.printf("[app] storage scan complete; refreshing UI state=%d menu=%d count=%u\n",
+                static_cast<int>(state_), static_cast<int>(menuScreen_),
+                static_cast<unsigned>(storage_.bookCount()));
+  // Publish on the shared EventBus so future subscribers (e.g. book
+  // downloader, screensaver, scene manager) can react without polling.
+  Event ev;
+  ev.type = EventType::StorageScanComplete;
+  ev.a = static_cast<uint32_t>(storage_.bookCount());
+  ev.timestampMs = millis();
+  events_.publish(ev);
+  if (state_ != AppState::Menu) return;
+  // Re-render whichever picker was waiting on the library. Other screens
+  // pull from storage on demand the next time the user navigates to them.
+  switch (menuScreen_)
+  {
+    case MenuScreen::BookPicker:
+      openBookPicker();   // rebuilds bookMenuItems_ from the now-ready data
+      break;
+    case MenuScreen::AuthorPicker:
+      openAuthorPicker();
+      break;
+    case MenuScreen::Main:
+      renderMainMenu();   // refreshes the Resume accent chips / title
+      break;
+    default:
+      break;
+  }
 }
 
 void App::tickTabAnimation(uint32_t nowMs)
