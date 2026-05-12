@@ -100,8 +100,8 @@ class App {
     const TabDescriptor *tabs;
     size_t tabCount;
   };
-  static const TabDescriptor kEffectsTabsData[];
-  static const TabGroup kEffectsTabGroup;
+  static const TabDescriptor kHomeTabsData[];
+  static const TabGroup kHomeTabGroup;
   static const TabDescriptor kSettingsTabsData[];
   static const TabGroup kSettingsTabGroup;
   static const TabDescriptor kBooksTabsData[];
@@ -177,6 +177,9 @@ class App {
   // menuScreen_, resets the settings selection index, rebuilds items, and
   // re-renders. Mirrors the pattern openModulesPicker / openModulesFavorites.
   void openSettingsHome();
+  // Opener for the "Read" home tab — sets menuScreen_=Main and re-renders.
+  // Matches the TabDescriptor opener signature (void(App::*)()).
+  void openMainMenuTab();
   void openSettingsDisplay();
   void openSettingsPacing();
   void openSettingsReadingSounds();

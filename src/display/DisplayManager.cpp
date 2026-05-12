@@ -2328,7 +2328,11 @@ void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemC
                                           size_t selectedIndex, size_t accentRow,
                                           const String &accentText,
                                           const std::vector<String> &accentChips,
-                                          const std::vector<bool> &chevronRows) {
+                                          const std::vector<bool> &chevronRows,
+                                          const std::vector<String> &tabLabels,
+                                          int activeTabIdx,
+                                          int underlineXPx,
+                                          int underlineWPx) {
   if (items == nullptr || itemCount == 0) {
     renderCenteredWord("MENU");
     return;
@@ -2370,16 +2374,22 @@ void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemC
     }
   }
 
-  if (!initialized_ || renderKey == lastRenderKey_) {
+  const bool hasTabs = !tabLabels.empty();
+  if (hasTabs) {
+    // Tab band slide animation needs every frame to repaint.
+    lastRenderKey_ = "";
+  } else if (!initialized_ || renderKey == lastRenderKey_) {
     return;
   }
-  lastRenderKey_ = renderKey;
+  if (!hasTabs) lastRenderKey_ = renderKey;
 
   const int scale = 1;
   const int virtualWidth = kDisplayWidth;
   const int virtualHeight = kDisplayHeight;
+  const int menuTopY = hasTabs ? (kTabBandHeight + kTabMenuGapPx) : 0;
+  const int menuHeight = std::max(0, virtualHeight - menuTopY);
   const size_t visibleCount =
-      std::min(itemCount, static_cast<size_t>(std::max(1, virtualHeight / kCompactMenuRowHeight)));
+      std::min(itemCount, static_cast<size_t>(std::max(1, menuHeight / kCompactMenuRowHeight)));
   size_t firstVisible = 0;
   if (selectedIndex >= visibleCount / 2) {
     firstVisible = selectedIndex - visibleCount / 2;
@@ -2389,11 +2399,12 @@ void DisplayManager::renderMenuWithAccent(const char *const *items, size_t itemC
   }
 
   const int rowHeight = kCompactMenuRowHeight;
-  // Top-align — Back/first item lives at the top of every menu, never
-  // centred vertically. Keeps muscle memory consistent across pickers.
-  int y = 0;
+  int y = menuTopY;
 
   clearVirtualBuffer(virtualWidth, virtualHeight);
+  if (hasTabs) {
+    drawTabBand(tabLabels, activeTabIdx, underlineXPx, underlineWPx);
+  }
 
   const int chevronWidth = measureTinyTextWidth(">", kTinyScale);
   const int chevronSpacingPx = (kTinyGlyphWidth + kTinyGlyphSpacing) * kTinyScale;

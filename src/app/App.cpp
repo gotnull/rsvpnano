@@ -270,11 +270,10 @@ namespace
   constexpr size_t kSettingsHomeRemountSdIndex = 9;
   constexpr size_t kSettingsHomeNetworkIndex = 10;
   constexpr size_t kSettingsHomeScreensaverIndex = 11;
-  constexpr size_t kSettingsHomeDemosIndex = 12;
-  constexpr size_t kSettingsHomeModulesIndex = 13;
-  constexpr size_t kSettingsHomeDemoMusicIndex = 14;
-  constexpr size_t kSettingsHomeModPackIndex = 15;
-  constexpr size_t kSettingsHomeCameraIndex = 16;
+  // Demos / Modules used to live here; they are now top-level Home tabs.
+  constexpr size_t kSettingsHomeDemoMusicIndex = 12;
+  constexpr size_t kSettingsHomeModPackIndex = 13;
+  constexpr size_t kSettingsHomeCameraIndex = 14;
   // Demo picker layout: Back at 0, then one row per demo. Order must match
   // the dispatch in selectDemoPickerItem.
   constexpr size_t kDemoPickerBackIndex = 0;
@@ -2711,6 +2710,13 @@ void App::openSettingsHome()
   renderSettings();
 }
 
+void App::openMainMenuTab()
+{
+  menuScreen_ = MenuScreen::Main;
+  menuSelectedIndex_ = MenuResume;
+  renderMainMenu();
+}
+
 void App::openSettingsDisplay()
 {
   menuScreen_ = MenuScreen::SettingsDisplay;
@@ -2801,12 +2807,6 @@ void App::selectSettingsItem(uint32_t nowMs)
       preferences_.putUChar(kPrefScreensaver, screensaverIndex_);
       rebuildSettingsMenuItems();
       renderSettings();
-      return;
-    case kSettingsHomeDemosIndex:
-      openDemoPicker();
-      return;
-    case kSettingsHomeModulesIndex:
-      openModulesPicker();
       return;
     case kSettingsHomeDemoMusicIndex:
       // Off → Shuffle → Picked → Favorites → Off → …
@@ -3087,8 +3087,6 @@ void App::rebuildSettingsMenuItems()
       savLabel = (mins >= 60) ? (String(mins / 60) + "h") : (String(mins) + "m");
     }
     settingsMenuItems_.push_back(String("Screensaver: ") + savLabel);
-    settingsMenuItems_.push_back("Demos");
-    settingsMenuItems_.push_back("Modules");
     const char *musicLabel = (demoMusicMode_ == 0)   ? "Off"
                              : (demoMusicMode_ == 1) ? "Shuffle"
                              : (demoMusicMode_ == 2) ? "Picked"
@@ -4211,10 +4209,9 @@ void App::selectDemoPickerItem(uint32_t nowMs)
   switch (demoSelectedIndex_)
   {
   case kDemoPickerBackIndex:
-    settingsSelectedIndex_ = kSettingsHomeDemosIndex;
-    menuScreen_ = MenuScreen::SettingsHome;
-    rebuildSettingsMenuItems();
-    renderSettings();
+    menuScreen_ = MenuScreen::Main;
+    menuSelectedIndex_ = MenuResume;
+    renderMainMenu();
     return;
   case kDemoPickerRasterbarsIndex:
     enterDemoPlayback(DemoKind::Rasterbars, nowMs);
@@ -4257,14 +4254,16 @@ void App::selectDemoPickerItem(uint32_t nowMs)
 // MenuScreen.
 // ---------------------------------------------------------------------------
 
-const App::TabDescriptor App::kEffectsTabsData[] = {
-    {"Demos", MenuScreen::DemoPicker, &App::openDemoPicker},
-    {"Modules", MenuScreen::ModulesPicker, &App::openModulesPicker},
-    {"Favorites", MenuScreen::ModulesFavorites, &App::openModulesFavorites},
+const App::TabDescriptor App::kHomeTabsData[] = {
+    {"Read",     MenuScreen::Main,          &App::openMainMenuTab},
+    {"Books",    MenuScreen::BookPicker,    &App::openBookPicker},
+    {"Demos",    MenuScreen::DemoPicker,    &App::openDemoPicker},
+    {"Modules",  MenuScreen::ModulesPicker, &App::openModulesPicker},
+    {"Settings", MenuScreen::SettingsHome,  &App::openSettingsHome},
 };
-const App::TabGroup App::kEffectsTabGroup = {
-    kEffectsTabsData,
-    sizeof(kEffectsTabsData) / sizeof(kEffectsTabsData[0]),
+const App::TabGroup App::kHomeTabGroup = {
+    kHomeTabsData,
+    sizeof(kHomeTabsData) / sizeof(kHomeTabsData[0]),
 };
 
 const App::TabDescriptor App::kSettingsTabsData[] = {
@@ -4292,19 +4291,25 @@ const App::TabGroup *App::tabGroupFor(MenuScreen screen) const
 {
   switch (screen)
   {
+    // Home-level screens — share one 5-tab strip so Demos / Modules are one
+    // tap from anywhere on the top level.
+    case MenuScreen::Main:
     case MenuScreen::DemoPicker:
     case MenuScreen::ModulesPicker:
-    case MenuScreen::ModulesFavorites:
-      return &kEffectsTabGroup;
+      return &kHomeTabGroup;
+    // Books tab drills into the Books picker, which keeps its sub-tab strip
+    // (All | Authors | Cloud) for filtering. Same pattern as Settings.
+    case MenuScreen::BookPicker:
+    case MenuScreen::AuthorPicker:
+    case MenuScreen::RemoteBookPicker:
+      return &kBooksTabGroup;
+    // Settings tab drills into SettingsHome with its sub-tab strip.
     case MenuScreen::SettingsHome:
     case MenuScreen::SettingsDisplay:
     case MenuScreen::SettingsPacing:
     case MenuScreen::SettingsReadingSounds:
       return &kSettingsTabGroup;
-    case MenuScreen::BookPicker:
-    case MenuScreen::AuthorPicker:
-    case MenuScreen::RemoteBookPicker:
-      return &kBooksTabGroup;
+    // ModulesFavorites is now a drill-in from ModulesPicker — no tab strip.
     default:
       return nullptr;
   }
@@ -4605,10 +4610,9 @@ void App::renderModulesPicker()
 void App::selectModulesPickerItem(uint32_t nowMs)
 {
   if (modulesSelectedIndex_ == kTabbedBackRow) {
-    settingsSelectedIndex_ = 13;  // kSettingsHomeModulesIndex
-    menuScreen_ = MenuScreen::SettingsHome;
-    rebuildSettingsMenuItems();
-    renderSettings();
+    menuScreen_ = MenuScreen::Main;
+    menuSelectedIndex_ = MenuResume;
+    renderMainMenu();
     return;
   }
   if (modulesSelectedIndex_ >= modulesMenuItems_.size()) return;
@@ -6434,8 +6438,11 @@ void App::renderMainMenu()
   chevrons[MenuDownloadBooks] = true;
   chevrons[MenuSettings] = true;
   chevrons[MenuRestart] = true;
+  const auto tabs = tabRenderArgsForCurrentScreen();
   display_.renderMenuWithAccent(kMenuItems, MenuItemCount, menuSelectedIndex_, MenuResume,
-                                accentTitle, accentChips, chevrons);
+                                accentTitle, accentChips, chevrons,
+                                tabs.labels, tabs.activeIdx,
+                                tabs.underlineX, tabs.underlineW);
 }
 
 void App::renderSettings()
@@ -6470,10 +6477,6 @@ void App::renderSettings()
     if (settingsMenuItems_.size() > kSettingsHomeNetworkIndex)
     {
       chevrons[kSettingsHomeNetworkIndex] = true;
-    }
-    if (settingsMenuItems_.size() > kSettingsHomeDemosIndex)
-    {
-      chevrons[kSettingsHomeDemosIndex] = true;
     }
     if (settingsMenuItems_.size() > kSettingsHomeCameraIndex)
     {

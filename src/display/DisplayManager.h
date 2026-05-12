@@ -105,7 +105,11 @@ class DisplayManager {
   void renderMenuWithAccent(const char *const *items, size_t itemCount, size_t selectedIndex,
                             size_t accentRow, const String &accentText,
                             const std::vector<String> &accentChips = std::vector<String>(),
-                            const std::vector<bool> &chevronRows = std::vector<bool>());
+                            const std::vector<bool> &chevronRows = std::vector<bool>(),
+                            const std::vector<String> &tabLabels = std::vector<String>(),
+                            int activeTabIdx = -1,
+                            int underlineXPx = -1,
+                            int underlineWPx = -1);
   void renderLibrary(const std::vector<LibraryItem> &items, size_t selectedIndex,
                      const std::vector<char> &letterAnchors = std::vector<char>(),
                      int focusedLetterIdx = -1,
