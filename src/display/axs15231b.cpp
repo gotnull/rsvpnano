@@ -31,6 +31,17 @@ bool gBusReady = false;
 bool gBacklightOn = false;
 uint8_t gBrightnessPercent = 100;
 
+// Pool of transaction structs reused across the (single-pipeline) queue.
+// kMaxPendingTxns must be >= the most chunks a single PushColorsBegin can
+// queue plus its setColumnWindow. With kSendBufferPixels = 0x4000 (16384)
+// and our largest single push being a full panel (172 × 640 = 110080 px),
+// that's ceil(110080 / 16384) = 7 chunks. Add one for the column window and
+// round up — 12 leaves slack.
+constexpr int kMaxPendingTxns = 12;
+spi_transaction_ext_t gPendingTxns[kMaxPendingTxns];
+int gPendingHead = 0;          // next free txn slot
+int gPendingCount = 0;         // queued-but-not-yet-awaited count
+
 void writeBacklightPwm() {
   pinMode(BoardConfig::PIN_LCD_BACKLIGHT, OUTPUT);
   analogWriteResolution(8);
@@ -110,7 +121,10 @@ void axs15231bInit() {
     deviceConfig.clock_speed_hz = kSpiFrequency;
     deviceConfig.spics_io_num = BoardConfig::PIN_LCD_CS;
     deviceConfig.flags = SPI_DEVICE_HALFDUPLEX;
-    deviceConfig.queue_size = 10;
+    // Queue depth must accommodate the largest single PushColorsBegin call —
+    // worst case is a full-frame push (~7 pixel chunks) plus headroom. Matches
+    // kMaxPendingTxns above.
+    deviceConfig.queue_size = 12;
 
     ESP_ERROR_CHECK(spi_bus_initialize(SPI3_HOST, &busConfig, SPI_DMA_CH_AUTO));
     ESP_ERROR_CHECK(spi_bus_add_device(SPI3_HOST, &deviceConfig, &gSpi));
@@ -153,46 +167,77 @@ void axs15231bWake() {
   setBacklight(true);
 }
 
-void axs15231bPushColors(uint16_t x, uint16_t y, uint16_t width, uint16_t height,
-                         const uint16_t *data) {
+void axs15231bPushColorsBegin(uint16_t x, uint16_t y, uint16_t width, uint16_t height,
+                              const uint16_t *data) {
   if (gSpi == nullptr || data == nullptr || width == 0 || height == 0) {
     return;
   }
+
+  // setColumnWindow stays synchronous (small / one transaction) and runs
+  // BEFORE the chunk queue so the pixel transactions go to the right region.
+  setColumnWindow(x, x + width - 1);
 
   bool firstSend = true;
   size_t pixelsRemaining = static_cast<size_t>(width) * height;
   const uint16_t *cursor = data;
 
-  setColumnWindow(x, x + width - 1);
-
   while (pixelsRemaining > 0) {
+    if (gPendingCount >= kMaxPendingTxns) {
+      // Safety drain — queue full. Pulls one completed transaction so we
+      // don't overflow the pool. In normal operation we never hit this
+      // because callers Begin → Wait per push.
+      spi_transaction_t *finished;
+      ESP_ERROR_CHECK(spi_device_get_trans_result(gSpi, &finished, portMAX_DELAY));
+      --gPendingCount;
+    }
+
     size_t chunkPixels = pixelsRemaining;
     if (chunkPixels > static_cast<size_t>(kSendBufferPixels)) {
       chunkPixels = kSendBufferPixels;
     }
 
-    spi_transaction_ext_t transaction = {};
+    spi_transaction_ext_t &txn = gPendingTxns[gPendingHead];
+    txn = {};
     if (firstSend) {
-      transaction.base.flags = SPI_TRANS_MODE_QIO;
-      transaction.base.cmd = 0x32;
-      transaction.base.addr = y == 0 ? 0x002C00 : 0x003C00;
+      txn.base.flags = SPI_TRANS_MODE_QIO;
+      txn.base.cmd = 0x32;
+      txn.base.addr = y == 0 ? 0x002C00 : 0x003C00;
       firstSend = false;
     } else {
-      transaction.base.flags =
+      txn.base.flags =
           SPI_TRANS_MODE_QIO | SPI_TRANS_VARIABLE_CMD | SPI_TRANS_VARIABLE_ADDR |
           SPI_TRANS_VARIABLE_DUMMY;
-      transaction.command_bits = 0;
-      transaction.address_bits = 0;
-      transaction.dummy_bits = 0;
+      txn.command_bits = 0;
+      txn.address_bits = 0;
+      txn.dummy_bits = 0;
     }
+    txn.base.tx_buffer = cursor;
+    txn.base.length = chunkPixels * 16;
 
-    transaction.base.tx_buffer = cursor;
-    transaction.base.length = chunkPixels * 16;
-
-    ESP_ERROR_CHECK(
-        spi_device_polling_transmit(gSpi, reinterpret_cast<spi_transaction_t *>(&transaction)));
+    ESP_ERROR_CHECK(spi_device_queue_trans(gSpi, &txn.base, portMAX_DELAY));
+    gPendingHead = (gPendingHead + 1) % kMaxPendingTxns;
+    ++gPendingCount;
 
     pixelsRemaining -= chunkPixels;
     cursor += chunkPixels;
   }
+}
+
+void axs15231bPushColorsWait() {
+  while (gPendingCount > 0) {
+    spi_transaction_t *finished;
+    ESP_ERROR_CHECK(spi_device_get_trans_result(gSpi, &finished, portMAX_DELAY));
+    --gPendingCount;
+  }
+}
+
+// Drop-in synchronous variant. Same external contract as before — caller
+// blocks until DMA completes — but now the wait yields to other FreeRTOS
+// tasks via the semaphore in get_trans_result instead of busy-spinning in
+// spi_device_polling_transmit. Storage worker / audio task / etc. make
+// progress during display SPI.
+void axs15231bPushColors(uint16_t x, uint16_t y, uint16_t width, uint16_t height,
+                         const uint16_t *data) {
+  axs15231bPushColorsBegin(x, y, width, height, data);
+  axs15231bPushColorsWait();
 }

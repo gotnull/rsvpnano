@@ -255,6 +255,11 @@ class DisplayManager {
 
   uint16_t *virtualFrame_ = nullptr;
   uint16_t *txBuffer_ = nullptr;
+  // Second DMA-capable stripe buffer. Used by flushScaledFrame to compose the
+  // next stripe while the previous one is being DMA'd to the panel. Same
+  // size as txBuffer_; both live in internal RAM so the SPI peripheral can
+  // DMA from them directly.
+  uint16_t *txBufferAlt_ = nullptr;
   size_t txBufferBytes_ = 0;
   bool initialized_ = false;
   uint8_t brightnessPercent_ = 100;

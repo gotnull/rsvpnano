@@ -838,6 +838,19 @@ bool DisplayManager::allocateBuffers() {
     txBuffer_ = static_cast<uint16_t *>(
         heap_caps_malloc(txBufferBytes_, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
   }
+  // Second stripe buffer for double-buffered DMA. Optional — if allocation
+  // fails the system falls back to single-buffer (compose blocks for DMA).
+  // Both live in internal RAM (DMA-capable). Internal RAM cap on ESP32-S3
+  // is comfortable; each buffer is ~16 KB.
+  if (txBufferAlt_ == nullptr && txBuffer_ != nullptr) {
+    txBufferAlt_ = static_cast<uint16_t *>(
+        heap_caps_malloc(txBufferBytes_, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+    if (txBufferAlt_ == nullptr) {
+      ESP_LOGW(kDisplayTag,
+               "Second stripe buffer alloc failed; flushScaledFrame will run "
+               "single-buffered (no compose/DMA overlap)");
+    }
+  }
 
   return virtualFrame_ != nullptr && txBuffer_ != nullptr;
 }
@@ -1695,14 +1708,26 @@ void DisplayManager::flushScaledFrame(int scale, int virtualWidth, int virtualHe
   uint32_t spiUs = 0;
 #endif
 
+  // Double-buffered stripe loop. Compose stripe N+1 into the alternate
+  // buffer while DMA pushes stripe N. axs15231bPushColorsBegin queues the
+  // transaction and returns; axs15231bPushColorsWait drains. With both
+  // buffers available we overlap roughly one compose with one DMA per
+  // stripe and shave ~1 ms × 14 stripes = ~14 ms off the slow path's
+  // per-flush cost. Falls back to single-buffer if the second alloc failed.
+  const bool dualBuffer = (txBufferAlt_ != nullptr);
+  bool pushPending = false;
+  int stripeIdx = 0;
+
   for (int nativeYStart = 0; nativeYStart < kPanelNativeHeight;
-       nativeYStart += kMaxChunkPhysicalRows) {
+       nativeYStart += kMaxChunkPhysicalRows, ++stripeIdx) {
     const int nativeRows = std::min(kMaxChunkPhysicalRows, kPanelNativeHeight - nativeYStart);
     const size_t chunkBytes = static_cast<size_t>(nativeRows) * kPanelNativeWidth * sizeof(uint16_t);
+    uint16_t *composeBuf =
+        (dualBuffer && (stripeIdx & 1)) ? txBufferAlt_ : txBuffer_;
 #if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
     const uint32_t cBegin = micros();
 #endif
-    std::memset(txBuffer_, 0, chunkBytes);
+    std::memset(composeBuf, 0, chunkBytes);
 
     if (fastPath) {
       // For each native column (= one virtualFrame_ row), copy `nativeRows`
@@ -1710,7 +1735,7 @@ void DisplayManager::flushScaledFrame(int scale, int virtualWidth, int virtualHe
       for (int nativeX = 0; nativeX < kPanelNativeWidth; ++nativeX) {
         const int logicalY = kDisplayHeight - 1 - nativeX;
         const uint16_t *src = virtualFrame_ + logicalY * kVirtualBufferWidth + nativeYStart;
-        uint16_t *dst = txBuffer_ + nativeX;
+        uint16_t *dst = composeBuf + nativeX;
         for (int localY = 0; localY < nativeRows; ++localY) {
           dst[localY * kPanelNativeWidth] = src[localY];
         }
@@ -1718,7 +1743,7 @@ void DisplayManager::flushScaledFrame(int scale, int virtualWidth, int virtualHe
     } else {
       for (int localNativeY = 0; localNativeY < nativeRows; ++localNativeY) {
         const int nativeY = nativeYStart + localNativeY;
-        uint16_t *dstRow = txBuffer_ + localNativeY * kPanelNativeWidth;
+        uint16_t *dstRow = composeBuf + localNativeY * kPanelNativeWidth;
 
         for (int nativeX = 0; nativeX < kPanelNativeWidth; ++nativeX) {
           int logicalX = kDisplayWidth - 1 - nativeY;
@@ -1742,12 +1767,32 @@ void DisplayManager::flushScaledFrame(int scale, int virtualWidth, int virtualHe
     composeUs += cEnd - cBegin;
     const uint32_t sBegin = micros();
 #endif
-    if (!drawBitmap(0, nativeYStart, kPanelNativeWidth, nativeYStart + nativeRows, txBuffer_)) {
-      return;
+    // Wait for the PREVIOUS stripe's DMA before queueing this one. Compose
+    // for the current stripe just finished — its DMA is the only thing the
+    // pipeline is waiting on. (When dualBuffer is false the prior DMA was
+    // already drained by axs15231bPushColors-inside-drawBitmap, so this
+    // wait is a no-op.)
+    if (pushPending) {
+      axs15231bPushColorsWait();
+      pushPending = false;
+    }
+    if (dualBuffer) {
+      axs15231bPushColorsBegin(0, static_cast<uint16_t>(nativeYStart),
+                               static_cast<uint16_t>(kPanelNativeWidth),
+                               static_cast<uint16_t>(nativeRows), composeBuf);
+      pushPending = true;
+    } else {
+      if (!drawBitmap(0, nativeYStart, kPanelNativeWidth, nativeYStart + nativeRows, composeBuf)) {
+        return;
+      }
     }
 #if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
     spiUs += micros() - sBegin;
 #endif
+  }
+  // Drain whatever's still in flight at the end of the frame.
+  if (pushPending) {
+    axs15231bPushColorsWait();
   }
 
 #if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
