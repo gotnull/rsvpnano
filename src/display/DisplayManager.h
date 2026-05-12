@@ -13,6 +13,7 @@ class Plasma;
 class ShadeBobs;
 class Vectorball;
 class UnlimitedBobs;
+class Pupul;
 
 class DisplayManager {
  public:
@@ -135,6 +136,11 @@ class DisplayManager {
   void renderShadeBobsFrame(const ShadeBobs &sb);
   void renderVectorballFrame(Vectorball &vb);
   void renderUnlimitedBobsFrame(const UnlimitedBobs &ub);
+  // Pupul (Equinox 1989 Atari ST intro port). Reads the demo's internal
+  // 320×228 RGB565 canvas via Pupul::framebuffer() and maps it to the
+  // 640×172 panel: 2× horizontal scale (logicalX/2 → srcX) and 0.75×
+  // vertical squash (logicalY * 228 / 172 → srcY).
+  void renderPupulFrame(const Pupul &p);
   // Renders an RGB565 source frame using the same native-stripe path as the
   // screensaver/demos. Source pixels are normal RGB565 in logical orientation.
   void renderCameraRgb565Frame(const uint16_t *frame, int sourceWidth, int sourceHeight);

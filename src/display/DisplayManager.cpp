@@ -5,6 +5,7 @@
 #include "demos/ShadeBobs.h"
 #include "demos/SineScroller.h"
 #include "demos/Starfield.h"
+#include "demos/Pupul.h"
 #include "demos/UnlimitedBobs.h"
 #include "demos/Vectorball.h"
 #include "demos/VectorballData.h"
@@ -4676,6 +4677,87 @@ void DisplayManager::renderUnlimitedBobsFrame(const UnlimitedBobs &ub) {
       return;
     }
   }
+}
+
+void DisplayManager::renderPupulFrame(const Pupul &p) {
+  if (!initialized_) return;
+  lastRenderKey_ = "";
+  const uint16_t *canvas = p.framebuffer();
+  if (canvas == nullptr) return;
+
+#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
+  const uint32_t t0 = micros();
+  uint32_t composeUs = 0;
+  uint32_t spiUs = 0;
+#endif
+
+  constexpr int kSrcW = Pupul::kCanvasW;          // 320
+  constexpr int kSrcH = Pupul::kCanvasH;          // 228
+  static_assert(kPanelNativeWidth == 172, "Pupul mapping assumes 172-wide panel");
+
+  // Precompute per-column source-Y so the inner loop is one mult-free
+  // multiply + one LUT read. nativeX (= panel column index, 0..171) maps
+  // back to logicalY = 171 − nativeX, then logicalY → srcY via the 228/172
+  // squash. The result lives in [0, 227].
+  const bool rotated = uiRotated_;
+  int srcYForCol[kPanelNativeWidth];
+  for (int c = 0; c < kPanelNativeWidth; ++c) {
+    int ly = rotated ? (kDisplayHeight - 1 - c) : c;
+    int sy = (ly * kSrcH) / kDisplayHeight;
+    if (sy < 0) sy = 0;
+    if (sy >= kSrcH) sy = kSrcH - 1;
+    srcYForCol[c] = sy;
+  }
+
+  for (int stripeStart = 0; stripeStart < kPanelNativeHeight;
+       stripeStart += kMaxChunkPhysicalRows) {
+    const int rows = std::min(kMaxChunkPhysicalRows, kPanelNativeHeight - stripeStart);
+
+#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
+    const uint32_t cBegin = micros();
+#endif
+
+    for (int r = 0; r < rows; ++r) {
+      const int ny = stripeStart + r;
+      // 2× horizontal scale → source X = logicalX / 2.
+      int lx = rotated ? ny : (kDisplayWidth - 1 - ny);
+      int sx = lx >> 1;
+      if (sx < 0) sx = 0;
+      if (sx >= kSrcW) sx = kSrcW - 1;
+      uint16_t *out = txBuffer_ + r * kPanelNativeWidth;
+      for (int c = 0; c < kPanelNativeWidth; ++c) {
+        const int sy = srcYForCol[c];
+        out[c] = panelColor(canvas[sy * kSrcW + sx]);
+      }
+    }
+
+#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
+    composeUs += micros() - cBegin;
+    const uint32_t sBegin = micros();
+#endif
+    if (!drawBitmap(0, stripeStart, kPanelNativeWidth, stripeStart + rows, txBuffer_)) {
+      return;
+    }
+#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
+    spiUs += micros() - sBegin;
+#endif
+  }
+
+#if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
+  static uint32_t sFrameLogMs = 0;
+  static uint32_t sFrames = 0;
+  ++sFrames;
+  if (millis() - sFrameLogMs >= 1000) {
+    Serial.printf("[pupul] compose=%lu spi=%lu total=%lu us fps=%lu frame=%lu\n",
+                  static_cast<unsigned long>(composeUs),
+                  static_cast<unsigned long>(spiUs),
+                  static_cast<unsigned long>(micros() - t0),
+                  static_cast<unsigned long>(sFrames),
+                  static_cast<unsigned long>(p.frameCounter()));
+    sFrameLogMs = millis();
+    sFrames = 0;
+  }
+#endif
 }
 
 void DisplayManager::renderCameraRgb565Frame(const uint16_t *frame, int sourceWidth, int sourceHeight) {
