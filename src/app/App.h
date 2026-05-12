@@ -251,6 +251,23 @@ class App {
   // re-render whichever Books picker the user is waiting on so the new
   // library data shows immediately.
   void handleStorageScanCompletion();
+  // Non-blocking status display + deferred action. Replaces every long
+  // `display_.renderStatus(...); delay(N); doSomething();` block on the UI
+  // thread. Caller calls displayTransientStatus() and returns; the main
+  // loop runs tickTransientStatus() each iteration and fires the deferred
+  // action once `nowMs >= transientStatusUntilMs_`. Per the
+  // "main loop is sacred" rule — no synchronous delay() in user-facing flows.
+  enum class TransientStatusAction : uint8_t {
+    None = 0,
+    ReturnToMain,
+    ReRenderSettings,
+    ReturnToRemoteBookPicker,
+    ReRenderModulesPicker,
+    RetryStorageMountAfterOtaFail,
+  };
+  void displayTransientStatus(const String &title, const String &line1, const String &line2,
+                              uint32_t durationMs, TransientStatusAction action);
+  void tickTransientStatus(uint32_t nowMs);
   // Compute the underline X-position for the current tab/animation state.
   // `slotW` is the per-tab slot width on screen.
   int currentTabUnderlineX(int slotW, int slotCount) const;
@@ -423,6 +440,11 @@ class App {
   // One-shot debounce so a long-press doesn't open the confirm twice in a row.
   // Reset on the next touch-Start (same lifecycle as bookLongPressFired_).
   bool moduleLongPressFired_ = false;
+  // Transient status / deferred action state. transientStatusUntilMs_ == 0
+  // means "no transient status active". Set by displayTransientStatus(),
+  // cleared by tickTransientStatus() once the deadline is reached.
+  uint32_t transientStatusUntilMs_ = 0;
+  TransientStatusAction transientStatusAction_ = TransientStatusAction::None;
   uint32_t modulePlayerLastRenderMs_ = 0;
   // Smoothed channel-bar heights for the now-playing UI. Decayed each frame
   // and bumped to the current channel_info volume so taps + cut-offs read

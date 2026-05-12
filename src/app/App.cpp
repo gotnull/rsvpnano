@@ -726,6 +726,7 @@ void App::update(uint32_t nowMs)
   }
   tickTabAnimation(nowMs);
   handleStorageScanCompletion();
+  tickTransientStatus(nowMs);
   handleBootButton(nowMs);
   handlePowerButton(nowMs);
   if (powerOffStarted_)
@@ -2736,15 +2737,14 @@ void App::selectSettingsItem(uint32_t nowMs)
         // bookCount() returns 0 while the worker is mid-scan; the status
         // line below is informational only and updates when the user next
         // opens the picker (handleStorageScanCompletion re-renders).
-        display_.renderStatus("SD", "Mounted", "scanning in background");
+        displayTransientStatus("SD", "Mounted", "scanning in background",
+                               900, TransientStatusAction::ReRenderSettings);
       }
       else
       {
-        display_.renderStatus("SD", "Mount failed", "Reseat the card");
+        displayTransientStatus("SD", "Mount failed", "Reseat the card",
+                               900, TransientStatusAction::ReRenderSettings);
       }
-      delay(900);
-      rebuildSettingsMenuItems();
-      renderSettings();
       return;
     }
     default:
@@ -3938,11 +3938,9 @@ void App::openRemoteBookPicker(uint32_t nowMs)
   remoteBookMenuItems_.clear();
   if (!bookDownloader_.listAvailable(remoteBooks_))
   {
-    display_.renderStatus("Books", "Index failed",
-                          bookDownloader_.lastError().c_str());
-    delay(1500);
-    menuScreen_ = MenuScreen::Main;
-    renderMainMenu();
+    displayTransientStatus("Books", "Index failed",
+                           bookDownloader_.lastError(), 1500,
+                           TransientStatusAction::ReturnToMain);
     return;
   }
 
@@ -3996,19 +3994,17 @@ void App::selectRemoteBookPickerItem(uint32_t nowMs)
 
   if (!bookDownloader_.download(book, destPath))
   {
-    display_.renderStatus("Books", "Download failed",
-                          bookDownloader_.lastError().c_str());
-    delay(1500);
-    renderRemoteBookPicker();
+    displayTransientStatus("Books", "Download failed",
+                           bookDownloader_.lastError(), 1500,
+                           TransientStatusAction::ReturnToRemoteBookPicker);
     return;
   }
   display_.renderProgress("Books", "Converting", filename.c_str(), 95);
   String rsvpPath;
   if (!storage_.ensureEpubConverted(destPath, rsvpPath))
   {
-    display_.renderStatus("Books", "Convert failed", filename.c_str());
-    delay(1500);
-    renderRemoteBookPicker();
+    displayTransientStatus("Books", "Convert failed", filename, 1500,
+                           TransientStatusAction::ReturnToRemoteBookPicker);
     return;
   }
   // If the converted .rsvp is too big to fit in RAM, split it into multiple
@@ -4018,10 +4014,8 @@ void App::selectRemoteBookPickerItem(uint32_t nowMs)
   // Refresh in-memory book list so the picker can find the new title(s).
   storage_.listBooks();
   bookProgressInfo_.clear();
-  display_.renderStatus("Books", "Saved", filename.c_str());
-  delay(900);
-  menuScreen_ = MenuScreen::Main;
-  renderMainMenu();
+  displayTransientStatus("Books", "Saved", filename, 900,
+                         TransientStatusAction::ReturnToMain);
   (void)nowMs;
 }
 
@@ -4323,6 +4317,53 @@ int App::currentTabUnderlineX(int slotW, int slotCount) const
     }
   }
   return x;
+}
+
+void App::displayTransientStatus(const String &title, const String &line1, const String &line2,
+                                 uint32_t durationMs, TransientStatusAction action)
+{
+  display_.renderStatus(title, line1, line2);
+  transientStatusUntilMs_ = millis() + durationMs;
+  transientStatusAction_ = action;
+}
+
+void App::tickTransientStatus(uint32_t nowMs)
+{
+  if (transientStatusUntilMs_ == 0) return;
+  if (nowMs < transientStatusUntilMs_) return;
+  const auto action = transientStatusAction_;
+  transientStatusUntilMs_ = 0;
+  transientStatusAction_ = TransientStatusAction::None;
+  switch (action)
+  {
+    case TransientStatusAction::ReturnToMain:
+      menuScreen_ = MenuScreen::Main;
+      setState(AppState::Menu, nowMs);
+      renderMainMenu();
+      break;
+    case TransientStatusAction::ReRenderSettings:
+      rebuildSettingsMenuItems();
+      renderSettings();
+      break;
+    case TransientStatusAction::ReturnToRemoteBookPicker:
+      renderRemoteBookPicker();
+      break;
+    case TransientStatusAction::ReRenderModulesPicker:
+      renderModulesPicker();
+      break;
+    case TransientStatusAction::RetryStorageMountAfterOtaFail:
+      display_.renderStatus("SD", "Re-mounting after OTA fail", "");
+      if (storage_.begin()) {
+        storage_.requestRescanAsync();  // non-blocking, handled by storage worker
+      }
+      menuScreen_ = MenuScreen::Main;
+      setState(AppState::Menu, nowMs);
+      renderMainMenu();
+      break;
+    case TransientStatusAction::None:
+    default:
+      break;
+  }
 }
 
 void App::handleStorageScanCompletion()
@@ -4635,9 +4676,8 @@ void App::enterModulePlayback(const String &path, uint32_t nowMs)
   display_.renderStatus("MOD", "Loading", name);
   const bool ok = modPlayer_.playFile(path);
   if (!ok) {
-    display_.renderStatus("MOD", "Failed", name);
-    delay(800);
-    renderModulesPicker();
+    displayTransientStatus("MOD", "Failed", name, 800,
+                           TransientStatusAction::ReRenderModulesPicker);
     return;
   }
   demoMusicPickedTrack_ = name;
@@ -4784,8 +4824,10 @@ bool App::startRandomModule(uint32_t nowMs)
 void App::downloadModStarterPack()
 {
   Serial.println("[mods] starter pack download is not implemented in this build");
-  display_.renderStatus("Modules", "Download unavailable", "Copy MODs to /mods");
-  delay(1000);
+  // Non-blocking notice — caller falls back into the modules picker; the
+  // status hangs around for ~1 s then the picker re-renders automatically.
+  displayTransientStatus("Modules", "Download unavailable", "Copy MODs to /mods",
+                         1000, TransientStatusAction::ReRenderModulesPicker);
 }
 
 void App::enterDemoPlayback(DemoKind kind, uint32_t nowMs)
@@ -4892,12 +4934,10 @@ void App::enterCameraStream(uint32_t nowMs)
   display_.renderStatus("Camera", "Connecting WiFi", RSVP_CAMERA_SERVER_HOST);
   if (!WifiConnector::connect(ota_.config().networks, kCameraWifiTimeoutMs, "camera"))
   {
-    display_.renderStatus("Camera", "WiFi failed", "Check /wifi.json");
-    delay(1000);
     settingsSelectedIndex_ = kSettingsHomeCameraIndex;
     menuScreen_ = MenuScreen::SettingsHome;
-    rebuildSettingsMenuItems();
-    renderMenu();
+    displayTransientStatus("Camera", "WiFi failed", "Check /wifi.json",
+                           1000, TransientStatusAction::ReRenderSettings);
     return;
   }
 
@@ -5601,12 +5641,11 @@ void App::runOtaUpdate(uint32_t nowMs)
   display_.renderProgress("OTA", "Starting update", "Reading wifi.json", 0);
   if (!ota_.loadConfigFromSd())
   {
-    display_.renderStatus("OTA needs setup",
-                          "Create /wifi.json on SD",
-                          "ssid, password, url fields");
-    delay(4000);
-    menuScreen_ = MenuScreen::Main;
-    setState(AppState::Menu, nowMs);
+    displayTransientStatus("OTA needs setup",
+                           "Create /wifi.json on SD",
+                           "ssid, password, url fields",
+                           4000,
+                           TransientStatusAction::ReturnToMain);
     return;
   }
   // Tear down the SD bus cleanly before kicking the OTA. ota_.runUpdate()
@@ -5619,16 +5658,11 @@ void App::runOtaUpdate(uint32_t nowMs)
   const bool ok = ota_.runUpdate();
   if (!ok)
   {
-    display_.renderStatus("OTA failed", ota_.lastError().c_str(), "Returning to menu");
-    delay(2500);
-    // Re-mount SD since runUpdate() returned without restarting — we still
-    // need the library back. Use a status overlay so a slow remount is visible.
-    display_.renderStatus("SD", "Re-mounting after OTA fail", "");
-    if (storage_.begin()) {
-      storage_.listBooks();
-    }
-    menuScreen_ = MenuScreen::Main;
-    setState(AppState::Menu, nowMs);
+    // Non-blocking status + deferred re-mount. RetryStorageMountAfterOtaFail
+    // re-mounts SD and returns to the Main menu once the user has had
+    // 2.5 s to read the error.
+    displayTransientStatus("OTA failed", ota_.lastError().c_str(), "Returning to menu",
+                           2500, TransientStatusAction::RetryStorageMountAfterOtaFail);
   }
 }
 
