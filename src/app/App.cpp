@@ -274,19 +274,18 @@ namespace
   constexpr size_t kSettingsHomeDemoMusicIndex = 12;
   constexpr size_t kSettingsHomeModPackIndex = 13;
   constexpr size_t kSettingsHomeCameraIndex = 14;
-  // Demo picker layout: Back at 0, then one row per demo. Order must match
-  // the dispatch in selectDemoPickerItem.
-  constexpr size_t kDemoPickerBackIndex = 0;
-  constexpr size_t kDemoPickerRasterbarsIndex = 1;
-  constexpr size_t kDemoPickerStarfieldIndex = 2;
-  constexpr size_t kDemoPickerSineScrollerIndex = 3;
-  constexpr size_t kDemoPickerPlasmaIndex = 4;
-  constexpr size_t kDemoPickerShadeBobsIndex = 5;
-  constexpr size_t kDemoPickerVectorballIndex = 6;
-  constexpr size_t kDemoPickerUnlimitedBobsIndex = 7;
-  constexpr size_t kDemoPickerPupulIndex = 8;
-  constexpr size_t kDemoPickerOldschoolIntroIndex = 9;
-  constexpr size_t kDemoPickerItemCount = 10;
+  // Demo picker layout: one row per demo. Home tab strip provides back nav
+  // (swipe back gesture or tap another tab), so no in-list Back row.
+  constexpr size_t kDemoPickerRasterbarsIndex = 0;
+  constexpr size_t kDemoPickerStarfieldIndex = 1;
+  constexpr size_t kDemoPickerSineScrollerIndex = 2;
+  constexpr size_t kDemoPickerPlasmaIndex = 3;
+  constexpr size_t kDemoPickerShadeBobsIndex = 4;
+  constexpr size_t kDemoPickerVectorballIndex = 5;
+  constexpr size_t kDemoPickerUnlimitedBobsIndex = 6;
+  constexpr size_t kDemoPickerPupulIndex = 7;
+  constexpr size_t kDemoPickerOldschoolIntroIndex = 8;
+  constexpr size_t kDemoPickerItemCount = 9;
   constexpr size_t kSettingsReadingSoundsChapterIndex = 1;
   constexpr size_t kSettingsReadingSoundsParagraphIndex = 2;
   constexpr size_t kSettingsReadingSoundsPageIndex = 3;
@@ -2155,8 +2154,7 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs)
       bool addMode = true;
       if (menuScreen_ == MenuScreen::ModulesPicker)
       {
-        if (modulesSelectedIndex_ >= kTabbedFirstItemRow &&
-            modulesSelectedIndex_ < modulesMenuItems_.size())
+        if (modulesSelectedIndex_ < modulesMenuItems_.size())
         {
           String label = modulesMenuItems_[modulesSelectedIndex_];
           if (!label.startsWith("("))
@@ -2671,12 +2669,10 @@ bool App::goBack(uint32_t nowMs)
       selectBookDeleteConfirmItem(nowMs);
       return true;
     case MenuScreen::DemoPicker:
-      demoSelectedIndex_ = kDemoPickerBackIndex;
-      selectDemoPickerItem(nowMs);
-      return true;
     case MenuScreen::ModulesPicker:
-      modulesSelectedIndex_ = kTabbedBackRow;
-      selectModulesPickerItem(nowMs);
+      menuScreen_ = MenuScreen::Main;
+      menuSelectedIndex_ = MenuResume;
+      renderMainMenu();
       return true;
     case MenuScreen::ModulesFavorites:
       modulesFavoritesSelectedIndex_ = kTabbedBackRow;
@@ -3383,19 +3379,13 @@ void App::openBookPickerForAuthor(const String &author)
 
 void App::openBookPicker()
 {
-  // Paint the tab + a "Loading library…" placeholder BEFORE the slow SD scan
-  // / sort / item-build so the user sees the swipe land instantly. The real
-  // list replaces the placeholder when build finishes.
+  // Paint a centered spinner BEFORE the slow SD scan / sort / item build so
+  // the user sees the swipe land instantly. The real list replaces the
+  // overlay when build finishes.
   menuScreen_ = MenuScreen::BookPicker;
   bookMenuItems_.clear();
   bookPickerBookIndices_.clear();
-  {
-    DisplayManager::LibraryItem placeholder;
-    placeholder.title = "Loading library…";
-    bookMenuItems_.push_back(placeholder);
-  }
-  bookPickerSelectedIndex_ = 0;
-  renderBookPicker();
+  display_.renderLoadingOverlay("Library", "Scanning books…", millis());
   yield();
 
   // Lazy library scan — boot skips listBooks() so the device lands on
@@ -4199,7 +4189,6 @@ void App::renderDemoPicker()
 {
   std::vector<String> items;
   items.reserve(kDemoPickerItemCount);
-  items.push_back("Back");
   items.push_back("Rasterbars");
   items.push_back("Starfield");
   items.push_back("Sine-scroller");
@@ -4209,10 +4198,7 @@ void App::renderDemoPicker()
   items.push_back("Unlimited Bobs");
   items.push_back("Pupul");
   items.push_back("Oldschool Intro");
-  // All demo rows drill in to fullscreen playback; Back returns to settings.
   std::vector<bool> chevrons(items.size(), true);
-  chevrons[kDemoPickerBackIndex] = false;
-  // Now part of the Effects TabGroup (Demos | Modules | Favorites).
   const auto tabs = tabRenderArgsForCurrentScreen();
   display_.renderMenuWithTabs(items, demoSelectedIndex_, chevrons,
                               tabs.labels, tabs.activeIdx,
@@ -4223,11 +4209,6 @@ void App::selectDemoPickerItem(uint32_t nowMs)
 {
   switch (demoSelectedIndex_)
   {
-  case kDemoPickerBackIndex:
-    menuScreen_ = MenuScreen::Main;
-    menuSelectedIndex_ = MenuResume;
-    renderMainMenu();
-    return;
   case kDemoPickerRasterbarsIndex:
     enterDemoPlayback(DemoKind::Rasterbars, nowMs);
     return;
@@ -4581,19 +4562,14 @@ void App::invalidateModulesListCache()
 
 void App::openModulesPicker()
 {
-  // Paint the tab + a "Loading modules…" placeholder BEFORE building the
-  // cached-list + favorites prefix so the swipe lands instantly. The real
-  // list replaces the placeholder once the SD scan / cache is ready.
+  // Paint a centered spinner BEFORE building the cached-list + favorites
+  // prefix so the swipe lands instantly. The real list replaces the overlay
+  // once the SD scan / cache is ready.
   menuScreen_ = MenuScreen::ModulesPicker;
-  modulesMenuItems_.clear();
-  modulesMenuItems_.push_back("Back");
-  modulesMenuItems_.push_back("Loading modules…");
-  modulesSelectedIndex_ = kTabbedBackRow;
-  renderModulesPicker();
+  display_.renderLoadingOverlay("Modules", "Scanning /mods/…", millis());
   yield();
 
   modulesMenuItems_.clear();
-  modulesMenuItems_.push_back("Back");
   const bool mounted = storage_.isMounted();
   const auto &names = cachedModuleList();
   Serial.printf("[modules-open] mounted=%d favs=%u cache=%u\n",
@@ -4603,11 +4579,11 @@ void App::openModulesPicker()
   for (const auto &n : names) {
     modulesMenuItems_.push_back(isModuleFavorite(n) ? (String("* ") + n) : n);
   }
-  if (modulesMenuItems_.size() == kTabbedFirstItemRow) {
+  if (modulesMenuItems_.empty()) {
     modulesMenuItems_.push_back("(no modules — drop .mod/.xm/.s3m into /mods/)");
   }
   if (modulesSelectedIndex_ >= modulesMenuItems_.size()) {
-    modulesSelectedIndex_ = kTabbedBackRow;
+    modulesSelectedIndex_ = 0;
   }
   Serial.printf("[modules-open] menu rows=%u idx=%u\n",
                 static_cast<unsigned>(modulesMenuItems_.size()),
@@ -4618,8 +4594,7 @@ void App::openModulesPicker()
 void App::renderModulesPicker()
 {
   std::vector<bool> chevrons(modulesMenuItems_.size(), true);
-  chevrons[kTabbedBackRow] = false;  // Back — never drills with a chevron.
-  for (size_t i = kTabbedFirstItemRow; i < modulesMenuItems_.size(); ++i) {
+  for (size_t i = 0; i < modulesMenuItems_.size(); ++i) {
     if (modulesMenuItems_[i].startsWith("(")) chevrons[i] = false;
   }
   const auto tabs = tabRenderArgsForCurrentScreen();
@@ -4630,12 +4605,6 @@ void App::renderModulesPicker()
 
 void App::selectModulesPickerItem(uint32_t nowMs)
 {
-  if (modulesSelectedIndex_ == kTabbedBackRow) {
-    menuScreen_ = MenuScreen::Main;
-    menuSelectedIndex_ = MenuResume;
-    renderMainMenu();
-    return;
-  }
   if (modulesSelectedIndex_ >= modulesMenuItems_.size()) return;
   String name = modulesMenuItems_[modulesSelectedIndex_];
   if (name.startsWith("(")) return;

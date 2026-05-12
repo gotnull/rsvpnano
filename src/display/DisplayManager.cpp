@@ -3857,6 +3857,48 @@ void DisplayManager::renderStatus(const String &title, const String &line1, cons
   flushScaledFrame(scale, virtualWidth, virtualHeight);
 }
 
+void DisplayManager::renderLoadingOverlay(const String &title, const String &detail,
+                                          uint32_t tickMs) {
+  // Always repaints — caller drives the spinner phase via `tickMs`.
+  lastRenderKey_ = "";
+
+  const int scale = 1;
+  const int virtualWidth = kDisplayWidth;
+  const int virtualHeight = kDisplayHeight;
+  clearVirtualBuffer(virtualWidth, virtualHeight);
+
+  // Dot-ring spinner: 8 dots arranged in a small circle, one accent dot.
+  constexpr int kDotCount = 8;
+  constexpr int kDotRadius = 3;
+  const int ringRadius = 18;
+  const int cx = virtualWidth / 2;
+  const int cy = virtualHeight / 2 - 12;
+  const int accent = static_cast<int>((tickMs / 100U) % kDotCount);
+  const uint16_t baseColor = dimColor();
+  const uint16_t accentColor = focusColor();
+  for (int i = 0; i < kDotCount; ++i) {
+    const float a = static_cast<float>(i) / kDotCount * 6.28318f;
+    const int dx = cx + static_cast<int>(std::cos(a) * ringRadius) - kDotRadius;
+    const int dy = cy + static_cast<int>(std::sin(a) * ringRadius) - kDotRadius;
+    fillVirtualRect(dx, dy, kDotRadius * 2, kDotRadius * 2,
+                    i == accent ? accentColor : baseColor);
+  }
+
+  const int titleY = cy + ringRadius + 12;
+  const int textMaxWidth = virtualWidth - 24;
+  if (!title.isEmpty()) {
+    drawTinyTextCentered(fitTinyText(title, textMaxWidth, kTinyScale), titleY,
+                         focusColor(), kTinyScale);
+  }
+  if (!detail.isEmpty()) {
+    drawTinyTextCentered(fitTinyText(detail, textMaxWidth, kTinyScale),
+                         titleY + kTinyGlyphHeight * kTinyScale + 6,
+                         dimColor(), kTinyScale);
+  }
+
+  flushScaledFrame(scale, virtualWidth, virtualHeight);
+}
+
 void DisplayManager::renderProgress(const String &title, const String &line1, const String &line2,
                                     int progressPercent) {
   progressPercent = std::max(-1, std::min(100, progressPercent));

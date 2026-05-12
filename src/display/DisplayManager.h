@@ -125,6 +125,13 @@ class DisplayManager {
   static int libraryLetterAtY(const std::vector<char> &letterAnchors, int y);
   static int libraryScrubLetterAtY(const std::vector<char> &letterAnchors, int y, int focusIdx);
   void renderStatus(const String &title, const String &line1 = "", const String &line2 = "");
+  // Renders a centered "Loading…" overlay with a small dot-ring spinner above
+  // the label. `tickMs` selects which dot is highlighted (rotates every
+  // ~100 ms when callers update it). Bypasses the render-key cache so each
+  // call repaints — used when the caller is about to do slow synchronous
+  // work and wants the screen to land instantly.
+  void renderLoadingOverlay(const String &title, const String &detail,
+                            uint32_t tickMs);
   void renderProgress(const String &title, const String &line1 = "", const String &line2 = "",
                       int progressPercent = -1);
   // Renders a single frame of the dots/stars screensaver. Call once per frame
