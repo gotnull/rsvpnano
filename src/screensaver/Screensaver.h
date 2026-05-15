@@ -2,19 +2,21 @@
 
 #include <Arduino.h>
 
-// Demoscene-style 3D screensaver — heavily upgraded with Vectorball-style
-// shape morph + multi-segment Euler-angle rotation + Z-brightness depth
-// cue. Cycles through 10 hand-built point clouds (cube, sphere, torus,
-// helix, double-helix, random cloud, wave-plane, Lissajous, tight-spiral,
-// trefoil) with linear-interp morphs between them, all rotating through a
-// Tait-Bryan ZYX matrix whose per-axis rates change every few seconds.
+#include "screensaver/RotationAnimator.h"
+
+// Demoscene-style 3D screensaver. Orchestrator only — every extension axis
+// lives in a sibling file so adding shapes / morph styles / star modes /
+// rotation timelines is a one- or two-line edit:
 //
-// Stars on top alternate between two modes — re-rolled each shape
-// transition: 3D-forward (the classic "stars come at you") and Parallax
-// (multi-layer horizontal scroll, ported from the Starfield demo).
+//   ShapeRegistry.{h,cpp}    — 15 named shape generators + descriptor table
+//   Timeline.{h,cpp}         — keyframe table, EaseCurve, MorphStyle, sampler
+//   RotationAnimator.{h,cpp} — segment table + per-frame Euler accumulator
+//   StarfieldModes.{h,cpp}   — init/update strategies for the 5 star modes
 //
-// State + animation lives here; rendering happens in
-// DisplayManager::renderScreensaverFrame.
+// Behaviour preserved exactly versus the previous monolithic implementation
+// — same 216 points, same 15 shapes, same 360/120 hold/morph, same rotation
+// timeline, same 150 stars, same palette + tint behaviour. Rendering lives
+// in DisplayManager::renderScreensaverFrame; this class only updates state.
 class Screensaver {
  public:
   // 6³ = 216 points — bumped from the original 5³ now that the per-frame
@@ -120,8 +122,9 @@ class Screensaver {
   uint32_t nextRandU32();
   float nextRandFloat();
 
-  // 10 shape templates × 216 points × (x,y,z) ≈ 26 KB. Stored as float for
-  // code simplicity; values are in roughly ±1.5 model units.
+  // 15 shape templates × 216 points × (x,y,z) ≈ 38 KB. Stored as float for
+  // code simplicity; values are in roughly ±1.5 model units. Populated by
+  // the shape registry in begin(); never resized at runtime.
   float shapes_[kShapeCount][kPointCount][3];
 
   Point points_[kPointCount];
@@ -131,11 +134,9 @@ class Screensaver {
   uint32_t prng_ = 0x12345678u;  // re-seeded in begin()
   uint32_t frameCounter_ = 0;
 
-  // Multi-segment rotation DSL state — varies which axis dominates over
-  // time so the cluster doesn't feel like a single uniform spin.
-  uint8_t rotSegIdx_ = 0;
-  uint16_t rotSegFrame_ = 0;
-  float angleX_ = 0.0f, angleY_ = 0.0f, angleZ_ = 0.0f;
+  // Rotation state — segment cursor, accumulated angles, and matrix build
+  // all live inside the animator. See RotationAnimator.h.
+  screensaver::RotationAnimator rotation_;
 
   // Subtle Y-bias bob (model-space units). Animated each tick.
   float yBias_ = 0.0f;

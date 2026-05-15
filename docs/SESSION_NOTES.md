@@ -17,41 +17,71 @@ It's a working reference — read sections as needed when resuming work.
 
 ## 1. Screensaver — Demoscene Upgrade
 
-### What it is now
+### Architecture
 
-`src/screensaver/Screensaver.h/.cpp` — 216-point morphing cluster with 60 stars over 10 hand-built shape templates:
+`src/screensaver/` is table-driven. `Screensaver.h/.cpp` is the orchestrator only — every extension axis lives in a sibling header pair so adding shapes / morph styles / star modes / rotation timelines is a one- or two-line edit. No heap, no virtual dispatch, all tables in flash.
+
+| File | Owns |
+| --- | --- |
+| `Screensaver.{h,cpp}` | public API, per-frame orchestration, shape storage, palette accessors |
+| `ShapeRegistry.{h,cpp}` | 15 named shape generators + `ShapeGenerator` descriptor + `ShapeRng` |
+| `Timeline.{h,cpp}` | `ShapeKeyframe` table, `EaseCurve`, `MorphStyle`, `sampleTimeline()`, `applyMorphStyle()`, `resolvePoint()` |
+| `RotationAnimator.{h,cpp}` | `RotationSegment` table + frame-stepped Euler accumulator + Tait-Bryan ZYX matrix |
+| `StarfieldModes.{h,cpp}` | `StarfieldModeDef` strategy table for `Forward3D` / `Parallax` / `Vortex` / `Twinkle` / `Rain`, plus `StarFieldRng` wrapper |
+
+`Screensaver::tick()` is now ≈30 lines: advance frame counter, detect shape transition, advance rotation animator, update stars via strategy, sample shape timeline + resolve points, project + brightness, hand off to `sortPoints()`.
+
+### How to add things
+
+- **New shape**: write `void genFoo(ShapeBuffer&, ShapeRng&)` in `ShapeRegistry.cpp`, append `{"foo", genFoo}` to `kRegistry`, bump `Screensaver::kShapeCount`. `static_assert` will catch a mismatch.
+- **New keyframe / re-order**: edit `kTimeline[]` in `Timeline.cpp`. Per-keyframe hold/morph frames are independent so one shape can dwell longer than the rest.
+- **New morph style**: extend `MorphStyle`, add a branch in `applyMorphStyle()`. Per-point seed + index are already plumbed so explode/spiral/dissolve styles can be deterministic-but-varied.
+- **New rotation timeline**: edit `kSegments[]` in `RotationAnimator.cpp`.
+- **New star mode**: add an enum value to `Screensaver::StarMode` (above `kCount`), write `initX`/`updateX` in `StarfieldModes.cpp`, append `{"x", initX, updateX}` to `kModes`. `static_assert` ties the table size to the enum.
+
+### Shapes (15 total)
 
 1. Cube grid (6³)
-2. Sphere (uniform via inverse-CDF on cosφ)
-3. Torus (R=1, r=0.45)
-4. Single helix (4 turns)
-5. Double helix (DNA)
+2. Sphere (Fibonacci spiral, uniform)
+3. Torus
+4. Single-helix tube
+5. Double helix (two tube strands)
 6. Random cloud
-7. Wave plane (cos·sin grid)
-8. Lissajous-blob
-9. Tight 10-loop spiral
+7. Wave-plane ripple
+8. Lissajous blob
+9. Octahedron edges
 10. Trefoil knot
+11. Möbius strip
+12. Hyperboloid of one sheet
+13. Hyperbolic-paraboloid saddle
+14. Pyramid edges
+15. Icosahedron edges
 
-Animation:
+**Stacking rule** (shapes 2..14): each generator writes `N_distinct < 216` positions and stacks `216/N_distinct` consecutive indices on each so the morph keeps a full 216-wide target while the visible nearest-neighbour distance stays ≥ 0.30 model units (~18 px center-to-center at `kFocal=180`, `kCameraZ=3`). That guarantees ≥ half-a-ball-diameter of empty space at the bumped 16/19 px radius. Cube and sphere are already sparse enough at full 216-distinct.
 
-- Tait-Bryan ZYX rotation matrix
-- 7-segment rotation DSL — per-axis rates change every few hundred frames
-- Hold + linear morph timeline (540 hold / 180 morph) — ~120 s full cycle
+### Animation
+
+- Tait-Bryan ZYX rotation matrix (`RotationAnimator`)
+- 7-segment rotation timeline — per-axis rates change every 220–320 frames (1840 frames ≈ 31 s per rotation cycle)
+- Shape timeline: 360 hold + 120 morph per keyframe → 15 × 480 = 7200 frames ≈ 120 s full cycle
 - Subtle Y-bias bob (10 s sine)
-- Two star modes randomly swapped each shape transition: `Forward3D` (classic) and `Parallax` (3-layer horizontal scroll)
+- Five star modes — `rerollStarMode()` picks a new mode at every shape transition
 
 ### Rendering (`renderScreensaverFrame` in `DisplayManager.cpp`)
 
 - Native-stripe path: composes directly into panel-native `txBuffer_` (DMA-capable internal RAM ~16 KB / ~47 rows), pushes via `drawBitmap` per stripe
 - 3-tone shaded ball: dim outer rim → bright core shifted toward "light" by `radius/4` → small white specular at offset `radius/3`
 - Z-brightness depth cue: every RGB channel scaled by `p.brightness` (255 near → 90 far)
-- Focal 180, camera Z=3.0, radius scaler 11 (cap 13)
-- 6³ grid spacing (~0.6 model units) projects to ≥36 px screen-spacing — no overlap at max radius
+- Focal 180, camera Z=3.0, radius scaler 16 (cap 19)
+- 150 stars with random per-star tint (8-color palette) and size (1 / 3 / 5 px discs)
 - `SCREENSAVER_PROFILING=1` emits per-frame `[saver] tick=… compose=… spi=… total=… us fps=…`
 
 ### Memory
 
-- 10 shapes × 216 points × 12 bytes ≈ 26 KB shape table (compile-time, not heap)
+- 15 shapes × 216 points × 12 bytes ≈ 38 KB shape table (compile-time, not heap)
+- 150 stars × ~24 bytes ≈ 3.6 KB
+- Renderer sprite buffer (`Sprite[366]`) is `static` inside `renderScreensaverFrame` so it doesn't ride the ~8 KB Arduino loop stack
+- All other tables (shape registry, timeline, rotation segments, star modes) are `constexpr` arrays in flash
 
 ---
 
