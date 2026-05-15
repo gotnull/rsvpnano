@@ -328,7 +328,9 @@ class App {
   String cameraSnapshotUrl() const;
   String cameraStreamUrl() const;
   void cycleNotificationVolume(uint32_t nowMs);
-  void pollNotifications(uint32_t nowMs);
+  // pollNotifications was removed when the poll moved off the main loop into
+  // NotificationsManager's FreeRTOS worker. App::tick() now calls
+  // requestPollAsync() + drainPending() directly.
   void showNotificationBanner(uint32_t nowMs, const String &title, const String &body);
   void renderNotificationBanner();
   void playNotificationTone(uint32_t maxDurationMs = 0);

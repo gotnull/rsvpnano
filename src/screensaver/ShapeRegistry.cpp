@@ -3,10 +3,16 @@
 #include <math.h>
 
 // Shape generators. Each function fills its ShapeBuffer in-place with
-// kPointCount = 216 triplets. The spacing/stride rationales live next to
-// each generator — see the orchestrator's comment block on the "stacking
-// rule" for the big picture (minimum 0.30 model units between visible
-// neighbours so balls don't visually merge at the bumped 16/19 px radius).
+// kPointCount = 216 triplets.
+//
+// Density philosophy: every shape has its own natural feel — a 36-point
+// trefoil reads as a wireframe knot, a 216-point trefoil reads as a thick
+// tube. Rather than enforcing one global spacing, each generator picks a
+// stride / grid that preserves the classic Equinox-vectorball density for
+// that topology. Strides + grid dimensions are constexpr at the top of
+// each function so the tuning knob is obvious. The earlier "half-diameter
+// gap" rule (stride doubled across the board) made the cluster too sparse
+// and lost the vectorball look — halved back here.
 
 namespace screensaver {
 namespace {
@@ -60,12 +66,12 @@ void genSphere(ShapeBuffer& out, ShapeRng&) {
 // enough at full 216-distinct so they're left alone.
 // ----------------------------------------------------------------------------
 
-// Shape 2 — torus, 9 × 8 = 72 distinct (stride 3), R=1.0, r=0.5. With
-// 9 segments around the major loop and 8 around the minor, the smallest
-// arc on the inner ring is 0.5·(2π/9) = 0.349 ≥ 0.30 ✓
+// Shape 2 — torus, 12 × 9 = 108 distinct (stride 2), R=1.0, r=0.5. Inner-
+// ring arc = 0.5·(2π/12) = 0.262, v-step = 0.5·(2π/9) = 0.349. Doubles the
+// distinct count vs the previous (9×8=72) so the ring reads as a solid tube.
 void genTorus(ShapeBuffer& out, ShapeRng&) {
-  constexpr int kStride = 3;
-  constexpr int kU = 9, kV = 8;
+  constexpr int kStride = 2;
+  constexpr int kU = 12, kV = 9;
   static_assert(kU * kV * kStride == kPointCount, "torus stride must tile 216");
   constexpr float kMajorR = 1.0f;
   constexpr float kMinorR = 0.5f;
@@ -81,12 +87,13 @@ void genTorus(ShapeBuffer& out, ShapeRng&) {
   }
 }
 
-// Shape 3 — single-helix tube. 12 along × 9 around = 108 distinct (stride 2).
-// R=1.0, tube_r=0.45, height=±1.5, 1 turn: along ≈ √((2π·1)² + 3²)/12 = 0.583,
-// around = 2π·0.45/9 = 0.314 ✓
+// Shape 3 — single-helix tube. 24 along × 9 around = 216 distinct (stride 1).
+// R=1.0, tube_r=0.45, height=±1.5, 1 turn: along = √((2π·1)² + 3²)/24 = 0.292,
+// around = 2π·0.45/9 = 0.314. Doubles along-curve density so the tube
+// looks solid instead of stretchy.
 void genHelix(ShapeBuffer& out, ShapeRng&) {
-  constexpr int kStride = 2;
-  constexpr int kU = 12, kV = 9;
+  constexpr int kStride = 1;
+  constexpr int kU = 24, kV = 9;
   static_assert(kU * kV * kStride == kPointCount, "helix stride must tile 216");
   constexpr float kR = 1.0f;
   constexpr float kTubeR = 0.45f;
@@ -105,11 +112,12 @@ void genHelix(ShapeBuffer& out, ShapeRng&) {
 }
 
 // Shape 4 — double helix, two tube-wrapped strands 180° apart. Per strand:
-// 9 along × 6 around = 54 distinct (stride 2 globally on the strand). 2
-// strands × 54 = 108 distinct overall. along=7.0/9=0.778, around=0.314 ✓
+// 18 along × 6 around = 108 distinct (stride 1 globally). 2 strands × 108
+// = 216 indices. along = 7.0/18 = 0.389, around = 2π·0.3/6 = 0.314. Each
+// strand now reads as a continuous coil rather than a sparse dotted line.
 void genDoubleHelix(ShapeBuffer& out, ShapeRng&) {
-  constexpr int kStride = 2;
-  constexpr int kU = 9, kV = 6;
+  constexpr int kStride = 1;
+  constexpr int kU = 18, kV = 6;
   constexpr int kStrands = 2;
   static_assert(kU * kV * kStrands * kStride == kPointCount,
                 "double-helix stride must tile 216");
@@ -132,12 +140,13 @@ void genDoubleHelix(ShapeBuffer& out, ShapeRng&) {
   }
 }
 
-// Shape 5 — random cloud, 108 distinct points (stride 2) in ±kModelScale.
-// At 108 points in a 3³ cube the expected nearest-neighbour distance is
-// ~0.63 model. RNG state is supplied by the caller for determinism.
+// Shape 5 — random cloud, 216 distinct points (stride 1) in ±kModelScale.
+// At 216 points in a 3³ cube the expected nearest-neighbour distance is
+// ~0.5 model; minimum will be smaller in pockets — that's the natural
+// cloud look (clusters + gaps are part of the vectorball aesthetic).
 void genRandomCloud(ShapeBuffer& out, ShapeRng& rng) {
-  constexpr int kStride = 2;
-  constexpr int kDistinct = kPointCount / kStride;  // 108
+  constexpr int kStride = 1;
+  constexpr int kDistinct = kPointCount / kStride;  // 216
   float cloud[kDistinct][3];
   for (int v = 0; v < kDistinct; ++v) {
     cloud[v][0] = (rng.frand() * 2.0f - 1.0f) * kModelScale;
@@ -152,10 +161,12 @@ void genRandomCloud(ShapeBuffer& out, ShapeRng& rng) {
   }
 }
 
-// Shape 6 — wave-plane ripple, 8 × 9 = 72 distinct (stride 3).
+// Shape 6 — wave-plane ripple, 18 × 12 = 216 distinct (stride 1). Cells:
+// u = 3/17 = 0.176, v = 3/11 = 0.273. Higher sample count gives a smooth
+// ripple surface that doesn't read as a sparse grid of bumps.
 void genWavePlane(ShapeBuffer& out, ShapeRng&) {
-  constexpr int kStride = 3;
-  constexpr int kU = 8, kV = 9;
+  constexpr int kStride = 1;
+  constexpr int kU = 18, kV = 12;
   static_assert(kU * kV * kStride == kPointCount, "wave stride must tile 216");
   for (int n = 0; n < kPointCount; ++n) {
     const int vis = n / kStride;
@@ -171,9 +182,12 @@ void genWavePlane(ShapeBuffer& out, ShapeRng&) {
   }
 }
 
-// Shape 7 — Lissajous blob, stride 3 → 72 distinct samples.
+// Shape 7 — Lissajous blob, 216 samples (stride 1). The curve crosses
+// itself so adjacent samples cluster naturally — that's the signature
+// vectorball "blob" look; doubling density vs the previous 72 fills out
+// the shape without erasing the lobed structure.
 void genLissajous(ShapeBuffer& out, ShapeRng&) {
-  constexpr int kStride = 3;
+  constexpr int kStride = 1;
   for (int n = 0; n < kPointCount; ++n) {
     const int vis = n / kStride;
     const float m = static_cast<float>(vis);
@@ -183,8 +197,10 @@ void genLissajous(ShapeBuffer& out, ShapeRng&) {
   }
 }
 
-// Shape 8 — octahedron edges. 12 edges × 9 distinct pts/edge = 108 (stride 2).
-// Edge length = 2·1.3·√2 ≈ 3.68; step = 3.68/8 = 0.46 ✓
+// Shape 8 — octahedron edges. 12 edges × 18 distinct pts/edge = 216
+// (stride 1). Edge length = 2·1.3·√2 ≈ 3.68; step = 3.68/17 = 0.216.
+// Doubles density vs the previous 12×9 — the wireframe reads as solid
+// lit edges instead of dotted segments.
 void genOctahedron(ShapeBuffer& out, ShapeRng&) {
   constexpr float kOctR = 1.3f;
   static constexpr int kOctVerts[6][3] = {
@@ -196,8 +212,8 @@ void genOctahedron(ShapeBuffer& out, ShapeRng&) {
       {1,2},{1,3},{1,4},{1,5},
       {2,4},{2,5},{3,4},{3,5},
   };
-  constexpr int kStride = 2;
-  constexpr int kEdgePts = 9;
+  constexpr int kStride = 1;
+  constexpr int kEdgePts = 18;
   static_assert(12 * kEdgePts * kStride == kPointCount, "oct stride must tile 216");
   for (int n = 0; n < kPointCount; ++n) {
     const int vis = n / kStride;
@@ -212,9 +228,13 @@ void genOctahedron(ShapeBuffer& out, ShapeRng&) {
   }
 }
 
-// Shape 9 — trefoil knot, stride 6 → 36 distinct samples (~0.31 model step).
+// Shape 9 — trefoil knot, 72 distinct samples (stride 3). Curve length
+// ≈ 11 model → step 11/72 ≈ 0.153. Doubles density from the previous
+// 36 samples so the knot reads as a thick line rather than a dotted
+// outline. Lower stride than that and adjacent samples would visibly
+// overlap because the curve doubles back through itself.
 void genTrefoil(ShapeBuffer& out, ShapeRng&) {
-  constexpr int kStride = 6;
+  constexpr int kStride = 3;
   constexpr int kDistinct = kPointCount / kStride;
   constexpr float kKnotScale = 0.5f;
   for (int n = 0; n < kPointCount; ++n) {
@@ -226,11 +246,12 @@ void genTrefoil(ShapeBuffer& out, ShapeRng&) {
   }
 }
 
-// Shape 10 — Möbius strip, 6 × 6 = 36 distinct (stride 6). Wide strip
-// (half-width 0.7) so the v-axis spacing is 1.4/5 = 0.28 ✓
+// Shape 10 — Möbius strip, 12 × 6 = 72 distinct (stride 3). Wide strip
+// (half-width 0.7) so v-axis spacing is 1.4/5 = 0.28. Doubled u resolution
+// (6 → 12) lets the half-twist read clearly as the strip rotates.
 void genMobius(ShapeBuffer& out, ShapeRng&) {
-  constexpr int kStride = 6;
-  constexpr int kU = 6, kV = 6;
+  constexpr int kStride = 3;
+  constexpr int kU = 12, kV = 6;
   static_assert(kU * kV * kStride == kPointCount, "mobius stride must tile 216");
   constexpr float kBigR = 1.1f;
   constexpr float kStripHalfWidth = 0.7f;
@@ -250,11 +271,13 @@ void genMobius(ShapeBuffer& out, ShapeRng&) {
   }
 }
 
-// Shape 11 — hyperboloid of one sheet. 12 around × 9 along = 108 distinct
-// (stride 2). At the waist (r=0.6) u-step = 2π·0.6/12 = 0.314 ✓
+// Shape 11 — hyperboloid of one sheet. 24 around × 9 along = 216 distinct
+// (stride 1). At the waist (r=0.6) u-step = 2π·0.6/24 = 0.157 — tight, but
+// that's the hourglass cinch and reads correctly that way. Flare u-step =
+// 2π·1.2/24 = 0.314, v-step = 2.6/8 = 0.325.
 void genHyperboloid(ShapeBuffer& out, ShapeRng&) {
-  constexpr int kStride = 2;
-  constexpr int kU = 12, kV = 9;
+  constexpr int kStride = 1;
+  constexpr int kU = 24, kV = 9;
   static_assert(kU * kV * kStride == kPointCount, "hyperboloid stride must tile 216");
   constexpr float kWaistR = 0.6f;
   constexpr float kHalfH = 1.3f;
@@ -272,10 +295,13 @@ void genHyperboloid(ShapeBuffer& out, ShapeRng&) {
   }
 }
 
-// Shape 12 — hyperbolic-paraboloid saddle. 8 × 9 = 72 distinct (stride 3).
+// Shape 12 — hyperbolic-paraboloid saddle. 18 × 12 = 216 distinct
+// (stride 1). u-cells = 3/17 = 0.176, v-cells = 3/11 = 0.273. Tripled
+// distinct count vs the previous 8×9 — Pringles-chip curve is now smooth
+// rather than chunky.
 void genSaddle(ShapeBuffer& out, ShapeRng&) {
-  constexpr int kStride = 3;
-  constexpr int kU = 8, kV = 9;
+  constexpr int kStride = 1;
+  constexpr int kU = 18, kV = 12;
   static_assert(kU * kV * kStride == kPointCount, "saddle stride must tile 216");
   for (int n = 0; n < kPointCount; ++n) {
     const int vis = n / kStride;
@@ -289,7 +315,11 @@ void genSaddle(ShapeBuffer& out, ShapeRng&) {
   }
 }
 
-// Shape 13 — pyramid edges. 8 edges × 9 distinct pts/edge = 72 (stride 3).
+// Shape 13 — pyramid edges. 8 edges × 27 distinct pts/edge = 216
+// (stride 1). Base edge length = 2·1.3 = 2.6, slant edges = 2.6·√1.5 ≈
+// 3.18. Step on base = 2.6/26 = 0.10, slant = 3.18/26 = 0.12. Tight by
+// design — vectorball wireframes look "right" when adjacent balls almost
+// touch along the edges.
 void genPyramid(ShapeBuffer& out, ShapeRng&) {
   constexpr float kPyrR = 1.3f;
   static const float kPyrVerts[5][3] = {
@@ -303,8 +333,8 @@ void genPyramid(ShapeBuffer& out, ShapeRng&) {
       {0,1},{1,2},{2,3},{3,0},
       {0,4},{1,4},{2,4},{3,4},
   };
-  constexpr int kStride = 3;
-  constexpr int kEdgePts = 9;
+  constexpr int kStride = 1;
+  constexpr int kEdgePts = 27;
   static_assert(8 * kEdgePts * kStride == kPointCount, "pyramid stride must tile 216");
   for (int n = 0; n < kPointCount; ++n) {
     const int vis = n / kStride;
@@ -319,10 +349,11 @@ void genPyramid(ShapeBuffer& out, ShapeRng&) {
   }
 }
 
-// Shape 14 — icosahedron edge wireframe. 30 edges × 5 distinct pts/edge =
-// 150 visible points; the remaining 66 indices are stacked-on-vertex caps
-// (5-6 per vertex) so the morph still has a full 216-wide target. Edge step
-// after kIcoR scale = 1.366/4 = 0.342 ≥ 0.30 ✓
+// Shape 14 — icosahedron edge wireframe. 30 edges × 7 distinct pts/edge =
+// 210 visible points + 6 vertex caps. Edge step after kIcoR scale = 1.366/6
+// = 0.228 — dense enough to read as continuous edges, and the per-vertex
+// caps render as the iconic "highlighted ball at every corner" that makes
+// the shape look like the SocialMesh reference icosahedron.
 void genIcosahedron(ShapeBuffer& out, ShapeRng&) {
   constexpr float kPhi = 1.6180339887f;
   static const float kIcoVerts[12][3] = {
@@ -349,7 +380,7 @@ void genIcosahedron(ShapeBuffer& out, ShapeRng&) {
       }
     }
   }
-  constexpr int kEdgePts = 5;
+  constexpr int kEdgePts = 7;
   int n = 0;
   for (int e = 0; e < edgeCount; ++e) {
     const auto &a = kIcoVerts[edges[e][0]];
@@ -362,8 +393,10 @@ void genIcosahedron(ShapeBuffer& out, ShapeRng&) {
       ++n;
     }
   }
-  // Remaining 66 indices stack on existing vertex positions (renderer paints
-  // them on top of edge endpoints — visually no-op, keeps morph 216-wide).
+  // Remaining 6 indices land on the first 6 vertex positions — the renderer
+  // paints them on top of the edge endpoints already there. Visually that's
+  // an extra-bright "ball at the vertex", reinforcing the icosahedron's
+  // corner glow without changing index count.
   for (int c = 0; n < kPointCount; ++c, ++n) {
     const int v = c % 12;
     out[n][0] = kIcoVerts[v][0] * kIcoR;

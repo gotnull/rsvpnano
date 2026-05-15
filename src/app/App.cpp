@@ -939,12 +939,12 @@ void App::update(uint32_t nowMs)
     lastReaderRefreshMs_ = nowMs;
   }
 
-  // notifications_.poll() is fully synchronous and may spend up to ~60 s in
-  // WiFi connect retries. If we let it start within the screensaver-trigger
-  // window, the blocking call freezes the entire render loop right as the
-  // screensaver activates — looks like a lockup, and on user-reported repros
-  // it required a power-cycle to recover. Defer the poll if a screensaver
-  // activation is imminent; the next interval will pick it up.
+  // notifications_.requestPollAsync() spawns a FreeRTOS worker, so the main
+  // loop never blocks on the WiFi connect / HTTPS GET (worst case ~28 s of
+  // synchronous work pre-refactor). The screensaver-imminent guard below is
+  // still worth keeping: spawning the WiFi task right as the screensaver
+  // activates spikes the radio's mute window and can briefly chunk the mod
+  // player. Deferring by one cadence is cheap.
   bool screensaverImminent = false;
   if (screensaverIndex_ > 0 && screensaverIndex_ < kScreensaverOptionCount) {
     constexpr uint32_t kNotifPreEmptGuardMs = 45UL * 1000UL;
@@ -955,14 +955,30 @@ void App::update(uint32_t nowMs)
       screensaverImminent = true;
     }
   }
+  // Notifications poll is asynchronous — requestPollAsync() fires off a
+  // FreeRTOS worker (see NotificationsManager.cpp) and returns immediately,
+  // so the main loop is never blocked by WiFi connect / HTTPS GET (worst
+  // case ~28 s of blocking work pre-refactor). drainPending() runs every
+  // tick and is a fast no-op when no fresh items are waiting.
   if (notificationsEnabled_ && nowMs >= nextNotificationPollMs_ &&
       (state_ == AppState::Paused || state_ == AppState::Menu) &&
       !screensaverImminent)
   {
     const uint32_t s = micros();
-    pollNotifications(nowMs);
+    notifications_.requestPollAsync();
     trackStage("notif", micros() - s, 100000);
     nextNotificationPollMs_ = nowMs + kNotificationPollIntervalMs;
+  }
+  // Consume any results landed by the worker on a previous tick. Cheap when
+  // empty (one mutex take + a swap of an empty vector).
+  {
+    auto fresh = notifications_.drainPending();
+    if (!fresh.empty()) {
+      preferences_.putUInt(kPrefNotifLastTs, notifications_.lastSeenTs());
+      // Most recent only — the queue collapses to the freshest banner.
+      const auto &latest = fresh.back();
+      showNotificationBanner(nowMs, latest.title, latest.body);
+    }
   }
 
   // Auto-remount SD if the boot mount failed. SD often fails its first attempt
@@ -3781,22 +3797,6 @@ void App::exitUsbTransfer(uint32_t nowMs)
 
   menuScreen_ = MenuScreen::Main;
   setState(AppState::Paused, nowMs);
-}
-
-void App::pollNotifications(uint32_t nowMs)
-{
-  if (!notifications_.poll())
-  {
-    return;
-  }
-  auto pending = notifications_.drainPending();
-  if (pending.empty())
-    return;
-  preferences_.putUInt(kPrefNotifLastTs, notifications_.lastSeenTs());
-  // Show only the most recent one as a banner (queue collapses to most-recent so
-  // the user always sees the freshest news).
-  const auto &latest = pending.back();
-  showNotificationBanner(nowMs, latest.title, latest.body);
 }
 
 void App::showNotificationBanner(uint32_t nowMs, const String &title, const String &body)
