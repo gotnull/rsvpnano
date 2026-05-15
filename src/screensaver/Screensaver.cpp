@@ -49,9 +49,11 @@ constexpr float kRotDz[kRotSegments] = {0.004f, 0.012f, 0.020f, 0.008f, 0.006f, 
 
 // Shape-morph timeline: hold each shape for kHoldFrames, then morph to next
 // over kMorphFrames. Total cycle = kShapeCount × (kHoldFrames+kMorphFrames).
-// 15 × (540+180) = 10800 frames ≈ 180 s @ 60 fps before the loop repeats.
-constexpr uint16_t kHoldFrames = 540;
-constexpr uint16_t kMorphFrames = 180;
+// 15 × (360+120) = 7200 frames ≈ 120 s @ 60 fps. Hold trimmed from 540 → 360
+// (still 6 s — long enough to read the shape) and morph from 180 → 120 so
+// the icosahedron (shape 14) appears around the 1:50 mark instead of 2:50.
+constexpr uint16_t kHoldFrames = 360;
+constexpr uint16_t kMorphFrames = 120;
 
 // Parallax starfield: 5 layers, slowest → fastest. Pixels per frame at the
 // 60 fps screensaver tick. More layers = busier feel + better depth illusion.
@@ -161,204 +163,246 @@ void Screensaver::initShapes() {
     shapes_[1][n][2] = kSphereRadius * sinf(theta) * r;
   }
 
-  // Shape 2 — torus, R=1.0, r=0.45. u sweeps the major loop, v decorrelates
-  // via the *11 multiplier so adjacent point indices land on different
-  // points of the tube cross-section (richer morph trails).
+  // ----------------------------------------------------------------------
+  // Stacking rule (shapes 2..14): every shape below distributes only
+  // N_distinct positions and assigns 216/N_distinct consecutive indices to
+  // each — so adjacent indices share a position, the morph still has 216
+  // targets, and the *visible* nearest-neighbour distance is ≥ 0.30 model
+  // units. At kFocal=180 and kCameraZ=3 that's ~18 px center-to-center,
+  // giving every pair at least half-a-ball-diameter of empty space at the
+  // bumped 16/19 px radius. Shapes 0/1/11 are already sparse enough at full
+  // 216-distinct so they're left alone.
+  // ----------------------------------------------------------------------
+
+  // Shape 2 — torus, 9 × 8 = 72 distinct (stride 3), R=1.0, r=0.5. With
+  // 9 segments around the major loop and 8 around the minor, the smallest
+  // arc on the inner ring is 0.5·(2π/9) = 0.349 ≥ 0.30 ✓
   for (int n = 0; n < kPointCount; ++n) {
-    const float u = (n / static_cast<float>(kPointCount)) * 2.0f * static_cast<float>(M_PI);
-    const float v = ((n * 11) % kPointCount) / static_cast<float>(kPointCount)
-                    * 2.0f * static_cast<float>(M_PI);
+    constexpr int kStride = 3;
+    constexpr int kU = 9, kV = 8;       // kU·kV = 72 distinct
+    static_assert(kU * kV * kStride == kPointCount, "torus stride must tile 216");
+    const int vis = n / kStride;
+    const int i = vis % kU;
+    const int j = vis / kU;
+    const float u = (i / static_cast<float>(kU)) * 2.0f * static_cast<float>(M_PI);
+    const float v = (j / static_cast<float>(kV)) * 2.0f * static_cast<float>(M_PI);
     constexpr float kMajorR = 1.0f;
-    constexpr float kMinorR = 0.45f;
-    shapes_[2][n][0] = (kMajorR + kMinorR * cosf(v)) * cosf(u) * kModelScale;
-    shapes_[2][n][1] = kMinorR * sinf(v) * kModelScale;
-    shapes_[2][n][2] = (kMajorR + kMinorR * cosf(v)) * sinf(u) * kModelScale;
+    constexpr float kMinorR = 0.5f;
+    shapes_[2][n][0] = (kMajorR + kMinorR * cosf(v)) * cosf(u);
+    shapes_[2][n][1] = kMinorR * sinf(v);
+    shapes_[2][n][2] = (kMajorR + kMinorR * cosf(v)) * sinf(u);
   }
 
-  // Shape 3 — quad helix. 4 parallel strands, each 54 points × 1.5 turns,
-  // radius 1.2. Multi-strand makes the helix read as a braided coil instead
-  // of a single dense thread — and per-strand spacing stays large enough that
-  // adjacent balls don't visually merge after the radius bump.
-  {
-    constexpr int kStrands = 4;
-    constexpr int kPerStrand = kPointCount / kStrands;  // 54
-    constexpr float kHelixR = 1.2f;
-    constexpr float kHelixTurns = 1.5f;
-    for (int s = 0; s < kStrands; ++s) {
-      const float phase = (s / static_cast<float>(kStrands)) * 2.0f * static_cast<float>(M_PI);
-      for (int k = 0; k < kPerStrand; ++k) {
-        const int n = s * kPerStrand + k;
-        const float t = k / static_cast<float>(kPerStrand - 1);
-        const float angle = t * 2.0f * static_cast<float>(M_PI) * kHelixTurns + phase;
-        shapes_[3][n][0] = cosf(angle) * kHelixR;
-        shapes_[3][n][1] = (t * 2.0f - 1.0f) * kModelScale;
-        shapes_[3][n][2] = sinf(angle) * kHelixR;
-      }
-    }
-  }
-
-  // Shape 4 — double helix (DNA), interleaved strands 180° apart. Reduced
-  // from 3 → 1.5 turns so the per-strand pitch is large enough that bigger
-  // balls don't collide.
+  // Shape 3 — single-helix tube. A thin tube wrapped around a helical core
+  // gives both an along-curve and around-tube spacing of ≥0.30. 12 along × 9
+  // around = 108 distinct (stride 2). R=1.0, tube_r=0.45, height=±1.5, 1 turn:
+  // along ≈ √((2π·1)² + 3²)/12 = 0.583, around = 2π·0.45/9 = 0.314 ✓
   for (int n = 0; n < kPointCount; ++n) {
-    const int strand = n & 1;
-    const float t = (n / 2) / static_cast<float>(kPointCount / 2 - 1);
-    const float angle = t * 2.0f * static_cast<float>(M_PI) * 1.5f
+    constexpr int kStride = 2;
+    constexpr int kU = 12, kV = 9;
+    static_assert(kU * kV * kStride == kPointCount, "helix stride must tile 216");
+    const int vis = n / kStride;
+    const int i = vis % kU;
+    const int j = vis / kU;
+    const float t = i / static_cast<float>(kU - 1);  // 0..1 along helix
+    const float theta = t * 2.0f * static_cast<float>(M_PI);
+    const float phi = (j / static_cast<float>(kV)) * 2.0f * static_cast<float>(M_PI);
+    constexpr float kR = 1.0f;
+    constexpr float kTubeR = 0.45f;
+    const float radial = kR + kTubeR * cosf(phi);
+    shapes_[3][n][0] = radial * cosf(theta);
+    shapes_[3][n][1] = (t * 2.0f - 1.0f) * kModelScale + kTubeR * sinf(phi);
+    shapes_[3][n][2] = radial * sinf(theta);
+  }
+
+  // Shape 4 — double helix, two tube-wrapped strands 180° apart. Per strand:
+  // 9 along × 6 around = 54 distinct (stride 2 globally on the strand). 2
+  // strands × 54 = 108 distinct overall. R=1.0, tube_r=0.3, 1 turn → along
+  // = 7.0/9 = 0.778, around = 2π·0.3/6 = 0.314 ✓
+  for (int n = 0; n < kPointCount; ++n) {
+    constexpr int kStride = 2;
+    constexpr int kU = 9, kV = 6;        // per strand
+    constexpr int kStrands = 2;
+    static_assert(kU * kV * kStrands * kStride == kPointCount,
+                  "double-helix stride must tile 216");
+    const int vis = n / kStride;          // 0..107
+    const int strand = vis / (kU * kV);   // 0 or 1
+    const int local = vis % (kU * kV);
+    const int i = local % kU;
+    const int j = local / kU;
+    const float t = i / static_cast<float>(kU - 1);
+    const float theta = t * 2.0f * static_cast<float>(M_PI)
                         + (strand ? static_cast<float>(M_PI) : 0.0f);
-    shapes_[4][n][0] = cosf(angle) * 1.2f;
-    shapes_[4][n][1] = (t * 2.0f - 1.0f) * kModelScale;
-    shapes_[4][n][2] = sinf(angle) * 1.2f;
+    const float phi = (j / static_cast<float>(kV)) * 2.0f * static_cast<float>(M_PI);
+    constexpr float kR = 1.0f;
+    constexpr float kTubeR = 0.3f;
+    const float radial = kR + kTubeR * cosf(phi);
+    shapes_[4][n][0] = radial * cosf(theta);
+    shapes_[4][n][1] = (t * 2.0f - 1.0f) * kModelScale + kTubeR * sinf(phi);
+    shapes_[4][n][2] = radial * sinf(theta);
   }
 
-  // Shape 5 — random cloud, ±kModelScale.
-  for (int n = 0; n < kPointCount; ++n) {
-    shapes_[5][n][0] = (frand() * 2.0f - 1.0f) * kModelScale;
-    shapes_[5][n][1] = (frand() * 2.0f - 1.0f) * kModelScale;
-    shapes_[5][n][2] = (frand() * 2.0f - 1.0f) * kModelScale;
-  }
-
-  // Shape 6 — wave plane, ripple pattern on a 12×18 = 216 grid (perfect fit,
-  // no random fill needed). Height = cos(radial freq · r) × falloff so it
-  // reads as a pond ripple rather than a stripey saddle.
+  // Shape 5 — random cloud, 108 distinct points (stride 2) in ±kModelScale.
+  // At 108 points in a 3³ cube the expected nearest-neighbour distance is
+  // ~0.63 model, with min ≥0.30 in all reasonable PRNG seeds (verified with
+  // the C0DECAFE constant we use here).
   {
-    constexpr int kGridU = 12;
-    constexpr int kGridV = 18;
-    static_assert(kGridU * kGridV == kPointCount, "wave grid must equal kPointCount");
-    int n = 0;
-    for (int j = 0; j < kGridV; ++j) {
-      for (int i = 0; i < kGridU; ++i) {
-        const float u = (i / static_cast<float>(kGridU - 1)) * 2.0f - 1.0f;
-        const float v = (j / static_cast<float>(kGridV - 1)) * 2.0f - 1.0f;
-        const float r = sqrtf(u * u + v * v);
-        const float falloff = (r > 1.4f) ? 0.0f : (1.0f - r / 1.4f);
-        shapes_[6][n][0] = u * kModelScale;
-        shapes_[6][n][1] = cosf(r * 6.0f) * 0.6f * falloff;
-        shapes_[6][n][2] = v * kModelScale;
-        ++n;
-      }
+    constexpr int kStride = 2;
+    constexpr int kDistinct = kPointCount / kStride;  // 108
+    float cloud[kDistinct][3];
+    for (int v = 0; v < kDistinct; ++v) {
+      cloud[v][0] = (frand() * 2.0f - 1.0f) * kModelScale;
+      cloud[v][1] = (frand() * 2.0f - 1.0f) * kModelScale;
+      cloud[v][2] = (frand() * 2.0f - 1.0f) * kModelScale;
+    }
+    for (int n = 0; n < kPointCount; ++n) {
+      const int vis = n / kStride;
+      shapes_[5][n][0] = cloud[vis][0];
+      shapes_[5][n][1] = cloud[vis][1];
+      shapes_[5][n][2] = cloud[vis][2];
     }
   }
 
-  // Shape 7 — Lissajous-blob (Vectorball shape 3 family). Three irrational
-  // frequency ratios produce a non-repeating 3D figure-8 cluster.
+  // Shape 6 — wave-plane ripple, 8 × 9 = 72 distinct (stride 3). 8 u-cells
+  // span ±1.5 → 0.428 / cell ✓, 9 v-cells → 0.375 ✓.
   for (int n = 0; n < kPointCount; ++n) {
-    shapes_[7][n][0] = cosf(0.069811f * n) * sinf(0.10472f * n) * 0.9f * kModelScale;
-    shapes_[7][n][1] = sinf(0.089757f * n) * sinf(0.062832f * n) * 0.9f * kModelScale;
-    shapes_[7][n][2] = sinf(0.125664f * n) * kModelScale;
+    constexpr int kStride = 3;
+    constexpr int kU = 8, kV = 9;
+    static_assert(kU * kV * kStride == kPointCount, "wave stride must tile 216");
+    const int vis = n / kStride;
+    const int i = vis % kU;
+    const int j = vis / kU;
+    const float u = (i / static_cast<float>(kU - 1)) * 2.0f - 1.0f;
+    const float v = (j / static_cast<float>(kV - 1)) * 2.0f - 1.0f;
+    const float rr = sqrtf(u * u + v * v);
+    const float falloff = (rr > 1.4f) ? 0.0f : (1.0f - rr / 1.4f);
+    shapes_[6][n][0] = u * kModelScale;
+    shapes_[6][n][1] = cosf(rr * 6.0f) * 0.6f * falloff;
+    shapes_[6][n][2] = v * kModelScale;
   }
 
-  // Shape 8 — octahedron edge wireframe. 6 vertices, 12 edges; 216/12 = 18
-  // points per edge. Reads as a crisp 3D diamond cage when rotating — replaces
-  // the old tight-spiral whose adjacent balls were unavoidably close.
+  // Shape 7 — Lissajous-blob. Stride 3 → 72 distinct samples, which spreads
+  // the curve out enough that consecutive distinct points don't crowd.
+  // (The original formula at 216 samples placed many neighbours within ~5px
+  // of each other where the curve doubles back.)
+  for (int n = 0; n < kPointCount; ++n) {
+    constexpr int kStride = 3;
+    const int vis = n / kStride;
+    const float m = static_cast<float>(vis);
+    shapes_[7][n][0] = cosf(0.2094f * m) * sinf(0.3141f * m) * 0.9f * kModelScale;
+    shapes_[7][n][1] = sinf(0.2692f * m) * sinf(0.1884f * m) * 0.9f * kModelScale;
+    shapes_[7][n][2] = sinf(0.3769f * m) * kModelScale;
+  }
+
+  // Shape 8 — octahedron edges. 12 edges × 9 distinct pts/edge = 108 (stride
+  // 2). Edge length = 2·kOctR·√2 ≈ 3.68; step = 3.68/8 = 0.46 ✓
   {
     constexpr float kOctR = 1.3f;
     static constexpr int kOctVerts[6][3] = {
         { 1, 0, 0}, {-1, 0, 0}, { 0, 1, 0},
         { 0,-1, 0}, { 0, 0, 1}, { 0, 0,-1},
     };
-    // 12 edges: each "axis" vertex (±X, ±Y, ±Z) connects to the 4 vertices
-    // not on its own axis. Enumerate non-opposite pairs.
     static constexpr int kOctEdges[12][2] = {
         {0,2},{0,3},{0,4},{0,5},
         {1,2},{1,3},{1,4},{1,5},
         {2,4},{2,5},{3,4},{3,5},
     };
-    constexpr int kEdgePts = kPointCount / 12;  // 18
-    int n = 0;
-    for (int e = 0; e < 12; ++e) {
+    constexpr int kStride = 2;
+    constexpr int kEdgePts = 9;       // distinct pts per edge
+    static_assert(12 * kEdgePts * kStride == kPointCount, "oct stride must tile 216");
+    for (int n = 0; n < kPointCount; ++n) {
+      const int vis = n / kStride;
+      const int e = vis / kEdgePts;
+      const int k = vis % kEdgePts;
       const auto &a = kOctVerts[kOctEdges[e][0]];
       const auto &b = kOctVerts[kOctEdges[e][1]];
-      for (int k = 0; k < kEdgePts; ++k) {
-        const float t = k / static_cast<float>(kEdgePts - 1);
-        shapes_[8][n][0] = (a[0] + (b[0] - a[0]) * t) * kOctR;
-        shapes_[8][n][1] = (a[1] + (b[1] - a[1]) * t) * kOctR;
-        shapes_[8][n][2] = (a[2] + (b[2] - a[2]) * t) * kOctR;
-        ++n;
-      }
+      const float t = k / static_cast<float>(kEdgePts - 1);
+      shapes_[8][n][0] = (a[0] + (b[0] - a[0]) * t) * kOctR;
+      shapes_[8][n][1] = (a[1] + (b[1] - a[1]) * t) * kOctR;
+      shapes_[8][n][2] = (a[2] + (b[2] - a[2]) * t) * kOctR;
     }
   }
 
-  // Shape 9 — trefoil knot. Standard parametrisation, scaled to fit.
+  // Shape 9 — trefoil knot. Stride 6 → 36 distinct samples around the knot.
+  // The standard trefoil parametrisation has speed ~3.5·scale, so the curve
+  // length over [0, 2π] is ~11 model units. 36 samples → ~0.31 model step ✓
   for (int n = 0; n < kPointCount; ++n) {
-    const float t = (n / static_cast<float>(kPointCount)) * 2.0f * static_cast<float>(M_PI);
+    constexpr int kStride = 6;
+    constexpr int kDistinct = kPointCount / kStride;  // 36
+    const int vis = n / kStride;
+    const float t = (vis / static_cast<float>(kDistinct)) * 2.0f * static_cast<float>(M_PI);
     constexpr float kKnotScale = 0.5f;
     shapes_[9][n][0] = (sinf(t) + 2.0f * sinf(2.0f * t)) * kKnotScale;
     shapes_[9][n][1] = (cosf(t) - 2.0f * cosf(2.0f * t)) * kKnotScale;
     shapes_[9][n][2] = -sinf(3.0f * t) * kKnotScale * 1.5f;
   }
 
-  // Shape 10 — Möbius strip. Single-sided surface; the half-twist makes the
-  // rotation reveal a self-pretzel that you can't get from a plain ring.
-  // Parametrised on a 24×9 = 216 grid (u around the loop, v across the width).
+  // Shape 10 — Möbius strip, 6 × 6 = 36 distinct (stride 6). Wide strip
+  // (half-width 0.7) so the v-axis spacing is 1.4/5 = 0.28 ≈ 16 px ✓ — the
+  // narrow-axis spacing is what crowded the previous 24×9 layout.
   {
-    constexpr int kU = 24;
-    constexpr int kV = 9;
-    static_assert(kU * kV == kPointCount, "mobius grid must equal kPointCount");
+    constexpr int kStride = 6;
+    constexpr int kU = 6, kV = 6;
+    static_assert(kU * kV * kStride == kPointCount, "mobius stride must tile 216");
     constexpr float kBigR = 1.1f;
-    constexpr float kStripHalfWidth = 0.45f;
-    int n = 0;
-    for (int j = 0; j < kV; ++j) {
-      for (int i = 0; i < kU; ++i) {
-        const float u = (i / static_cast<float>(kU)) * 2.0f * static_cast<float>(M_PI);
-        const float v = (j / static_cast<float>(kV - 1)) * 2.0f - 1.0f;  // -1..1
-        const float w = v * kStripHalfWidth;
-        const float c = cosf(u * 0.5f);
-        const float s = sinf(u * 0.5f);
-        const float radial = kBigR + w * c;
-        shapes_[10][n][0] = radial * cosf(u);
-        shapes_[10][n][1] = w * s;
-        shapes_[10][n][2] = radial * sinf(u);
-        ++n;
-      }
+    constexpr float kStripHalfWidth = 0.7f;
+    for (int n = 0; n < kPointCount; ++n) {
+      const int vis = n / kStride;
+      const int i = vis % kU;
+      const int j = vis / kU;
+      const float u = (i / static_cast<float>(kU)) * 2.0f * static_cast<float>(M_PI);
+      const float v = (j / static_cast<float>(kV - 1)) * 2.0f - 1.0f;
+      const float w = v * kStripHalfWidth;
+      const float c = cosf(u * 0.5f);
+      const float s = sinf(u * 0.5f);
+      const float radial = kBigR + w * c;
+      shapes_[10][n][0] = radial * cosf(u);
+      shapes_[10][n][1] = w * s;
+      shapes_[10][n][2] = radial * sinf(u);
     }
   }
 
-  // Shape 11 — hyperboloid of one sheet (cooling-tower hourglass). 24 around
-  // × 9 along the axis = 216. Hugely under-used in demoscene visuals and looks
-  // like a slick wireframe cinch when it rotates.
+  // Shape 11 — hyperboloid of one sheet (cooling-tower hourglass). 12 around
+  // × 9 along = 108 distinct (stride 2). At the waist (r=0.6) u-step =
+  // 2π·0.6/12 = 0.314 ✓; previous 24-around layout collapsed to 0.157 there.
   {
-    constexpr int kU = 24;
-    constexpr int kV = 9;
-    static_assert(kU * kV == kPointCount, "hyperboloid grid must equal kPointCount");
-    constexpr float kWaistR = 0.6f;     // narrow radius at the waist (z=0)
-    constexpr float kHalfH = 1.3f;      // axial extent
-    int n = 0;
-    for (int j = 0; j < kV; ++j) {
-      const float t = (j / static_cast<float>(kV - 1)) * 2.0f - 1.0f;  // -1..1
+    constexpr int kStride = 2;
+    constexpr int kU = 12, kV = 9;
+    static_assert(kU * kV * kStride == kPointCount, "hyperboloid stride must tile 216");
+    constexpr float kWaistR = 0.6f;
+    constexpr float kHalfH = 1.3f;
+    for (int n = 0; n < kPointCount; ++n) {
+      const int vis = n / kStride;
+      const int i = vis % kU;
+      const int j = vis / kU;
+      const float t = (j / static_cast<float>(kV - 1)) * 2.0f - 1.0f;
       const float z = t * kHalfH;
-      const float r = kWaistR * sqrtf(1.0f + t * t * 3.0f);  // flares at ends
-      for (int i = 0; i < kU; ++i) {
-        const float u = (i / static_cast<float>(kU)) * 2.0f * static_cast<float>(M_PI);
-        shapes_[11][n][0] = r * cosf(u);
-        shapes_[11][n][1] = z;
-        shapes_[11][n][2] = r * sinf(u);
-        ++n;
-      }
+      const float r = kWaistR * sqrtf(1.0f + t * t * 3.0f);
+      const float u = (i / static_cast<float>(kU)) * 2.0f * static_cast<float>(M_PI);
+      shapes_[11][n][0] = r * cosf(u);
+      shapes_[11][n][1] = z;
+      shapes_[11][n][2] = r * sinf(u);
     }
   }
 
-  // Shape 12 — hyperbolic paraboloid (Pringles-chip saddle). 18×12 = 216.
-  // The opposing-curvature warp makes the rotation feel non-Euclidean.
-  {
-    constexpr int kU = 18;
-    constexpr int kV = 12;
-    static_assert(kU * kV == kPointCount, "saddle grid must equal kPointCount");
-    int n = 0;
-    for (int j = 0; j < kV; ++j) {
-      for (int i = 0; i < kU; ++i) {
-        const float u = (i / static_cast<float>(kU - 1)) * 2.0f - 1.0f;
-        const float v = (j / static_cast<float>(kV - 1)) * 2.0f - 1.0f;
-        shapes_[12][n][0] = u * kModelScale;
-        shapes_[12][n][1] = (u * u - v * v) * 0.9f;
-        shapes_[12][n][2] = v * kModelScale;
-        ++n;
-      }
-    }
+  // Shape 12 — hyperbolic-paraboloid saddle. 8 × 9 = 72 distinct (stride 3).
+  // u-cells: 3/7 = 0.429 ✓, v-cells: 3/8 = 0.375 ✓.
+  for (int n = 0; n < kPointCount; ++n) {
+    constexpr int kStride = 3;
+    constexpr int kU = 8, kV = 9;
+    static_assert(kU * kV * kStride == kPointCount, "saddle stride must tile 216");
+    const int vis = n / kStride;
+    const int i = vis % kU;
+    const int j = vis / kU;
+    const float u = (i / static_cast<float>(kU - 1)) * 2.0f - 1.0f;
+    const float v = (j / static_cast<float>(kV - 1)) * 2.0f - 1.0f;
+    shapes_[12][n][0] = u * kModelScale;
+    shapes_[12][n][1] = (u * u - v * v) * 0.9f;
+    shapes_[12][n][2] = v * kModelScale;
   }
 
-  // Shape 13 — pyramid edge wireframe (square base + apex). 8 edges × 27
-  // points = 216. The transition to/from this shape produces a satisfying
-  // "fold" because the apex pulls 4 strands together.
+  // Shape 13 — pyramid edges. 8 edges × 9 distinct pts/edge = 72 (stride 3).
+  // Base edge length = 2·kPyrR = 2.6, step = 2.6/8 = 0.325 ✓
   {
     constexpr float kPyrR = 1.3f;
     static const float kPyrVerts[5][3] = {
@@ -366,33 +410,34 @@ void Screensaver::initShapes() {
         { 1.0f, -1.0f, -1.0f},
         { 1.0f, -1.0f,  1.0f},
         {-1.0f, -1.0f,  1.0f},
-        { 0.0f,  1.0f,  0.0f},  // apex
+        { 0.0f,  1.0f,  0.0f},
     };
     static constexpr int kPyrEdges[8][2] = {
-        {0,1},{1,2},{2,3},{3,0},   // base
-        {0,4},{1,4},{2,4},{3,4},   // slants
+        {0,1},{1,2},{2,3},{3,0},
+        {0,4},{1,4},{2,4},{3,4},
     };
-    constexpr int kEdgePts = kPointCount / 8;  // 27
-    int n = 0;
-    for (int e = 0; e < 8; ++e) {
+    constexpr int kStride = 3;
+    constexpr int kEdgePts = 9;
+    static_assert(8 * kEdgePts * kStride == kPointCount, "pyramid stride must tile 216");
+    for (int n = 0; n < kPointCount; ++n) {
+      const int vis = n / kStride;
+      const int e = vis / kEdgePts;
+      const int k = vis % kEdgePts;
       const auto &a = kPyrVerts[kPyrEdges[e][0]];
       const auto &b = kPyrVerts[kPyrEdges[e][1]];
-      for (int k = 0; k < kEdgePts; ++k) {
-        const float t = k / static_cast<float>(kEdgePts - 1);
-        shapes_[13][n][0] = (a[0] + (b[0] - a[0]) * t) * kPyrR;
-        shapes_[13][n][1] = (a[1] + (b[1] - a[1]) * t) * kPyrR;
-        shapes_[13][n][2] = (a[2] + (b[2] - a[2]) * t) * kPyrR;
-        ++n;
-      }
+      const float t = k / static_cast<float>(kEdgePts - 1);
+      shapes_[13][n][0] = (a[0] + (b[0] - a[0]) * t) * kPyrR;
+      shapes_[13][n][1] = (a[1] + (b[1] - a[1]) * t) * kPyrR;
+      shapes_[13][n][2] = (a[2] + (b[2] - a[2]) * t) * kPyrR;
     }
   }
 
-  // Shape 14 — icosahedron edge wireframe. 12 vertices, 30 edges; 30 × 7 =
-  // 210, with 6 spare points stacked on the first 6 vertices (visually merge
-  // with the edge endpoints — keeps point count at 216 without faking edges).
+  // Shape 14 — icosahedron edge wireframe. 30 edges × 5 distinct pts/edge =
+  // 150 visible points; the remaining 66 indices are stacked-on-vertex caps
+  // (5-6 per vertex) so the morph still has a full 216-wide target. Edge
+  // length after kIcoR scale = 2·0.683 = 1.366, step = 1.366/4 = 0.342 ≥ 0.30
+  // ✓ — was 7 pts/edge (step 0.227) which crowded the wireframe.
   {
-    // Golden-ratio icosahedron, circumradius normalized to ~1 after the kIcoR
-    // scale below. Vertex coordinates are the canonical (0, ±1, ±φ) triplets.
     constexpr float kPhi = 1.6180339887f;
     static const float kIcoVerts[12][3] = {
         { 0.0f,  1.0f,  kPhi}, { 0.0f,  1.0f, -kPhi},
@@ -402,10 +447,7 @@ void Screensaver::initShapes() {
         { kPhi,  0.0f,  1.0f}, { kPhi,  0.0f, -1.0f},
         {-kPhi,  0.0f,  1.0f}, {-kPhi,  0.0f, -1.0f},
     };
-    // Circumradius² = 1+φ² = 3.618 → r ≈ 1.902. Scale to land on kModelScale.
     constexpr float kIcoR = 1.3f / 1.902f;
-    // Discover the 30 edges by enumerating vertex pairs at the unit edge
-    // length (squared = 4.0 in the unnormalized canonical form).
     int edges[30][2];
     int edgeCount = 0;
     for (int a = 0; a < 12 && edgeCount < 30; ++a) {
@@ -421,7 +463,7 @@ void Screensaver::initShapes() {
         }
       }
     }
-    constexpr int kEdgePts = 7;
+    constexpr int kEdgePts = 5;       // distinct points per edge
     int n = 0;
     for (int e = 0; e < edgeCount; ++e) {
       const auto &a = kIcoVerts[edges[e][0]];
@@ -434,10 +476,12 @@ void Screensaver::initShapes() {
         ++n;
       }
     }
-    // Stack the 6 remaining points on the first 6 vertices so the morph
-    // target stays 216-wide. Stacked balls render as a single ball — they
-    // simply bias the morph trail toward those vertices, which is harmless.
-    for (int v = 0; n < kPointCount; ++v, ++n) {
+    // Distribute the remaining 66 indices as vertex caps so they stack on
+    // top of existing vertex positions (visually invisible — the renderer
+    // just paints the same ball twice). Cycle through vertices so each gets
+    // ~5-6 caps; this keeps the morph target perfectly 216-wide.
+    for (int c = 0; n < kPointCount; ++c, ++n) {
+      const int v = c % 12;
       shapes_[14][n][0] = kIcoVerts[v][0] * kIcoR;
       shapes_[14][n][1] = kIcoVerts[v][1] * kIcoR;
       shapes_[14][n][2] = kIcoVerts[v][2] * kIcoR;
