@@ -21,9 +21,17 @@ class Screensaver {
   // compose budget had headroom (was ~700 us at 125 dots).
   static constexpr int kPointsPerAxis = 6;
   static constexpr int kPointCount = kPointsPerAxis * kPointsPerAxis * kPointsPerAxis;
-  static constexpr int kStarCount = 60;
+  // 150 stars — bumped from 60 for a busier starfield. Star count drives
+  // stack sprite buffer (~16 B each) so kept in budget at 150.
+  static constexpr int kStarCount = 150;
   static constexpr int kPaletteSize = 15;
-  static constexpr int kShapeCount = 10;
+  // 15 shape templates: cube, sphere, torus, helix, double-helix, cloud,
+  // wave-plane, Lissajous, octahedron-edges, trefoil, mobius, hyperboloid,
+  // saddle, pyramid-edges, icosahedron-edges. Adds 6 geometric shapes over
+  // the previous 10.
+  static constexpr int kShapeCount = 15;
+  // Palette of star tint colors (RGB565). Renderer modulates by brightness.
+  static constexpr int kStarTintCount = 8;
 
   // Screen dimensions used to project stars in screen-space; must match the
   // display panel's logical resolution. Stars compute their own sx/sy in
@@ -33,7 +41,11 @@ class Screensaver {
 
   enum class StarMode : uint8_t {
     Forward3D,  // classic perspective starfield — stars stream toward viewer
-    Parallax,   // 3-layer horizontal scroll, Starfield-demo style
+    Parallax,   // 5-layer horizontal scroll, Starfield-demo style
+    Vortex,     // stars spiral outward from center
+    Twinkle,    // random field of pulsing sparkles
+    Rain,       // diagonal streaks falling NE→SW
+    kCount,
   };
 
   struct Point {
@@ -54,9 +66,17 @@ class Screensaver {
     int16_t sx;       // 0..kScreenWidth-1
     int16_t sy;       // 0..kScreenHeight-1
     uint8_t brightness;
+    // Tint index into kStarTints[] — renderer modulates this by brightness.
+    uint8_t tint;
+    // 0 = 1×1 pixel, 1 = small disc (3 px), 2 = bigger disc (5 px). Lets the
+    // brightest stars feel punchy without the dim ones blooming.
+    uint8_t size;
     // Animation state, interpreted per current starMode_:
     //   Forward3D: a/b/c = normalised 3D coords  (-1..1, -1..1, 0..1)
     //   Parallax:  a = screen X (float),  b = screen Y, c = layer (0..1)
+    //   Vortex:    a = angle (rad), b = radius (0..1.5), c = angular speed
+    //   Twinkle:   a = screen X,    b = screen Y,        c = phase (0..1)
+    //   Rain:      a = screen X,    b = screen Y,        c = fall speed
     float a, b, c;
   };
 
@@ -75,6 +95,8 @@ class Screensaver {
   size_t starCount() const { return kStarCount; }
   // RGB565 Pico-8 palette (no black). Index by colorIndex % kPaletteSize.
   static const uint16_t *palette();
+  // RGB565 star tint palette. Index by Star::tint % kStarTintCount.
+  static const uint16_t *starTints();
 
  private:
   void initShapes();

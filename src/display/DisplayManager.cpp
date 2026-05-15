@@ -4003,7 +4003,10 @@ void DisplayManager::renderScreensaverFrame(Screensaver &saver) {
     uint16_t dimColor;  // ~50% of color — outer rim, reads as the shadow side
     uint16_t hiColor;   // white specular if hiOffset > 0
   };
-  Sprite sprites[Screensaver::kStarCount + Screensaver::kPointCount];
+  // Static (function-scope) so the 5.7 KB buffer for 150 stars + 216 dots
+  // doesn't live on the ~8 KB Arduino loop stack. Single-threaded renderer,
+  // so no re-entrancy concern.
+  static Sprite sprites[Screensaver::kStarCount + Screensaver::kPointCount];
   int spriteCount = 0;
 
   constexpr int kVirtualWidth = kDisplayWidth;     // 640
@@ -4012,22 +4015,34 @@ void DisplayManager::renderScreensaverFrame(Screensaver &saver) {
   // Stars first → drawn first inside each stripe → behind dots.
   // Stars now compute their own screen coords + brightness in
   // Screensaver::tick() so we can support multiple star modes (3D-forward,
-  // parallax-horizontal) without branching here.
+  // parallax-horizontal, vortex, twinkle, rain) without branching here.
   const auto *stars = saver.stars();
+  const uint16_t *starTints = Screensaver::starTints();
   for (size_t i = 0; i < saver.starCount(); ++i) {
     const auto &s = stars[i];
     if (s.brightness == 0) continue;  // off-screen / culled
     if (s.sx < 0 || s.sx >= kVirtualWidth || s.sy < 0 || s.sy >= kVirtualHeight) continue;
-    const uint16_t c5 = static_cast<uint16_t>(s.brightness) >> 3;
-    const uint16_t c6 = static_cast<uint16_t>(s.brightness) >> 2;
+    // Apply the star's tint, then scale each RGB565 channel by the
+    // grayscale brightness so dim stars fade through their tint color
+    // (warm/cool/white) rather than always going gray.
+    const uint16_t tint = starTints[s.tint % Screensaver::kStarTintCount];
+    const uint16_t scale = s.brightness;
+    const uint16_t r5 = static_cast<uint16_t>((((tint >> 11) & 0x1F) * scale) >> 8);
+    const uint16_t g6 = static_cast<uint16_t>((((tint >>  5) & 0x3F) * scale) >> 8);
+    const uint16_t b5 = static_cast<uint16_t>(( (tint        & 0x1F) * scale) >> 8);
+    const uint16_t shaded = static_cast<uint16_t>((r5 << 11) | (g6 << 5) | b5);
     Sprite &sp = sprites[spriteCount++];
     sp.cnX = static_cast<int16_t>((kVirtualHeight - 1) - s.sy);
     sp.cnY = static_cast<int16_t>(s.sx);
-    sp.radius = 0;
+    // size 0 → 1×1 point (radius 0); size 1 → 3 px disc (radius 1);
+    // size 2 → 5 px disc (radius 2). Same rasteriser as the dots.
+    sp.radius = static_cast<int16_t>(s.size);
     sp.coreShift = 0;
     sp.hiOffset = 0;
-    sp.color = panelColor(static_cast<uint16_t>((c5 << 11) | (c6 << 5) | c5));
-    sp.dimColor = 0;
+    sp.color = panelColor(shaded);
+    // For non-zero radius the rim/dim color matches the core so the star
+    // reads as a solid blob — stars don't get 3-tone shading.
+    sp.dimColor = sp.color;
     sp.hiColor = 0;
   }
 
@@ -4039,11 +4054,12 @@ void DisplayManager::renderScreensaverFrame(Screensaver &saver) {
   // cluster fills more of the panel; combined with kCameraZ=3.0 in
   // Screensaver::tick(), nearest dots project to ~10 px radius.
   constexpr float kFocal = 180.0f;
-  // Per-dot radius scaler. Cap=13 lets near dots feel substantial; the
-  // 6³ grid spacing (0.6 model units) projects to ≥36 px between adjacent
-  // dots at typical depth, so even max-radius dots don't overlap.
-  constexpr float kRadiusScale = 11.0f;
-  constexpr int kRadiusMax = 13;
+  // Per-dot radius scaler. Bumped from 11/13 → 16/19 so the balls read as
+  // chunky beads rather than dots; the dense-path shapes (helix, double-helix)
+  // were retuned in Screensaver::initShapes() so adjacent balls keep enough
+  // screen gap at this size.
+  constexpr float kRadiusScale = 16.0f;
+  constexpr int kRadiusMax = 19;
   for (size_t i = 0; i < saver.pointCount(); ++i) {
     const auto &p = allPoints[order[i]];
     if (p.cz <= 0.1f) continue;
