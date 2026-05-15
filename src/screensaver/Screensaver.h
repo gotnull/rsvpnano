@@ -42,11 +42,14 @@ class Screensaver {
   static constexpr int16_t kScreenHeight = 172;
 
   enum class StarMode : uint8_t {
-    Forward3D,  // classic perspective starfield — stars stream toward viewer
-    Parallax,   // 5-layer horizontal scroll, Starfield-demo style
-    Vortex,     // stars spiral outward from center
-    Twinkle,    // random field of pulsing sparkles
-    Rain,       // diagonal streaks falling NE→SW
+    Forward3D,   // classic perspective starfield — stars stream toward viewer
+    Parallax,    // 5-layer horizontal scroll, Starfield-demo style
+    Vortex,      // stars spiral outward from center
+    Twinkle,     // random field of pulsing sparkles
+    Rain,        // diagonal streaks falling NE→SW
+    Lightspeed,  // radial hyperspace — stars stretch from centre at speed
+    Blackhole,   // central singularity pulling stars inward, accelerating
+    Asteroid,    // twinkle background + occasional fast comet streaks
     kCount,
   };
 
