@@ -14,6 +14,8 @@
 #include "app/scene/ScreensaverScene.h"
 #include "audio/AudioManager.h"
 #include "audio/ModPlayer.h"
+#include "display/GifPlayer.h"
+#include "network/WifiSetupPortal.h"
 #include "demos/Plasma.h"
 #include "demos/Rasterbars.h"
 #include "demos/ShadeBobs.h"
@@ -65,6 +67,7 @@ class App {
     Main,
     SettingsHome,
     SettingsDisplay,
+    SettingsEffects,
     SettingsPacing,
     SettingsReadingSounds,
     NetworkPicker,
@@ -80,6 +83,8 @@ class App {
     ModulesPicker,
     ModulesFavorites,
     ModuleFavoriteConfirm,
+    GifPicker,
+    WifiSetupPortal,
   };
 
   // ----------------------------------------------------------------------
@@ -181,6 +186,11 @@ class App {
   // Matches the TabDescriptor opener signature (void(App::*)()).
   void openMainMenuTab();
   void openSettingsDisplay();
+  void openSettingsEffects();
+  // Push the cached effect state into DisplayManager. Called on boot and
+  // any time a knob changes so the renderer picks up the new values on the
+  // next stripe.
+  void applyEffectsToDisplay();
   void openSettingsPacing();
   void openSettingsReadingSounds();
   // No-arg wrapper for RemoteBookPicker so the opener matches the
@@ -234,6 +244,26 @@ class App {
   void openModulesPicker();
   void selectModulesPickerItem(uint32_t nowMs);
   void renderModulesPicker();
+  // GIF picker — lists /gifs/*.gif on the SD; tapping enters AppState::GifPlaying.
+  // Touch dismisses back to the picker so the user can binge through the
+  // library the same way Modules does.
+  void openGifPicker();
+  void renderGifPicker();
+  void selectGifPickerItem(uint32_t nowMs);
+  void enterGifPlayback(const String &path, uint32_t nowMs);
+  void exitGifPlayback(uint32_t nowMs);
+  void renderGifPlayerFrame(uint32_t nowMs);
+  // Captive-portal Wi-Fi setup. open() launches the AP + portal; update()
+  // drives the HTTP/DNS pumps and runs the connect-test once the user POSTs
+  // credentials; exit() tears it all down and returns to Settings.
+  void openWifiSetupPortal();
+  void renderWifiSetupPortal();
+  void updateWifiSetupPortal(uint32_t nowMs);
+  void exitWifiSetupPortal(uint32_t nowMs);
+  // Persist a portal-added network: appends to ota_.config().networks (if not
+  // already present), writes to NVS + /wifi.json, and re-pushes into the
+  // managers that consume the network list.
+  void persistPortalNetwork(const String &ssid, const String &password);
   // Favorites submenu — long-press on a module in the picker prompts to add;
   // long-press inside Favorites prompts to remove. Persisted as a comma-
   // separated basename list in Preferences.
@@ -414,6 +444,13 @@ class App {
   NotificationsManager notifications_;
   AudioManager audio_;
   ModPlayer modPlayer_;
+  GifPlayer gifPlayer_;
+  std::vector<String> gifMenuItems_;
+  size_t gifSelectedIndex_ = 0;
+  String currentGifPath_;
+  ::WifiSetupPortal wifiSetupPortal_;
+  String wifiSetupLastStatusKey_;  // for re-paint suppression
+  uint32_t wifiSetupConnectStartedMs_ = 0;
   BookDownloadManager bookDownloader_;
   std::vector<BookDownloadManager::RemoteBook> remoteBooks_;
   size_t remoteBookSelectedIndex_ = 0;
@@ -571,7 +608,18 @@ class App {
   bool displayFlipped_ = true;
   bool notificationsEnabled_ = true;
   bool soundEnabled_ = true;             // master audio switch — gates all playback
-  bool crtShaderEnabled_ = false;        // CRT scanline post-process for demos
+  // Retro post-process effects layered over demo/GIF/screensaver renderers.
+  // State lives in App so it persists across DisplayManager lifetime and
+  // survives screensaver/demo transitions. Mirrored into DisplayManager via
+  // applyEffectsToDisplay(); persisted to NVS on every toggle/cycle.
+  bool scanlinesEnabled_ = false;
+  uint8_t scanlinesIntensityPct_ = 38;
+  uint8_t tintColorIndex_ = 0;           // 0=None, 1=Green, 2=Amber, 3=Blue, 4=Magenta
+  uint8_t tintIntensityPct_ = 45;
+  bool dotMatrixEnabled_ = false;
+  uint8_t dotMatrixSize_ = 3;
+  bool glitchEnabled_ = false;
+  uint8_t glitchIntensityPct_ = 35;
   bool chapterChimeEnabled_ = false;     // play a tone when crossing chapter boundary
   bool paragraphChimeEnabled_ = false;   // play a tone when crossing paragraph boundary
   bool pageChimeEnabled_ = false;        // play a tone every kPageWordCount words

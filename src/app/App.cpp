@@ -272,9 +272,27 @@ namespace
   constexpr size_t kSettingsHomeScreensaverIndex = 11;
   // Demos / Modules used to live here; they are now top-level Home tabs.
   constexpr size_t kSettingsHomeDemoMusicIndex = 12;
-  constexpr size_t kSettingsHomeCrtShaderIndex = 13;
-  constexpr size_t kSettingsHomeModPackIndex = 14;
-  constexpr size_t kSettingsHomeCameraIndex = 15;
+  constexpr size_t kSettingsHomeEffectsIndex = 13;
+  constexpr size_t kSettingsHomeGifsIndex = 14;
+  constexpr size_t kSettingsHomeWifiSetupIndex = 15;
+  constexpr size_t kSettingsHomeModPackIndex = 16;
+  constexpr size_t kSettingsHomeCameraIndex = 17;
+  // Effects sub-screen rows. Each toggle/cycle persists to NVS and re-pushes
+  // the change into DisplayManager via applyEffectsToDisplay().
+  constexpr size_t kSettingsEffectsBackIndex = 0;
+  constexpr size_t kSettingsEffectsScanlinesIndex = 1;
+  constexpr size_t kSettingsEffectsScanlinesIntensityIndex = 2;
+  constexpr size_t kSettingsEffectsTintIndex = 3;
+  constexpr size_t kSettingsEffectsTintIntensityIndex = 4;
+  constexpr size_t kSettingsEffectsDotMatrixIndex = 5;
+  constexpr size_t kSettingsEffectsDotMatrixSizeIndex = 6;
+  constexpr size_t kSettingsEffectsGlitchIndex = 7;
+  constexpr size_t kSettingsEffectsGlitchIntensityIndex = 8;
+  // Cycle steps for intensity sliders — 5 stops keeps the menu responsive
+  // without an extra picker screen. Glitch uses the same scale.
+  constexpr uint8_t kEffectsIntensitySteps[] = {0, 25, 50, 75, 100};
+  constexpr size_t kEffectsIntensityStepCount =
+      sizeof(kEffectsIntensitySteps) / sizeof(kEffectsIntensitySteps[0]);
   // Demo picker layout: one row per demo. Home tab strip provides back nav
   // (swipe back gesture or tap another tab), so no in-list Back row.
   constexpr size_t kDemoPickerRasterbarsIndex = 0;
@@ -330,7 +348,15 @@ namespace
   constexpr const char *kPrefNotifVolume = "nvol";
   constexpr const char *kPrefNotifLastTs = "nlast";
   constexpr const char *kPrefSoundEnabled = "snden";
-  constexpr const char *kPrefCrtShader = "crtsh";
+  constexpr const char *kPrefCrtShader = "crtsh";          // legacy — migrated to kPrefScanlines on boot
+  constexpr const char *kPrefScanlines = "fxScn";
+  constexpr const char *kPrefScanlinesPct = "fxScnI";
+  constexpr const char *kPrefTint = "fxTnt";
+  constexpr const char *kPrefTintPct = "fxTntI";
+  constexpr const char *kPrefDotMatrix = "fxDot";
+  constexpr const char *kPrefDotMatrixSize = "fxDotS";
+  constexpr const char *kPrefGlitch = "fxGlt";
+  constexpr const char *kPrefGlitchPct = "fxGltI";
   constexpr const char *kPrefChapterChime = "chchm";
   constexpr const char *kPrefParagraphChime = "pgchm";
   constexpr const char *kPrefPageChime = "pgnchm";
@@ -570,8 +596,24 @@ void App::begin()
   notificationTone_ = preferences_.getString(kPrefNotifTone, "");
   notifications_.setLastSeenTs(preferences_.getUInt(kPrefNotifLastTs, 0));
   soundEnabled_ = preferences_.getBool(kPrefSoundEnabled, soundEnabled_);
-  crtShaderEnabled_ = preferences_.getBool(kPrefCrtShader, crtShaderEnabled_);
-  display_.setCrtShaderEnabled(crtShaderEnabled_);
+  // One-time migration: the legacy single "CRT shader" toggle is now the
+  // scanlines effect. If the new key isn't set yet but the old one is, copy
+  // the value across and clear the old key so future boots see the new key.
+  if (!preferences_.isKey(kPrefScanlines) && preferences_.isKey(kPrefCrtShader)) {
+    scanlinesEnabled_ = preferences_.getBool(kPrefCrtShader, false);
+    preferences_.putBool(kPrefScanlines, scanlinesEnabled_);
+    preferences_.remove(kPrefCrtShader);
+  } else {
+    scanlinesEnabled_ = preferences_.getBool(kPrefScanlines, scanlinesEnabled_);
+  }
+  scanlinesIntensityPct_ = preferences_.getUChar(kPrefScanlinesPct, scanlinesIntensityPct_);
+  tintColorIndex_ = preferences_.getUChar(kPrefTint, tintColorIndex_);
+  tintIntensityPct_ = preferences_.getUChar(kPrefTintPct, tintIntensityPct_);
+  dotMatrixEnabled_ = preferences_.getBool(kPrefDotMatrix, dotMatrixEnabled_);
+  dotMatrixSize_ = preferences_.getUChar(kPrefDotMatrixSize, dotMatrixSize_);
+  glitchEnabled_ = preferences_.getBool(kPrefGlitch, glitchEnabled_);
+  glitchIntensityPct_ = preferences_.getUChar(kPrefGlitchPct, glitchIntensityPct_);
+  applyEffectsToDisplay();
   chapterChimeEnabled_ = preferences_.getBool(kPrefChapterChime, chapterChimeEnabled_);
   paragraphChimeEnabled_ = preferences_.getBool(kPrefParagraphChime, paragraphChimeEnabled_);
   pageChimeEnabled_ = preferences_.getBool(kPrefPageChime, pageChimeEnabled_);
@@ -826,8 +868,9 @@ void App::update(uint32_t nowMs)
   if (screensaverIndex_ > 0 && screensaverIndex_ < kScreensaverOptionCount &&
       state_ != AppState::Screensaver && state_ != AppState::DemoPlaying &&
       state_ != AppState::CameraStream && state_ != AppState::ModulePlaying &&
-      state_ != AppState::Booting && state_ != AppState::UsbTransfer &&
-      state_ != AppState::Sleeping && !powerOffStarted_)
+      state_ != AppState::GifPlaying && state_ != AppState::Booting &&
+      state_ != AppState::UsbTransfer && state_ != AppState::Sleeping &&
+      !powerOffStarted_)
   {
     const uint32_t idleLimitMs =
         static_cast<uint32_t>(kScreensaverMinutes[screensaverIndex_]) * 60UL * 1000UL;
@@ -888,6 +931,18 @@ void App::update(uint32_t nowMs)
     trackStage("modplay", micros() - s, 20000);
     modulePlayerLastRenderMs_ = nowMs;
   }
+  if (state_ == AppState::GifPlaying)
+  {
+    const uint32_t s = micros();
+    renderGifPlayerFrame(nowMs);
+    trackStage("gif", micros() - s, 30000);
+  }
+  if (state_ == AppState::Menu && menuScreen_ == MenuScreen::WifiSetupPortal)
+  {
+    const uint32_t s = micros();
+    updateWifiSetupPortal(nowMs);
+    trackStage("wifi-portal", micros() - s, 25000);
+  }
 
   // Auto-power-off: enterPowerOff after the configured idle window. Active
   // reading (state_ == Playing) and ongoing button holds count as activity, so
@@ -896,7 +951,7 @@ void App::update(uint32_t nowMs)
       state_ != AppState::Playing && state_ != AppState::Booting &&
       state_ != AppState::UsbTransfer && state_ != AppState::Sleeping &&
       state_ != AppState::CameraStream && state_ != AppState::ModulePlaying &&
-      !powerOffStarted_)
+      state_ != AppState::GifPlaying && !powerOffStarted_)
   {
     const uint32_t idleLimitMs =
         static_cast<uint32_t>(kAutoPowerOffMinutes[autoPowerOffIndex_]) * 60UL * 1000UL;
@@ -1139,6 +1194,8 @@ const char *App::stateName(AppState state) const
     return "CameraStream";
   case AppState::ModulePlaying:
     return "ModulePlaying";
+  case AppState::GifPlaying:
+    return "GifPlaying";
   }
   return "Unknown";
 }
@@ -1237,6 +1294,10 @@ void App::setState(AppState nextState, uint32_t nowMs)
     // First bars/title paint comes from the next update() tick — the audio
     // task is already running so we don't need to kick it here.
     break;
+  case AppState::GifPlaying:
+    // GifPlayer decoded the first frame in enterGifPlayback(); subsequent
+    // frames come from renderGifPlayerFrame() during update().
+    break;
   }
 
   if (state_ == AppState::Paused && previousState == AppState::Playing)
@@ -1282,7 +1343,7 @@ void App::updateState(uint32_t nowMs)
   if (state_ == AppState::Menu || state_ == AppState::Sleeping ||
       state_ == AppState::Screensaver || state_ == AppState::DemoPlaying ||
       state_ == AppState::CameraStream || state_ == AppState::ModulePlaying ||
-      state_ == AppState::UsbTransfer)
+      state_ == AppState::GifPlaying || state_ == AppState::UsbTransfer)
   {
     // These states are exited by direct input (touch, button, completion
     // event) only; don't auto-bounce back to Paused/Playing. Forgetting to
@@ -1546,6 +1607,7 @@ void App::applyDisplayPreferences(uint32_t nowMs, bool rerender)
   if (state_ == AppState::Menu)
   {
     if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
+        menuScreen_ == MenuScreen::SettingsEffects ||
         menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsReadingSounds)
     {
       rebuildSettingsMenuItems();
@@ -1786,6 +1848,15 @@ void App::handleTouch(uint32_t nowMs)
   {
     Serial.println("[demo] dismissed by touch");
     exitDemoPlayback(nowMs);
+    dismissTouchPending_ = (ev.phase != TouchPhase::End);
+    return;
+  }
+  // GIF playback: any touch returns to the picker. Identical lifecycle to
+  // Demo/Module — we don't need swipe gestures here yet.
+  if (state_ == AppState::GifPlaying)
+  {
+    Serial.println("[gif] dismissed by touch");
+    exitGifPlayback(nowMs);
     dismissTouchPending_ = (ev.phase != TouchPhase::End);
     return;
   }
@@ -2364,10 +2435,14 @@ void App::moveMenuSelection(int direction)
   {
     return;
   }
+  // The Wi-Fi setup portal is a status display, not a list. Swallow swipe
+  // input so the user has to use Back / power button to leave.
+  if (menuScreen_ == MenuScreen::WifiSetupPortal) return;
 
   size_t *selectedIndex = &menuSelectedIndex_;
   size_t itemCount = MenuItemCount;
   if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
+      menuScreen_ == MenuScreen::SettingsEffects ||
       menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsReadingSounds)
   {
     selectedIndex = &settingsSelectedIndex_;
@@ -2438,6 +2513,11 @@ void App::moveMenuSelection(int direction)
     selectedIndex = &moduleFavoriteConfirmSelectedIndex_;
     itemCount = ModuleFavoriteOptionCount;
   }
+  else if (menuScreen_ == MenuScreen::GifPicker)
+  {
+    selectedIndex = &gifSelectedIndex_;
+    itemCount = gifMenuItems_.size();
+  }
 
   Serial.printf("[move] screen=%d direction=%d idxBefore=%u itemCount=%u\n",
                 static_cast<int>(menuScreen_), direction,
@@ -2481,6 +2561,7 @@ void App::moveMenuSelection(int direction)
                   static_cast<unsigned>(modulesMenuItems_.size()));
   }
   if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
+      menuScreen_ == MenuScreen::SettingsEffects ||
       menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsReadingSounds)
   {
     Serial.printf("[settings] selected=%s\n", settingsMenuItems_[settingsSelectedIndex_].c_str());
@@ -2518,6 +2599,7 @@ void App::moveMenuSelection(int direction)
 void App::selectMenuItem(uint32_t nowMs)
 {
   if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
+      menuScreen_ == MenuScreen::SettingsEffects ||
       menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsReadingSounds)
   {
     selectSettingsItem(nowMs);
@@ -2576,6 +2658,11 @@ void App::selectMenuItem(uint32_t nowMs)
   if (menuScreen_ == MenuScreen::ModulesPicker)
   {
     selectModulesPickerItem(nowMs);
+    return;
+  }
+  if (menuScreen_ == MenuScreen::GifPicker)
+  {
+    selectGifPickerItem(nowMs);
     return;
   }
   if (menuScreen_ == MenuScreen::ModulesFavorites)
@@ -2647,6 +2734,7 @@ bool App::goBack(uint32_t nowMs)
       return false;  // root — nothing to go back to
     case MenuScreen::SettingsHome:
     case MenuScreen::SettingsDisplay:
+    case MenuScreen::SettingsEffects:
     case MenuScreen::SettingsPacing:
     case MenuScreen::SettingsReadingSounds:
       settingsSelectedIndex_ = kSettingsBackIndex;
@@ -2702,6 +2790,15 @@ bool App::goBack(uint32_t nowMs)
       moduleFavoriteConfirmSelectedIndex_ = ModuleFavoriteNo;
       selectModuleFavoriteConfirmItem(nowMs);
       return true;
+    case MenuScreen::GifPicker:
+      menuScreen_ = MenuScreen::SettingsHome;
+      settingsSelectedIndex_ = kSettingsHomeEffectsIndex;  // land near where the user entered
+      rebuildSettingsMenuItems();
+      renderSettings();
+      return true;
+    case MenuScreen::WifiSetupPortal:
+      exitWifiSetupPortal(nowMs);
+      return true;
   }
   return false;
 }
@@ -2739,6 +2836,34 @@ void App::openSettingsDisplay()
   settingsSelectedIndex_ = 0;
   rebuildSettingsMenuItems();
   renderSettings();
+}
+
+void App::openSettingsEffects()
+{
+  menuScreen_ = MenuScreen::SettingsEffects;
+  settingsSelectedIndex_ = kSettingsEffectsScanlinesIndex;
+  rebuildSettingsMenuItems();
+  renderSettings();
+}
+
+void App::applyEffectsToDisplay()
+{
+  display_.setScanlinesEnabled(scanlinesEnabled_);
+  display_.setScanlinesIntensity(scanlinesIntensityPct_);
+  DisplayManager::TintColor t = DisplayManager::TintColor::None;
+  switch (tintColorIndex_) {
+    case 1: t = DisplayManager::TintColor::Green; break;
+    case 2: t = DisplayManager::TintColor::Amber; break;
+    case 3: t = DisplayManager::TintColor::Blue; break;
+    case 4: t = DisplayManager::TintColor::Magenta; break;
+    default: t = DisplayManager::TintColor::None; break;
+  }
+  display_.setTintColor(t);
+  display_.setTintIntensity(tintIntensityPct_);
+  display_.setDotMatrixEnabled(dotMatrixEnabled_);
+  display_.setDotMatrixSize(dotMatrixSize_);
+  display_.setGlitchEnabled(glitchEnabled_);
+  display_.setGlitchIntensity(glitchIntensityPct_);
 }
 
 void App::openSettingsPacing()
@@ -2831,12 +2956,14 @@ void App::selectSettingsItem(uint32_t nowMs)
       rebuildSettingsMenuItems();
       renderSettings();
       return;
-    case kSettingsHomeCrtShaderIndex:
-      crtShaderEnabled_ = !crtShaderEnabled_;
-      preferences_.putBool(kPrefCrtShader, crtShaderEnabled_);
-      display_.setCrtShaderEnabled(crtShaderEnabled_);
-      rebuildSettingsMenuItems();
-      renderSettings();
+    case kSettingsHomeEffectsIndex:
+      openSettingsEffects();
+      return;
+    case kSettingsHomeGifsIndex:
+      openGifPicker();
+      return;
+    case kSettingsHomeWifiSetupIndex:
+      openWifiSetupPortal();
       return;
     case kSettingsHomeModPackIndex:
       downloadModStarterPack();
@@ -2946,6 +3073,75 @@ void App::selectSettingsItem(uint32_t nowMs)
     default:
       return;
     }
+  }
+
+  if (menuScreen_ == MenuScreen::SettingsEffects)
+  {
+    // Helper: snap a current pct to the nearest cycle stop, then advance one.
+    auto cycleIntensityPct = [](uint8_t current) -> uint8_t {
+      size_t nearest = 0;
+      uint8_t bestDelta = 255;
+      for (size_t i = 0; i < kEffectsIntensityStepCount; ++i) {
+        const uint8_t delta = current >= kEffectsIntensitySteps[i]
+                                  ? current - kEffectsIntensitySteps[i]
+                                  : kEffectsIntensitySteps[i] - current;
+        if (delta < bestDelta) {
+          bestDelta = delta;
+          nearest = i;
+        }
+      }
+      return kEffectsIntensitySteps[(nearest + 1) % kEffectsIntensityStepCount];
+    };
+
+    switch (settingsSelectedIndex_)
+    {
+    case kSettingsEffectsBackIndex:
+      settingsSelectedIndex_ = kSettingsHomeEffectsIndex;
+      menuScreen_ = MenuScreen::SettingsHome;
+      rebuildSettingsMenuItems();
+      renderSettings();
+      return;
+    case kSettingsEffectsScanlinesIndex:
+      scanlinesEnabled_ = !scanlinesEnabled_;
+      preferences_.putBool(kPrefScanlines, scanlinesEnabled_);
+      break;
+    case kSettingsEffectsScanlinesIntensityIndex:
+      scanlinesIntensityPct_ = cycleIntensityPct(scanlinesIntensityPct_);
+      preferences_.putUChar(kPrefScanlinesPct, scanlinesIntensityPct_);
+      break;
+    case kSettingsEffectsTintIndex:
+      // 0=None,1=Green,2=Amber,3=Blue,4=Magenta — cycle through all.
+      tintColorIndex_ = static_cast<uint8_t>((tintColorIndex_ + 1) % 5);
+      preferences_.putUChar(kPrefTint, tintColorIndex_);
+      break;
+    case kSettingsEffectsTintIntensityIndex:
+      tintIntensityPct_ = cycleIntensityPct(tintIntensityPct_);
+      preferences_.putUChar(kPrefTintPct, tintIntensityPct_);
+      break;
+    case kSettingsEffectsDotMatrixIndex:
+      dotMatrixEnabled_ = !dotMatrixEnabled_;
+      preferences_.putBool(kPrefDotMatrix, dotMatrixEnabled_);
+      break;
+    case kSettingsEffectsDotMatrixSizeIndex:
+      // 2..6 px grid period.
+      dotMatrixSize_ = (dotMatrixSize_ >= 6) ? 2 : static_cast<uint8_t>(dotMatrixSize_ + 1);
+      preferences_.putUChar(kPrefDotMatrixSize, dotMatrixSize_);
+      break;
+    case kSettingsEffectsGlitchIndex:
+      glitchEnabled_ = !glitchEnabled_;
+      preferences_.putBool(kPrefGlitch, glitchEnabled_);
+      break;
+    case kSettingsEffectsGlitchIntensityIndex:
+      glitchIntensityPct_ = cycleIntensityPct(glitchIntensityPct_);
+      preferences_.putUChar(kPrefGlitchPct, glitchIntensityPct_);
+      break;
+    default:
+      return;
+    }
+    applyEffectsToDisplay();
+    rebuildSettingsMenuItems();
+    renderSettings();
+    return;
   }
 
   if (menuScreen_ != MenuScreen::SettingsPacing)
@@ -3115,7 +3311,9 @@ void App::rebuildSettingsMenuItems()
                              : (demoMusicMode_ == 2) ? "Picked"
                                                      : "Favorites";
     settingsMenuItems_.push_back(String("Demo music: ") + musicLabel);
-    settingsMenuItems_.push_back(String("CRT shader: ") + (crtShaderEnabled_ ? "On" : "Off"));
+    settingsMenuItems_.push_back("Retro effects");
+    settingsMenuItems_.push_back("Animated GIFs");
+    settingsMenuItems_.push_back("Wi-Fi setup");
     settingsMenuItems_.push_back("Download MOD pack");
     settingsMenuItems_.push_back("Camera test");
   }
@@ -3149,6 +3347,26 @@ void App::rebuildSettingsMenuItems()
       autoLabel = (mins >= 60) ? (String(mins / 60) + "h") : (String(mins) + "m");
     }
     settingsMenuItems_.push_back(String("Auto off: ") + autoLabel);
+  }
+  else if (menuScreen_ == MenuScreen::SettingsEffects)
+  {
+    settingsMenuItems_.push_back("Back");
+    settingsMenuItems_.push_back(String("Scanlines: ") + (scanlinesEnabled_ ? "On" : "Off"));
+    settingsMenuItems_.push_back(String("Scanline intensity: ") +
+                                 String(scanlinesIntensityPct_) + "%");
+    const char *tintLabel = (tintColorIndex_ == 0)   ? "Off"
+                            : (tintColorIndex_ == 1) ? "Green"
+                            : (tintColorIndex_ == 2) ? "Amber"
+                            : (tintColorIndex_ == 3) ? "Blue"
+                                                     : "Magenta";
+    settingsMenuItems_.push_back(String("Tint: ") + tintLabel);
+    settingsMenuItems_.push_back(String("Tint intensity: ") +
+                                 String(tintIntensityPct_) + "%");
+    settingsMenuItems_.push_back(String("Dot matrix: ") + (dotMatrixEnabled_ ? "On" : "Off"));
+    settingsMenuItems_.push_back(String("Dot size: ") + String(dotMatrixSize_) + "px");
+    settingsMenuItems_.push_back(String("Glitch: ") + (glitchEnabled_ ? "On" : "Off"));
+    settingsMenuItems_.push_back(String("Glitch intensity: ") +
+                                 String(glitchIntensityPct_) + "%");
   }
   else if (menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsReadingSounds)
   {
@@ -4827,6 +5045,253 @@ void App::exitModulePlayback(uint32_t nowMs)
   renderModulesPicker();
 }
 
+// ---------------------------------------------------------------------------
+// GIF picker / playback.
+// ---------------------------------------------------------------------------
+
+void App::openGifPicker()
+{
+  menuScreen_ = MenuScreen::GifPicker;
+  display_.renderLoadingOverlay("GIFs", "Scanning /gifs/…", millis());
+  yield();
+  gifMenuItems_.clear();
+  if (!storage_.isMounted()) {
+    gifMenuItems_.push_back("(SD not mounted)");
+  } else {
+    auto names = storage_.listGifNames();
+    Serial.printf("[gif-open] mounted=1 found=%u\n", static_cast<unsigned>(names.size()));
+    for (const auto &n : names) gifMenuItems_.push_back(n);
+    if (gifMenuItems_.empty()) {
+      gifMenuItems_.push_back("(no GIFs — drop .gif into /gifs/)");
+    }
+  }
+  if (gifSelectedIndex_ >= gifMenuItems_.size()) gifSelectedIndex_ = 0;
+  renderGifPicker();
+}
+
+void App::renderGifPicker()
+{
+  std::vector<bool> chevrons(gifMenuItems_.size(), true);
+  for (size_t i = 0; i < gifMenuItems_.size(); ++i) {
+    if (gifMenuItems_[i].startsWith("(")) chevrons[i] = false;
+  }
+  display_.renderMenu(gifMenuItems_, gifSelectedIndex_, chevrons);
+}
+
+void App::selectGifPickerItem(uint32_t nowMs)
+{
+  if (gifSelectedIndex_ >= gifMenuItems_.size()) return;
+  String name = gifMenuItems_[gifSelectedIndex_];
+  if (name.startsWith("(")) return;
+  const String path = storage_.gifPath(name);
+  Serial.printf("[gif] picker tap → %s\n", path.c_str());
+  enterGifPlayback(path, nowMs);
+}
+
+void App::enterGifPlayback(const String &path, uint32_t nowMs)
+{
+  const int slash = path.lastIndexOf('/');
+  const String name = (slash >= 0) ? path.substring(slash + 1) : path;
+  display_.renderStatus("GIF", "Loading", name);
+  if (!gifPlayer_.begin(path)) {
+    Serial.printf("[gif] enter failed: %s (%s)\n", path.c_str(), gifPlayer_.error());
+    displayTransientStatus("GIF", "Failed", gifPlayer_.error(), 1200,
+                           TransientStatusAction::ReturnToMain);
+    return;
+  }
+  currentGifPath_ = path;
+  // Reuse the screensaver previous-state hook so input flows go through the
+  // same dismiss path as Demo / Screensaver / Module.
+  screensaverPreviousState_ = AppState::Menu;
+  setState(AppState::GifPlaying, nowMs);
+}
+
+void App::exitGifPlayback(uint32_t nowMs)
+{
+  gifPlayer_.end();
+  currentGifPath_ = "";
+  setState(AppState::Menu, nowMs);
+  menuScreen_ = MenuScreen::GifPicker;
+  renderGifPicker();
+}
+
+void App::renderGifPlayerFrame(uint32_t nowMs)
+{
+  if (!gifPlayer_.isPlaying()) {
+    exitGifPlayback(nowMs);
+    return;
+  }
+  // tick() returns true when a new frame is ready; we still render even when
+  // it doesn't, because the panel needs continual refresh (no persistence-
+  // of-vision on this LCD).
+  gifPlayer_.tick(nowMs);
+  const uint16_t *frame = gifPlayer_.frame();
+  if (frame == nullptr) return;
+  display_.renderGifFrame(frame, gifPlayer_.width(), gifPlayer_.height());
+}
+
+// ---------------------------------------------------------------------------
+// Captive-portal Wi-Fi setup.
+// ---------------------------------------------------------------------------
+
+void App::openWifiSetupPortal()
+{
+  // Build a deterministic AP name from the chip ID so multiple devices on the
+  // bench don't collide. Falls back to a static label if reading the MAC
+  // somehow fails — should never happen in practice.
+  uint64_t mac = ESP.getEfuseMac();
+  char suffix[5];
+  snprintf(suffix, sizeof(suffix), "%04X", static_cast<unsigned>(mac & 0xFFFF));
+  const String apName = String("rsvpnano-") + suffix;
+  display_.renderStatus("Wi-Fi setup", "Starting AP", apName);
+  if (!wifiSetupPortal_.begin(apName)) {
+    displayTransientStatus("Wi-Fi setup", "Failed", "softAP failed", 1500,
+                           TransientStatusAction::ReRenderSettings);
+    return;
+  }
+  menuScreen_ = MenuScreen::WifiSetupPortal;
+  wifiSetupLastStatusKey_ = "";
+  wifiSetupConnectStartedMs_ = 0;
+  renderWifiSetupPortal();
+}
+
+void App::renderWifiSetupPortal()
+{
+  // Single status overlay; we repaint when the state string actually changes
+  // so the portal doesn't strobe at 60 fps.
+  const auto st = wifiSetupPortal_.state();
+  String line1 = String("AP: ") + wifiSetupPortal_.apSsid();
+  String line2;
+  switch (st) {
+    case ::WifiSetupPortal::State::Idle:
+    case ::WifiSetupPortal::State::Awaiting:
+      line2 = String("http://") + wifiSetupPortal_.apIp();
+      break;
+    case ::WifiSetupPortal::State::Pending:
+      line2 = String("Saving ") + wifiSetupPortal_.pendingSsid();
+      break;
+    case ::WifiSetupPortal::State::Testing:
+      line2 = String("Testing ") + wifiSetupPortal_.testingSsid();
+      break;
+    case ::WifiSetupPortal::State::Connected:
+      line2 = String("Saved ") + wifiSetupPortal_.testingSsid();
+      break;
+    case ::WifiSetupPortal::State::Failed:
+      line2 = wifiSetupPortal_.lastError().isEmpty() ? String("Connect failed")
+                                                    : wifiSetupPortal_.lastError();
+      break;
+  }
+  String key = String(static_cast<int>(st)) + "|" + line1 + "|" + line2;
+  if (key == wifiSetupLastStatusKey_) return;
+  wifiSetupLastStatusKey_ = key;
+  display_.renderStatus("Wi-Fi setup", line1, line2);
+}
+
+void App::updateWifiSetupPortal(uint32_t nowMs)
+{
+  if (!wifiSetupPortal_.isRunning()) return;
+  wifiSetupPortal_.tick(nowMs);
+
+  // State-driven actions. Pending → consume credentials and start a connect
+  // test. Testing → poll WiFi.status() until connected/timeout.
+  using PortalState = ::WifiSetupPortal::State;
+  if (wifiSetupPortal_.state() == PortalState::Pending) {
+    const String ssid = wifiSetupPortal_.pendingSsid();
+    const String pass = wifiSetupPortal_.pendingPassword();
+    Serial.printf("[wifi-portal] testing ssid=%s passLen=%u\n", ssid.c_str(),
+                  static_cast<unsigned>(pass.length()));
+    wifiSetupPortal_.markTesting();
+    wifiSetupConnectStartedMs_ = nowMs;
+    // Begin the STA connect attempt. AP_STA mode is already active so the
+    // softAP stays up while we test. Disconnect first to drop any prior STA
+    // state (might be associated to a previous network).
+    WiFi.disconnect(false, true);
+    WiFi.begin(ssid.c_str(), pass.c_str());
+  }
+
+  if (wifiSetupPortal_.state() == PortalState::Testing) {
+    constexpr uint32_t kConnectTimeoutMs = 20000;
+    const wl_status_t st = WiFi.status();
+    if (st == WL_CONNECTED) {
+      Serial.printf("[wifi-portal] connected ip=%s\n", WiFi.localIP().toString().c_str());
+      persistPortalNetwork(wifiSetupPortal_.testingSsid(), wifiSetupPortal_.pendingPassword());
+      wifiSetupPortal_.markResult(true);
+    } else if (nowMs - wifiSetupConnectStartedMs_ >= kConnectTimeoutMs) {
+      const char *reason = (st == WL_NO_SSID_AVAIL)   ? "SSID not found"
+                           : (st == WL_CONNECT_FAILED) ? "auth failed"
+                           : (st == WL_IDLE_STATUS)    ? "idle/timeout"
+                                                       : "no connection";
+      Serial.printf("[wifi-portal] test failed st=%d (%s)\n", static_cast<int>(st), reason);
+      wifiSetupPortal_.markResult(false, String(reason));
+    }
+  }
+
+  renderWifiSetupPortal();
+}
+
+void App::exitWifiSetupPortal(uint32_t nowMs)
+{
+  wifiSetupPortal_.end();
+  menuScreen_ = MenuScreen::SettingsHome;
+  settingsSelectedIndex_ = kSettingsHomeWifiSetupIndex;
+  rebuildSettingsMenuItems();
+  // Re-apply the user's preferred network so the next foreground WiFi call
+  // tries the right SSID first; AP_STA tore down to STA-only in end().
+  applyDefaultNetwork();
+  renderSettings();
+  (void)nowMs;
+}
+
+void App::persistPortalNetwork(const String &ssid, const String &password)
+{
+  if (ssid.isEmpty()) return;
+  OtaManager::Config cfg = ota_.config();
+  // Update existing entry or append.
+  bool found = false;
+  for (auto &n : cfg.networks) {
+    if (n.ssid == ssid) {
+      n.password = password;
+      found = true;
+      break;
+    }
+  }
+  if (!found) {
+    OtaManager::Network n;
+    n.ssid = ssid;
+    n.password = password;
+    cfg.networks.push_back(n);
+  }
+  // Reorder so the just-tested SSID becomes index 0 — it's the one the user
+  // just validated. applyDefaultNetwork() runs after we set preferredWifiSsid_.
+  std::stable_partition(cfg.networks.begin(), cfg.networks.end(),
+                        [&](const OtaManager::Network &n) { return n.ssid == ssid; });
+  ota_.setConfig(cfg);
+  preferredWifiSsid_ = ssid;
+  preferences_.putString("wifipref", preferredWifiSsid_);
+  // Repack to NVS using the same delimited format the boot loader expects.
+  constexpr char kNetFieldSep = '\x1F';
+  constexpr char kNetRecordSep = '\x1E';
+  String packed;
+  for (size_t i = 0; i < cfg.networks.size(); ++i) {
+    if (i > 0) packed += kNetRecordSep;
+    packed += cfg.networks[i].ssid;
+    packed += kNetFieldSep;
+    packed += cfg.networks[i].password;
+  }
+  preferences_.putString("wifinets", packed);
+  // Round-trip to /wifi.json if the SD is mounted so the next boot's
+  // SD-first path picks up the new entry too.
+  if (storage_.isMounted()) {
+    if (ota_.saveConfigToSd()) {
+      Serial.println("[wifi-portal] wifi.json updated");
+    } else {
+      Serial.println("[wifi-portal] wifi.json write failed");
+    }
+  }
+  Serial.printf("[wifi-portal] persisted ssid=%s networks=%u\n", ssid.c_str(),
+                static_cast<unsigned>(cfg.networks.size()));
+}
+
 void App::renderModulePlayerFrame(uint32_t nowMs)
 {
   ModPlayer::NowPlaying np;
@@ -6311,6 +6776,7 @@ int App::findBookIndexByPath(const String &path) const
 void App::renderMenu()
 {
   if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
+      menuScreen_ == MenuScreen::SettingsEffects ||
       menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsReadingSounds)
   {
     renderSettings();

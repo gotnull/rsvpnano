@@ -49,7 +49,6 @@ class Screensaver {
     Rain,        // diagonal streaks falling NE→SW
     Lightspeed,  // radial hyperspace — stars stretch from centre at speed
     Blackhole,   // central singularity pulling stars inward, accelerating
-    Asteroid,    // twinkle background + occasional fast comet streaks
     kCount,
   };
 

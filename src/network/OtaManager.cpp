@@ -129,6 +129,54 @@ bool OtaManager::loadConfigFromSd(const char *path) {
   return true;
 }
 
+bool OtaManager::saveConfigToSd(const char *path) const {
+  File f = SD_MMC.open(path, FILE_WRITE);
+  if (!f) {
+    return false;
+  }
+  // JSON shape: {"url": "...", "notifications_url": "...", "notifications_token": "...",
+  //              "networks": [{"ssid": "...", "password": "..."}, ...]}
+  auto escape = [](const String &s) {
+    String out;
+    out.reserve(s.length() + 2);
+    for (size_t i = 0; i < s.length(); ++i) {
+      const char c = s[i];
+      if (c == '"' || c == '\\') {
+        out += '\\';
+        out += c;
+      } else if (c == '\n') {
+        out += "\\n";
+      } else if (c == '\r') {
+        out += "\\r";
+      } else if (static_cast<unsigned char>(c) < 0x20) {
+        // Skip control chars; rsvpnano's wifi.json only sees printable text.
+      } else {
+        out += c;
+      }
+    }
+    return out;
+  };
+  f.print("{\n  \"url\": \"");
+  f.print(escape(config_.firmwareUrl));
+  f.print("\",\n  \"notifications_url\": \"");
+  f.print(escape(config_.notificationsUrl));
+  f.print("\",\n  \"notifications_token\": \"");
+  f.print(escape(config_.notificationsToken));
+  f.print("\",\n  \"networks\": [\n");
+  for (size_t i = 0; i < config_.networks.size(); ++i) {
+    f.print("    { \"ssid\": \"");
+    f.print(escape(config_.networks[i].ssid));
+    f.print("\", \"password\": \"");
+    f.print(escape(config_.networks[i].password));
+    f.print("\" }");
+    if (i + 1 < config_.networks.size()) f.print(",");
+    f.print("\n");
+  }
+  f.print("  ]\n}\n");
+  f.close();
+  return true;
+}
+
 bool OtaManager::connectWifi() {
   if (config_.networks.empty()) {
     lastError_ = "No networks configured";

@@ -71,6 +71,11 @@ class StorageManager {
   std::vector<String> listModuleNames() const;
   // Full /mods/<name> path for ModPlayer::playFile().
   String modulePath(const String &name) const;
+  // Animated GIFs under /gifs/ — bare filenames including .gif extension,
+  // sorted case-insensitively. Mirrors the listModuleNames() contract.
+  std::vector<String> listGifNames() const;
+  // Full /gifs/<name> path for the GIF player.
+  String gifPath(const String &name) const;
   bool loadBookWords(size_t index, std::vector<String> &words, String *loadedPath = nullptr,
                      size_t *loadedIndex = nullptr);
   // Converts an EPUB on the SD card into a sibling .rsvp file (idempotent).

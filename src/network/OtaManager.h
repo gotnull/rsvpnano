@@ -26,6 +26,12 @@ class OtaManager {
 
   void setStatusCallback(StatusCallback callback, void *context);
   bool loadConfigFromSd(const char *path = "/wifi.json");
+  // Round-trip the current Config back to /wifi.json. Writes a multi-network
+  // JSON document compatible with loadConfigFromSd. Returns false if the SD
+  // isn't mounted or the write failed. Used by the captive portal so a
+  // newly-added network survives a reboot when the SD is the boot-time
+  // source of truth.
+  bool saveConfigToSd(const char *path = "/wifi.json") const;
   // Direct injection of a previously-cached Config (e.g. from NVS) so OTA
   // and other network features still work when the SD card has been pulled
   // out and the wifi.json read fails.

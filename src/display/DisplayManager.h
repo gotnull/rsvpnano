@@ -132,13 +132,50 @@ class DisplayManager {
   // work and wants the screen to land instantly.
   void renderLoadingOverlay(const String &title, const String &detail,
                             uint32_t tickMs);
-  // CRT-shader post-process. When enabled, demo renderers call
-  // applyCrtToStripe() after composing each native-stripe txBuffer_ chunk to
-  // dim alternate logical-Y rows (horizontal scanlines on the rotated panel).
-  // No bezel — just the scanline darkening.
-  void setCrtShaderEnabled(bool on) { crtShaderEnabled_ = on; }
-  bool isCrtShaderEnabled() const { return crtShaderEnabled_; }
-  void applyCrtToStripe(int stripeRows);
+  // Retro post-process effects applied per native-stripe after compose.
+  // Four independent layers, applied in this order: tint → dot-matrix →
+  // scanlines → glitch. Each is opt-in with its own intensity knob. Demo /
+  // GIF renderers call applyEffectsToStripe(stripeStart, rows) after filling
+  // a native-stripe txBuffer_ chunk and before drawBitmap(). Per-frame
+  // glitch state seeds on the first stripe of a frame (stripeStart == 0).
+  // The legacy "CRT shader" toggle maps to scanlines for back-compat —
+  // App migrates the old `crtsh` NVS key on boot.
+  enum class TintColor : uint8_t {
+    None = 0,
+    Green,   // P1 phosphor / Game Boy
+    Amber,   // amber CRT
+    Blue,    // cyan-blue CRT
+    Magenta, // VGA cyberpunk
+  };
+  void setScanlinesEnabled(bool on) { effects_.scanlinesOn = on; }
+  bool isScanlinesEnabled() const { return effects_.scanlinesOn; }
+  void setScanlinesIntensity(uint8_t pct) { effects_.scanlinesPct = pct > 100 ? 100 : pct; }
+  uint8_t scanlinesIntensity() const { return effects_.scanlinesPct; }
+  void setTintColor(TintColor t) { effects_.tint = t; }
+  TintColor tintColor() const { return effects_.tint; }
+  void setTintIntensity(uint8_t pct) { effects_.tintPct = pct > 100 ? 100 : pct; }
+  uint8_t tintIntensity() const { return effects_.tintPct; }
+  void setDotMatrixEnabled(bool on) { effects_.dotMatrixOn = on; }
+  bool isDotMatrixEnabled() const { return effects_.dotMatrixOn; }
+  // 2..6 logical pixels between dots; clamped on set.
+  void setDotMatrixSize(uint8_t px) {
+    if (px < 2) px = 2;
+    if (px > 6) px = 6;
+    effects_.dotMatrixSize = px;
+  }
+  uint8_t dotMatrixSize() const { return effects_.dotMatrixSize; }
+  void setGlitchEnabled(bool on) { effects_.glitchOn = on; }
+  bool isGlitchEnabled() const { return effects_.glitchOn; }
+  void setGlitchIntensity(uint8_t pct) { effects_.glitchPct = pct > 100 ? 100 : pct; }
+  uint8_t glitchIntensity() const { return effects_.glitchPct; }
+  bool isAnyEffectEnabled() const {
+    return effects_.scanlinesOn || effects_.tint != TintColor::None ||
+           effects_.dotMatrixOn || effects_.glitchOn;
+  }
+  // Apply enabled effects in-place to the current native-stripe txBuffer_.
+  // `stripeStart` is the native-Y offset of the first row in the stripe;
+  // `stripeRows` is the number of native rows the buffer covers.
+  void applyEffectsToStripe(int stripeStart, int stripeRows);
   void renderProgress(const String &title, const String &line1 = "", const String &line2 = "",
                       int progressPercent = -1);
   // Renders a single frame of the dots/stars screensaver. Call once per frame
@@ -167,6 +204,12 @@ class DisplayManager {
   // Renders an RGB565 source frame using the same native-stripe path as the
   // screensaver/demos. Source pixels are normal RGB565 in logical orientation.
   void renderCameraRgb565Frame(const uint16_t *frame, int sourceWidth, int sourceHeight);
+  // Renders an animated-GIF frame buffer. Source is normal RGB565 (little-
+  // endian native uint16_t). The frame is fit-scaled to the 640×172 panel
+  // preserving aspect ratio, centered, with letterbox/pillarbox black. Goes
+  // through the native-stripe path so any enabled retro effect overlay
+  // applies for free.
+  void renderGifFrame(const uint16_t *frame, int sourceWidth, int sourceHeight);
   // Fullscreen tracker player. Native-stripe renderer (no virtualFrame_, no
   // transpose) so the level meters animate at panel-rate. Shows file name
   // (marquee if it overflows), module title + format, BPM/speed, position/row
@@ -295,7 +338,25 @@ class DisplayManager {
   bool darkMode_ = true;
   bool nightMode_ = false;
   bool uiRotated_ = true;
-  bool crtShaderEnabled_ = false;
+  struct EffectsState {
+    bool scanlinesOn = false;
+    uint8_t scanlinesPct = 38;        // ~5/8 dimming matches the legacy CRT shader.
+    TintColor tint = TintColor::None;
+    uint8_t tintPct = 45;
+    bool dotMatrixOn = false;
+    uint8_t dotMatrixSize = 3;        // logical-pixel grid period.
+    bool glitchOn = false;
+    uint8_t glitchPct = 35;
+    // Per-frame glitch state (reseeded when stripeStart == 0).
+    uint32_t glitchFrameSeed = 0x12345678u;
+    uint32_t glitchFrameCounter = 0;
+    static constexpr uint8_t kMaxBands = 4;
+    uint8_t glitchBandCount = 0;
+    int16_t glitchBandStartNy[kMaxBands] = {};
+    int8_t glitchBandHeight[kMaxBands] = {};
+    int8_t glitchBandShift[kMaxBands] = {};
+  };
+  EffectsState effects_;
   String lastRenderKey_;
   String batteryLabel_;
   uint16_t currentWpm_ = 0;

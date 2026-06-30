@@ -31,7 +31,7 @@ void deinitHostIfNeeded() {
 }
 
 void pulseUsbReconnect() {
-#if RSVP_USB_TRANSFER_ENABLED && CONFIG_TINYUSB_MSC_ENABLED && !ARDUINO_USB_MODE
+#if RSVP_USB_TRANSFER_ENABLED && CONFIG_TINYUSB_MSC_ENABLED
   if (!tud_inited()) {
     return;
   }
@@ -52,7 +52,7 @@ UsbMassStorageManager::UsbMassStorageManager() {
 }
 
 bool UsbMassStorageManager::begin(bool writeEnabled) {
-#if RSVP_USB_TRANSFER_ENABLED && CONFIG_TINYUSB_MSC_ENABLED && !ARDUINO_USB_MODE
+#if RSVP_USB_TRANSFER_ENABLED && CONFIG_TINYUSB_MSC_ENABLED
   if (active_) {
     return true;
   }
@@ -89,7 +89,7 @@ bool UsbMassStorageManager::begin(bool writeEnabled) {
 }
 
 void UsbMassStorageManager::end() {
-#if RSVP_USB_TRANSFER_ENABLED && CONFIG_TINYUSB_MSC_ENABLED && !ARDUINO_USB_MODE
+#if RSVP_USB_TRANSFER_ENABLED && CONFIG_TINYUSB_MSC_ENABLED
   msc_.mediaPresent(false);
   msc_.end();
 #endif
@@ -113,7 +113,7 @@ uint64_t UsbMassStorageManager::cardSizeBytes() const {
 const char *UsbMassStorageManager::statusMessage() const { return statusMessage_; }
 
 bool UsbMassStorageManager::configureMsc() {
-#if RSVP_USB_TRANSFER_ENABLED && CONFIG_TINYUSB_MSC_ENABLED && !ARDUINO_USB_MODE
+#if RSVP_USB_TRANSFER_ENABLED && CONFIG_TINYUSB_MSC_ENABLED
   msc_.vendorID("RSVPNANO");
   msc_.productID("SD Transfer");
   msc_.productRevision("0.1");
@@ -315,7 +315,7 @@ bool UsbMassStorageManager::handleStartStop(uint8_t powerCondition, bool start, 
   if (loadEject && !start) {
     ejected_ = true;
     statusMessage_ = "Ejected";
-#if RSVP_USB_TRANSFER_ENABLED && CONFIG_TINYUSB_MSC_ENABLED && !ARDUINO_USB_MODE
+#if RSVP_USB_TRANSFER_ENABLED && CONFIG_TINYUSB_MSC_ENABLED
     msc_.mediaPresent(false);
 #endif
   }

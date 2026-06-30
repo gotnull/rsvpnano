@@ -66,17 +66,6 @@ constexpr float kBlackholeEventHorizon = 0.08f;
 constexpr float kBlackholeRadialPull = 0.0035f;
 constexpr float kBlackholeAngularBase = 0.04f;
 
-// Asteroid tuning. Most stars run a static twinkle; ~12% are flagged as
-// asteroids that fly across the screen at high speed leaving a trail.
-// Encoding: positive s.c (0..1) = twinkle phase; negative s.c (-11..-5) =
-// asteroid where |s.c| is its NE→SW speed in px/frame. Lets us multiplex
-// both behaviours into one float without growing the Star struct.
-constexpr float kAsteroidSpawnFraction = 0.12f;
-constexpr float kAsteroidSpeedMin = 5.0f;
-constexpr float kAsteroidSpeedMax = 11.0f;
-constexpr float kAsteroidSlope = 0.35f;           // dy/dx
-constexpr float kAsteroidTwinkleRate = 0.012f;
-
 // ----------------------------------------------------------------------------
 // Forward3D — classic perspective starfield, stars stream toward viewer.
 // ----------------------------------------------------------------------------
@@ -362,94 +351,6 @@ void updateBlackhole(Star* stars, int count, StarFieldRng& rng) {
 }
 
 // ----------------------------------------------------------------------------
-// Asteroid — twinkle background + occasional fast comet streaks. Encoding:
-// s.c >= 0 → twinkle (phase 0..1); s.c < 0 → asteroid where |s.c| is the
-// NE→SW speed. ~12 % of the field starts as asteroids; respawned stars roll
-// the dice again so the asteroid count varies organically.
-// ----------------------------------------------------------------------------
-void initAsteroid(Star* stars, int count, StarFieldRng& rng) {
-  for (int i = 0; i < count; ++i) {
-    Star& s = stars[i];
-    seedCommonAppearance(s, rng);
-    s.a = rng.nextFloat() * static_cast<float>(kSW);
-    s.b = rng.nextFloat() * static_cast<float>(kSH);
-    if (rng.nextFloat() < kAsteroidSpawnFraction) {
-      // Asteroid — spawn off the top-right edge so the streak enters
-      // immediately from the right side of the panel.
-      s.a = static_cast<float>(kSW);
-      s.b = rng.nextFloat() * static_cast<float>(kSH);
-      s.c = -(kAsteroidSpeedMin +
-              rng.nextFloat() * (kAsteroidSpeedMax - kAsteroidSpeedMin));
-      s.size = 2u;  // chunky comet
-    } else {
-      // Twinkle
-      s.c = rng.nextFloat();
-    }
-  }
-}
-
-void updateAsteroid(Star* stars, int count, StarFieldRng& rng) {
-  for (int i = 0; i < count; ++i) {
-    Star& s = stars[i];
-    if (s.c < 0.0f) {
-      // ----- Asteroid branch -----
-      const float speed = -s.c;
-      s.a -= speed;
-      s.b += speed * kAsteroidSlope;
-      if (s.a < 0.0f || s.b >= kSH) {
-        // Roll the dice again: most respawns are back to a twinkle, with
-        // a small chance of staying an asteroid (keeps the cadence
-        // varied without all comets vanishing at once).
-        if (rng.nextFloat() < kAsteroidSpawnFraction) {
-          s.a = static_cast<float>(kSW);
-          s.b = rng.nextFloat() * static_cast<float>(kSH);
-          s.c = -(kAsteroidSpeedMin +
-                  rng.nextFloat() * (kAsteroidSpeedMax - kAsteroidSpeedMin));
-          s.size = 2u;
-        } else {
-          s.a = rng.nextFloat() * static_cast<float>(kSW);
-          s.b = rng.nextFloat() * static_cast<float>(kSH);
-          s.c = rng.nextFloat();
-          // Reset to a typical twinkle size on the way back.
-          const uint32_t sizeRoll = rng.nextU32() & 0xFFu;
-          s.size = (sizeRoll < 200u) ? 0u : ((sizeRoll < 240u) ? 1u : 2u);
-        }
-        s.tint = rng.nextTint();
-      }
-      s.sx = static_cast<int16_t>(s.a);
-      s.sy = static_cast<int16_t>(s.b);
-      s.brightness = 255;  // comets are always blazing
-    } else {
-      // ----- Twinkle branch (same logic as the Twinkle mode) -----
-      s.c += kAsteroidTwinkleRate +
-             static_cast<float>(i & 7) * 0.0006f;
-      if (s.c >= 1.0f) {
-        s.c -= 1.0f;
-        s.a = rng.nextFloat() * static_cast<float>(kSW);
-        s.b = rng.nextFloat() * static_cast<float>(kSH);
-        s.tint = rng.nextTint();
-        // A small chance to promote this slot to an asteroid for one run,
-        // so the comet count "breathes" over time.
-        if (rng.nextFloat() < kAsteroidSpawnFraction * 0.25f) {
-          s.a = static_cast<float>(kSW);
-          s.c = -(kAsteroidSpeedMin +
-                  rng.nextFloat() * (kAsteroidSpeedMax - kAsteroidSpeedMin));
-          s.size = 2u;
-          continue;
-        }
-      }
-      s.sx = static_cast<int16_t>(s.a);
-      s.sy = static_cast<int16_t>(s.b);
-      const float pulse = sinf(s.c * static_cast<float>(M_PI));
-      int b = static_cast<int>(255.0f * pulse);
-      if (b < 0) b = 0;
-      if (b > 255) b = 255;
-      s.brightness = static_cast<uint8_t>(b);
-    }
-  }
-}
-
-// ----------------------------------------------------------------------------
 // Registry. Order MUST match the integer values of Screensaver::StarMode.
 // ----------------------------------------------------------------------------
 constexpr StarfieldModeDef kModes[] = {
@@ -460,7 +361,6 @@ constexpr StarfieldModeDef kModes[] = {
     {"rain",       initRain,       updateRain},
     {"lightspeed", initLightspeed, updateLightspeed},
     {"blackhole",  initBlackhole,  updateBlackhole},
-    {"asteroid",   initAsteroid,   updateAsteroid},
 };
 
 static_assert(sizeof(kModes) / sizeof(kModes[0]) ==

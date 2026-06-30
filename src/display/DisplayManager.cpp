@@ -3280,7 +3280,7 @@ inline void formatHex2(char *out, uint8_t v) {
 }
 
 inline void formatFx(char *out, uint8_t fxt, uint8_t fxp) {
-  // FastTracker-style letter + 2 hex digits. Empty cell shows "...".
+  // FUZZTRACKER V1-style letter + 2 hex digits. Empty cell shows "...".
   static const char kHex[] = "0123456789ABCDEF";
   if (fxt == 0 && fxp == 0) { out[0] = '.'; out[1] = '.'; out[2] = '.'; return; }
   if (fxt < 10) {
@@ -4141,6 +4141,7 @@ void DisplayManager::renderScreensaverFrame(Screensaver &saver) {
       }
     }
 
+    applyEffectsToStripe(stripeStart, rows);
 #if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
     composeUs += micros() - cBegin;
     const uint32_t sBegin = micros();
@@ -4266,6 +4267,7 @@ void DisplayManager::renderRasterbarsFrame(const Rasterbars &rb) {
        stripeStart += kMaxChunkPhysicalRows) {
     const int rows = std::min(kMaxChunkPhysicalRows, kPanelNativeHeight - stripeStart);
     blastColumnsAcrossStripe(txBuffer_, cols, rows);
+    applyEffectsToStripe(stripeStart, rows);
     if (!drawBitmap(0, stripeStart, kPanelNativeWidth, stripeStart + rows, txBuffer_)) {
       return;
     }
@@ -4319,6 +4321,7 @@ void DisplayManager::renderStarfieldFrame(const Starfield &sf) {
       }
     }
 
+    applyEffectsToStripe(stripeStart, rows);
     if (!drawBitmap(0, stripeStart, kPanelNativeWidth, stripeStart + rows, txBuffer_)) {
       return;
     }
@@ -4430,6 +4433,7 @@ void DisplayManager::renderSineScrollerFrame(const SineScroller &ss) {
       }
     }
 
+    applyEffectsToStripe(stripeStart, rows);
     if (!drawBitmap(0, stripeStart, kPanelNativeWidth, stripeStart + rows, txBuffer_)) {
       return;
     }
@@ -4488,6 +4492,7 @@ void DisplayManager::renderPlasmaFrame(const Plasma &pl) {
       }
     }
 
+    applyEffectsToStripe(stripeStart, rows);
     if (!drawBitmap(0, stripeStart, kPanelNativeWidth, stripeStart + rows, txBuffer_)) {
       return;
     }
@@ -4506,6 +4511,7 @@ void DisplayManager::renderShadeBobsFrame(const ShadeBobs &sb) {
          stripeStart += kMaxChunkPhysicalRows) {
       const int rows = std::min(kMaxChunkPhysicalRows, kPanelNativeHeight - stripeStart);
       std::memset(txBuffer_, 0, static_cast<size_t>(rows) * kPanelNativeWidth * sizeof(uint16_t));
+      applyEffectsToStripe(stripeStart, rows);
       if (!drawBitmap(0, stripeStart, kPanelNativeWidth, stripeStart + rows, txBuffer_)) return;
     }
     return;
@@ -4536,6 +4542,7 @@ void DisplayManager::renderShadeBobsFrame(const ShadeBobs &sb) {
       dst[i] = cachedPalette[src[i]];
     }
 
+    applyEffectsToStripe(stripeStart, rows);
     if (!drawBitmap(0, stripeStart, kPanelNativeWidth, stripeStart + rows, txBuffer_)) {
       return;
     }
@@ -4563,6 +4570,7 @@ void DisplayManager::renderVectorballFrame(Vectorball &vb) {
          stripeStart += kMaxChunkPhysicalRows) {
       const int rows = std::min(kMaxChunkPhysicalRows, kPanelNativeHeight - stripeStart);
       std::memset(txBuffer_, 0, static_cast<size_t>(rows) * kPanelNativeWidth * sizeof(uint16_t));
+      applyEffectsToStripe(stripeStart, rows);
       if (!drawBitmap(0, stripeStart, kPanelNativeWidth, stripeStart + rows, txBuffer_)) return;
     }
     return;
@@ -4633,6 +4641,7 @@ void DisplayManager::renderVectorballFrame(Vectorball &vb) {
       }
     }
 
+    applyEffectsToStripe(stripeStart, rows);
     if (!drawBitmap(0, stripeStart, kPanelNativeWidth, stripeStart + rows, txBuffer_)) {
       return;
     }
@@ -4693,7 +4702,7 @@ void DisplayManager::renderPupulFrame(const Pupul &p) {
       }
     }
 
-    applyCrtToStripe(rows);
+    applyEffectsToStripe(stripeStart, rows);
 #if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
     composeUs += micros() - cBegin;
     const uint32_t sBegin = micros();
@@ -4760,7 +4769,7 @@ void DisplayManager::renderOldschoolIntroFrame(const OldschoolIntro &oi) {
         out[c] = panelColor(palette[canvas[sy * kSrcW + sx]]);
       }
     }
-    applyCrtToStripe(rows);
+    applyEffectsToStripe(stripeStart, rows);
     if (!drawBitmap(0, stripeStart, kPanelNativeWidth, stripeStart + rows, txBuffer_)) {
       return;
     }

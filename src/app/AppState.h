@@ -11,4 +11,5 @@ enum class AppState {
   DemoPlaying,
   CameraStream,
   ModulePlaying,
+  GifPlaying,
 };

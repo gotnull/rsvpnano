@@ -227,7 +227,15 @@ void ModPlayer::getNowPlaying(NowPlaying &out) {
     out.channelCount = static_cast<uint8_t>(bound);
     if (mi.mod) {
       strncpy(out.title, mi.mod->name, sizeof(out.title) - 1);
-      strncpy(out.format, mi.mod->type, sizeof(out.format) - 1);
+      // Rewrite libxmp's "Fast Tracker" / "Fast Tracker II" labels to our
+      // brand string so the now-playing UI reads consistently. Other tracker
+      // formats (Scream Tracker / Impulse Tracker / Protracker / etc.) pass
+      // through unchanged. The vendored library stays untouched.
+      if (mi.mod->type != nullptr && strstr(mi.mod->type, "Fast Tracker") != nullptr) {
+        strncpy(out.format, "FUZZTRACKER V1", sizeof(out.format) - 1);
+      } else {
+        strncpy(out.format, mi.mod->type, sizeof(out.format) - 1);
+      }
     }
   }
   xSemaphoreGive(lock_);
