@@ -267,6 +267,8 @@ void EchoformNet::taskRun() {
     linkState_.store(static_cast<uint8_t>(LinkState::SessionLive));
     const char *why = session(client);
     linkState_.store(static_cast<uint8_t>(LinkState::NoRelay));
+    sessionDrops_.fetch_add(1);
+    lastDropReason_.store(why);
     Serial.printf("[net] session ended: %s\n", why);
     client.stop();
     vTaskDelay(pdMS_TO_TICKS(kReconnectBackoffMs));

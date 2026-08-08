@@ -518,7 +518,7 @@ void EchoformApp::update(uint32_t nowMs) {
   if (nowMs - sHbLastMs >= 1000) {
     Serial.printf(
         "[heart] t=%lu ticks=%lu heap=%u min=%u maxTick=%lu us rec=%d "
-        "net=%u rtt=%lu pongs=%lu coh=%d st=%d\n",
+        "net=%u rtt=%lu pongs=%lu coh=%d st=%d rssi=%d drops=%lu(%s)\n",
         static_cast<unsigned long>(nowMs),
         static_cast<unsigned long>(sHbTicks),
         static_cast<unsigned>(ESP.getFreeHeap()),
@@ -529,7 +529,10 @@ void EchoformApp::update(uint32_t nowMs) {
         static_cast<unsigned long>(net_.lastRttMs()),
         static_cast<unsigned long>(net_.pongCount()),
         static_cast<int>(controller_.coherence() * 100.0f),
-        static_cast<int>(controller_.state()));
+        static_cast<int>(controller_.state()),
+        static_cast<int>(WiFi.RSSI()),
+        static_cast<unsigned long>(net_.sessionDrops()),
+        net_.lastDropReason());
     sHbLastMs = nowMs;
     sHbTicks = 0;
     sHbMaxTickUs = 0;

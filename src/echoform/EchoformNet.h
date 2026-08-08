@@ -59,6 +59,9 @@ class EchoformNet {
   }
   uint32_t lastRttMs() const { return lastRttMs_.load(); }
   uint32_t pongCount() const { return pongCount_.load(); }
+  uint32_t sessionDrops() const { return sessionDrops_.load(); }
+  // Static string; safe to read cross-task.
+  const char *lastDropReason() const { return lastDropReason_.load(); }
   bool relayConfigured() const { return relayConfigured_.load(); }
   // Rewrites /echoform.json and asks the task to reconnect with it.
   bool setRelayEndpoint(const String &host, uint16_t port);
@@ -95,6 +98,8 @@ class EchoformNet {
   std::atomic<bool> reloadRequested_{false};
   std::atomic<bool> requestActive_{false};
   std::atomic<uint8_t> modelStatus_{0};
+  std::atomic<uint32_t> sessionDrops_{0};
+  std::atomic<const char *> lastDropReason_{"none"};
 
   EchoformAudio *audio_ = nullptr;
   QueueHandle_t cmdQueue_ = nullptr;
