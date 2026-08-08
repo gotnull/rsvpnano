@@ -355,6 +355,16 @@ void EchoformApp::update(uint32_t nowMs) {
 
   if (nowMs - lastRenderMs_ >= kFrameIntervalMs) {
     lastRenderMs_ = nowMs;
+    // Frame-stage profiling: worst per second, printed with the heartbeat.
+    static uint32_t sStageCtrlUs = 0, sStageSimUs = 0, sStageComposeUs = 0,
+                    sStageRenderUs = 0;
+    static uint32_t sStageLogMs = 0;
+    uint32_t stageT = micros();
+    auto stage = [&stageT](uint32_t &acc) {
+      const uint32_t now = micros();
+      if (now - stageT > acc) acc = now - stageT;
+      stageT = now;
+    };
     // The rusty-nail visual system, drive mapping transcribed from fcecho
     // engine.rs. The wave is ALWAYS alive - idle it breathes; voice
     // erupts through it. Which stream drives it depends on state:
@@ -384,6 +394,7 @@ void EchoformApp::update(uint32_t nowMs) {
     controller_.step(speaking ? f.rms : 0.0f, speaking ? f.low : 0.0f,
                      speaking ? f.mid : 0.0f);
     handleVoiceIntents();
+    stage(sStageCtrlUs);
 
     float rms = 0.0f, transient = 0.0f, high = 0.0f;
     if (fresh && (echoAudio_.capturing() || speaking)) {
@@ -459,6 +470,7 @@ void EchoformApp::update(uint32_t nowMs) {
     // Breath amplitude fades as the face forms (wave.rs step contract).
     wave_.step(1.0f - echoform::fxSmoothstep(coherence));
     particles_.step(wave_, baseY, waveFrame_++, rms);
+    stage(sStageSimUs);
     if (waveFieldFb_ != nullptr) {
       echoform::composeField(waveFieldFb_, waveFieldGlow_, wave_, particles_,
                              waveThickness_, baseY, coherence);
@@ -466,12 +478,30 @@ void EchoformApp::update(uint32_t nowMs) {
       overlay_.wavePresence = 1.0f;
     }
     if (faceFieldFb_ != nullptr) {
-      echoform::FaceFrame face{&controller_.pose(), &controller_.headPose(),
-                               coherence, facePrevE_};
-      echoform::composeFaceField(faceFieldFb_, face);
+      // Alternate-frame face composition: the float port of RN's integer
+      // sampler costs ~11 ms when the head is formed; every second frame
+      // halves that and the per-cell temporal smoothing hides it.
+      // TODO: integer-ise EchoFace's hot loop like the original and go
+      // back to every frame.
+      if ((waveFrame_ & 1) == 0) {
+        echoform::FaceFrame face{&controller_.pose(), &controller_.headPose(),
+                                 coherence, facePrevE_};
+        echoform::composeFaceField(faceFieldFb_, face);
+      }
       overlay_.faceField = faceFieldFb_;
     }
+    stage(sStageComposeUs);
     display_.renderScreensaverFrame(screensaver_, &overlay_);
+    stage(sStageRenderUs);
+    if (nowMs - sStageLogMs >= 1000) {
+      sStageLogMs = nowMs;
+      Serial.printf("[echoperf] ctrl=%lu sim=%lu compose=%lu render=%lu us\n",
+                    static_cast<unsigned long>(sStageCtrlUs),
+                    static_cast<unsigned long>(sStageSimUs),
+                    static_cast<unsigned long>(sStageComposeUs),
+                    static_cast<unsigned long>(sStageRenderUs));
+      sStageCtrlUs = sStageSimUs = sStageComposeUs = sStageRenderUs = 0;
+    }
   }
 
   // Once-per-second heartbeat, same shape as the reader OS's so the bench

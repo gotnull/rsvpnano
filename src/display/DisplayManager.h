@@ -342,7 +342,8 @@ class DisplayManager {
   void drawTinyTextNativeStripe(const String &text, int logicalX, int logicalY,
                                 int scale, uint16_t panelEncoded,
                                 int stripeStart, int stripeRows,
-                                int clipLeftLogicalX, int clipRightLogicalX);
+                                int clipLeftLogicalX, int clipRightLogicalX,
+                                int knownTextWidth = -1);
   void drawTinyTextCentered(const String &text, int y, uint16_t color, int scale);
   void drawBatteryBadge(bool leftAlign = false);
   // Shared top tab band — drawn at the top of any tabbed picker

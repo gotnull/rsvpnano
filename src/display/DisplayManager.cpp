@@ -2863,12 +2863,14 @@ void DisplayManager::drawTinyTextNativeStripe(const String &text, int logicalX,
                                               uint16_t panelEncoded,
                                               int stripeStart, int stripeRows,
                                               int clipLeftLogicalX,
-                                              int clipRightLogicalX) {
+                                              int clipRightLogicalX,
+                                              int knownTextWidth) {
   if (text.length() == 0) return;
   // Whole-string early-out — map the entire run's logicalX extent into the
   // native-Y axis (orientation aware), skip if it doesn't touch the stripe.
   const bool rotated = uiRotated_;
-  const int textWidth = measureTinyTextWidth(text, scale);
+  const int textWidth = knownTextWidth >= 0 ? knownTextWidth
+                                            : measureTinyTextWidth(text, scale);
   const int textLeftLX = logicalX;
   const int textRightLX = logicalX + textWidth;
   const int aY = rotated ? textLeftLX : ((kDisplayWidth - 1) - textRightLX + 1);
@@ -2877,15 +2879,27 @@ void DisplayManager::drawTinyTextNativeStripe(const String &text, int logicalX,
   const int textNyEnd = std::max(aY, bY);
   if (textNyEnd <= stripeStart || textNyStart >= stripeStart + stripeRows) return;
 
-  // Per-glyph: rely on drawTinyGlyphNativeStripe's per-pixel clip so this works
-  // for both orientations and for marquee-style negative cursor offsets.
+  // Per-glyph: cull on both the clip window AND the stripe's native-Y band
+  // before descending into the pixel loops. A full-width transcript chip
+  // intersects every stripe, so without the per-glyph band check all ~250
+  // marquee glyphs ran their pixel loops in all 14 stripes (~28 ms/frame);
+  // with it, each stripe touches only the handful of glyphs that overlap it.
   const int charPitch = (kTinyGlyphWidth + kTinyGlyphSpacing) * scale;
+  const int glyphW = kTinyGlyphWidth * scale;
+  const int stripeEnd2 = stripeStart + stripeRows;
   int cursorX = logicalX;
-  for (size_t i = 0; i < text.length(); ++i) {
+  for (size_t i = 0; i < text.length(); ++i, cursorX += charPitch) {
+    if (cursorX + glyphW <= clipLeftLogicalX || cursorX >= clipRightLogicalX) {
+      continue;  // outside the marquee window
+    }
+    const int gA = rotated ? cursorX : (kDisplayWidth - 1) - (cursorX + glyphW - 1);
+    const int gB = gA + glyphW;
+    if (gB <= stripeStart || gA >= stripeEnd2) {
+      continue;  // this stripe never sees this glyph
+    }
     drawTinyGlyphNativeStripe(cursorX, logicalY, text[i], scale, panelEncoded,
                               stripeStart, stripeRows, clipLeftLogicalX,
                               clipRightLogicalX);
-    cursorX += charPitch;
   }
 }
 
@@ -4125,10 +4139,22 @@ void DisplayManager::fillRoundedRectNativeStripe(int x, int y, int w, int h,
     if (ly < 0 || ly >= kDisplayHeight) continue;
     const int nx = rotated ? (kDisplayHeight - 1) - ly : ly;
     if (nx < 0 || nx >= kPanelNativeWidth) continue;
-    const int lxStart = x + inset;
-    const int lxEnd = x + w - inset;
+    int lxStart = x + inset;
+    int lxEnd = x + w - inset;
+    if (lxStart < 0) lxStart = 0;
+    if (lxEnd > kDisplayWidth) lxEnd = kDisplayWidth;
+    // Clip the span to this stripe's native-Y band up front: a full-width
+    // chip otherwise iterates its whole width in every stripe.
+    if (rotated) {
+      if (lxStart < stripeStart) lxStart = stripeStart;
+      if (lxEnd > stripeEnd) lxEnd = stripeEnd;
+    } else {
+      const int mA = (kDisplayWidth - 1) - (stripeEnd - 1);
+      const int mB = (kDisplayWidth - 1) - stripeStart + 1;
+      if (lxStart < mA) lxStart = mA;
+      if (lxEnd > mB) lxEnd = mB;
+    }
     for (int lx = lxStart; lx < lxEnd; ++lx) {
-      if (lx < 0 || lx >= kDisplayWidth) continue;
       const int ny = rotated ? lx : (kDisplayWidth - 1) - lx;
       if (ny < stripeStart || ny >= stripeEnd) continue;
       txBuffer_[(ny - stripeStart) * kPanelNativeWidth + nx] = panelEncoded;
@@ -4157,7 +4183,29 @@ void DisplayManager::drawChipNativeStripe(const char *text, int logicalX,
     if (b <= stripeStart || a >= stripeStart + stripeRows) return;
   }
   const String str(text);
-  const int textW = measureTinyTextWidth(str, kScale);
+  // Text-width memo: the overlay strings live in stable buffers and this
+  // runs once per stripe per chip; measuring a 250-char string through the
+  // linear glyph lookup 14x per frame was several ms on its own.
+  struct WidthMemo {
+    const char *ptr;
+    size_t len;
+    int width;
+  };
+  static WidthMemo sWidthMemo[6] = {};
+  int textW = -1;
+  const size_t len = strlen(text);
+  for (WidthMemo &m : sWidthMemo) {
+    if (m.ptr == text && m.len == len) {
+      textW = m.width;
+      break;
+    }
+  }
+  if (textW < 0) {
+    textW = measureTinyTextWidth(str, kScale);
+    static size_t sMemoNext = 0;
+    sWidthMemo[sMemoNext] = WidthMemo{text, len, textW};
+    sMemoNext = (sMemoNext + 1) % (sizeof(sWidthMemo) / sizeof(sWidthMemo[0]));
+  }
   const int chipH = kTinyGlyphHeight * kScale + kPadY * 2;
   const int contentMax = maxWidth - kPadX * 2;
   const int contentW = textW < contentMax ? textW : contentMax;
@@ -4175,12 +4223,20 @@ void DisplayManager::drawChipNativeStripe(const char *text, int logicalX,
   }
   drawTinyTextNativeStripe(str, contentLeft - offset, logicalY, kScale,
                            textColor, stripeStart, stripeRows, contentLeft,
-                           contentRight);
+                           contentRight, textW);
 }
+
+namespace {
+// Echoform overlay profiling accumulators (reset per frame).
+uint32_t sEchoWaveUs = 0;
+uint32_t sEchoFaceUs = 0;
+uint32_t sEchoTextUs = 0;
+}  // namespace
 
 void DisplayManager::renderScreensaverFrame(Screensaver &saver,
                                             const ScreensaverOverlay *overlay) {
   if (!initialized_) return;
+  sEchoWaveUs = sEchoFaceUs = sEchoTextUs = 0;
   // Animation forces a full repaint each frame.
   lastRenderKey_ = "";
 #if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
@@ -4348,15 +4404,20 @@ void DisplayManager::renderScreensaverFrame(Screensaver &saver,
 
     if (overlay != nullptr && overlay->waveField != nullptr &&
         overlay->wavePresence > 0.02f) {
+      const uint32_t wBegin = micros();
       blitEchoWaveStripe(overlay->waveField, overlay->wavePresence,
                          stripeStart, rows);
+      sEchoWaveUs += micros() - wBegin;
     }
     if (overlay != nullptr && overlay->faceField != nullptr) {
+      const uint32_t fBegin = micros();
       blitEchoFaceStripe(overlay->faceField, stripeStart, rows);
+      sEchoFaceUs += micros() - fBegin;
     }
     if (overlay != nullptr) {
       // Echoform overlay: every string in a chip (bare text bleeds into the
       // starfield). Shared chip widget; marquee handles overflow.
+      const uint32_t tBegin = micros();
       const uint16_t chipBg = panelColor(0x4A69);      // readable mid-grey
       const uint16_t chipColor = panelColor(0x07FF);   // cyan
       const uint16_t userColor = panelColor(0xFFE0);   // yellow
@@ -4373,6 +4434,7 @@ void DisplayManager::renderScreensaverFrame(Screensaver &saver,
       drawChipNativeStripe(overlay->line2, 4, kDisplayHeight - 20,
                            kDisplayWidth - 8, assistColor, chipBg, stripeStart,
                            rows);
+      sEchoTextUs += micros() - tBegin;
     }
     applyEffectsToStripe(stripeStart, rows);
 #if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
@@ -4396,14 +4458,18 @@ void DisplayManager::renderScreensaverFrame(Screensaver &saver,
   if (freeNow < sMinHeap) sMinHeap = freeNow;
   ++sFrames;
   if (millis() - sFrameLogMs >= 1000) {
-    Serial.printf("[saver] tick=%lu compose=%lu spi=%lu total=%lu us fps=%lu free=%u min=%u\n",
+    Serial.printf("[saver] tick=%lu compose=%lu spi=%lu total=%lu us fps=%lu "
+                  "free=%u min=%u wave=%lu face=%lu text=%lu\n",
                   static_cast<unsigned long>(t1 - t0),
                   static_cast<unsigned long>(composeUs),
                   static_cast<unsigned long>(spiUs),
                   static_cast<unsigned long>(tEnd - t0),
                   static_cast<unsigned long>(sFrames),
                   static_cast<unsigned int>(freeNow),
-                  static_cast<unsigned int>(sMinHeap));
+                  static_cast<unsigned int>(sMinHeap),
+                  static_cast<unsigned long>(sEchoWaveUs),
+                  static_cast<unsigned long>(sEchoFaceUs),
+                  static_cast<unsigned long>(sEchoTextUs));
     sFrameLogMs = millis();
     sFrames = 0;
   }
