@@ -25,22 +25,30 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "$skip_build" != "1" ]]; then
-  echo "==> building firmware"
-  ~/.platformio/penv/bin/pio run -d "$repo_root" -e waveshare_esp32s3_usb_msc >/dev/null
-fi
-
-[[ -f "$firmware_path" ]] || { echo "firmware.bin not found at $firmware_path" >&2; exit 1; }
-
+# Tag first: the builds embed it as RSVP_BUILD_TAG so a device can compare
+# its running build against the latest release (Echoform's boot-time OTA).
 if [[ -z "$tag" ]]; then
   tag="ota-$(date -u +%Y%m%d%H%M%S)"
 fi
+
+echoform_path="$repo_root/.pio/build/echoform/echoform.bin"
+if [[ "$skip_build" != "1" ]]; then
+  echo "==> building firmware (reader + echoform, tag $tag)"
+  RSVP_BUILD_TAG="$tag" ~/.platformio/penv/bin/pio run -d "$repo_root" -e waveshare_esp32s3_usb_msc >/dev/null
+  RSVP_BUILD_TAG="$tag" ~/.platformio/penv/bin/pio run -d "$repo_root" -e echoform >/dev/null
+fi
+# The echoform asset keeps its own name on the shared release channel.
+cp "$repo_root/.pio/build/echoform/firmware.bin" "$echoform_path"
+
+[[ -f "$firmware_path" ]] || { echo "firmware.bin not found at $firmware_path" >&2; exit 1; }
+[[ -f "$echoform_path" ]] || { echo "echoform.bin not found at $echoform_path" >&2; exit 1; }
+
 [[ -n "$notes" ]] || notes="OTA build $(date -u +'%Y-%m-%d %H:%M UTC')"
 
 repo=$(git -C "$repo_root" config --get remote.origin.url | sed -E 's#.*github.com[:/]([^/]+/[^/.]+)(\.git)?#\1#')
 [[ -n "$repo" ]] || { echo "could not derive repo from origin remote" >&2; exit 1; }
 
-echo "==> publishing $tag to $repo (firmware $(du -h "$firmware_path" | cut -f1))"
-gh release create "$tag" "$firmware_path" --repo "$repo" --title "$tag" --notes "$notes"
+echo "==> publishing $tag to $repo (reader $(du -h "$firmware_path" | cut -f1), echoform $(du -h "$echoform_path" | cut -f1))"
+gh release create "$tag" "$firmware_path" "$echoform_path" --repo "$repo" --title "$tag" --notes "$notes"
 
 echo "==> released. Device will fetch from https://github.com/$repo/releases/latest/download/firmware.bin"

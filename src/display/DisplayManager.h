@@ -178,9 +178,28 @@ class DisplayManager {
   void applyEffectsToStripe(int stripeStart, int stripeRows);
   void renderProgress(const String &title, const String &line1 = "", const String &line2 = "",
                       int progressPercent = -1);
+  // Optional text overlay composited into the screensaver's stripes
+  // (Echoform M3: transcript strip + status chip). Strings are truncated to
+  // the panel width; empty strings draw nothing.
+  struct ScreensaverOverlay {
+    char chip[24];         // status chip, top-left (e.g. "LISTENING")
+    char nowPlaying[96];   // top-right
+    char line1[192];       // transcript, second-from-bottom row
+    char line2[256];       // transcript, bottom row
+    // The rusty-nail pixel wave, pre-composed by the echoform module into
+    // its native 128x128 index field (ramp {0,5,6,7}); null = no wave.
+    const uint8_t *waveField = nullptr;
+    // Face field (same 128x128 index space), blitted square; null = none.
+    const uint8_t *faceField = nullptr;
+    float wavePresence = 0.0f;
+    // Echoform: the face replaces the morphing dots; the starfield stays.
+    bool hideBobs = false;
+  };
+
   // Renders a single frame of the dots/stars screensaver. Call once per frame
   // after Screensaver::tick() + sortPoints().
-  void renderScreensaverFrame(Screensaver &saver);
+  void renderScreensaverFrame(Screensaver &saver,
+                              const ScreensaverOverlay *overlay = nullptr);
 
   // Demoscene-style demos. All use the native-stripe path (no virtualFrame_,
   // no transpose) for sustained frame rates. Each takes a state object whose
@@ -300,6 +319,26 @@ class DisplayManager {
                                  uint16_t panelEncoded, int stripeStart,
                                  int stripeRows, int clipLeftLogicalX,
                                  int clipRightLogicalX);
+  // Rounded-rect fill in native-stripe space (logical coordinates in).
+  void fillRoundedRectNativeStripe(int x, int y, int w, int h, int radius,
+                                   uint16_t panelEncoded, int stripeStart,
+                                   int stripeRows);
+  // The shared chip widget for native-stripe surfaces: rounded background +
+  // tiny text, marquee (ping-pong, soft-clipped) when the text overflows
+  // maxWidth. Mirrors drawScrollingChipText's look; marquee timing comes
+  // from the same marqueePingPongOffset single source of truth.
+  void drawChipNativeStripe(const char *text, int logicalX, int logicalY,
+                            int maxWidth, uint16_t textColor, uint16_t bgColor,
+                            int stripeStart, int stripeRows,
+                            bool rightAlign = false);
+  // Blit the echoform module's pre-composed 128x128 wave field onto the
+  // current stripe (ramp levels -> presence-faded greys, x5 horizontal).
+  void blitEchoWaveStripe(const uint8_t *field, float presence,
+                          int stripeStart, int stripeRows);
+  // Square-pixel face blit: the 128x128 field scaled uniformly to the
+  // panel height and centred horizontally.
+  void blitEchoFaceStripe(const uint8_t *field, int stripeStart,
+                          int stripeRows);
   void drawTinyTextNativeStripe(const String &text, int logicalX, int logicalY,
                                 int scale, uint16_t panelEncoded,
                                 int stripeStart, int stripeRows,

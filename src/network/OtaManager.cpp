@@ -201,6 +201,39 @@ bool OtaManager::connectWifi() {
   return false;
 }
 
+String OtaManager::fetchLatestReleaseTag() {
+  const String prefix = "https://github.com/";
+  if (!config_.firmwareUrl.startsWith(prefix)) return "";
+  const int repoEnd = config_.firmwareUrl.indexOf("/releases/", prefix.length());
+  if (repoEnd < 0) return "";
+  const String ownerRepo = config_.firmwareUrl.substring(prefix.length(), repoEnd);
+  const String apiUrl =
+      String("https://api.github.com/repos/") + ownerRepo + "/releases/latest";
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.setTimeout(15000);
+  http.setReuse(false);
+  http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+  http.setUserAgent("rsvp-nano-ota/1.0");
+  if (!http.begin(client, apiUrl)) return "";
+  const int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    http.end();
+    return "";
+  }
+  const String body = http.getString();
+  http.end();
+  const int keyIdx = body.indexOf("\"tag_name\"");
+  if (keyIdx < 0) return "";
+  const int quoteOpen = body.indexOf('"', body.indexOf(':', keyIdx) + 1);
+  if (quoteOpen < 0) return "";
+  const int quoteClose = body.indexOf('"', quoteOpen + 1);
+  if (quoteClose < 0) return "";
+  return body.substring(quoteOpen + 1, quoteClose);
+}
+
 String OtaManager::resolveGithubLatestAssetUrl(const String &assetName) {
   // Derive api.github.com URL from the configured /releases/latest/download
   // URL. config_.firmwareUrl shape:

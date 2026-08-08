@@ -1,18 +1,43 @@
 # Echoform on RSVP Nano - port plan
 
-Status: PLAN (nothing built yet). Written 7th August 2026 in the rusty-nail
-session that mapped both codebases; a fresh session in this repo starts here.
+Status: IN PROGRESS. Written 7th August 2026 in the rusty-nail session that
+mapped both codebases. REVISED the same day on Fulvio's direction: Echoform is
+a STANDALONE FIRMWARE, not a mode inside the reader OS. M0 mic path is
+mechanically proven (duplex I2S + ES7210 up, 5 s WAV recorded end to end) but
+capture levels are near-silent (~ -64 dBFS peaks); level debugging continues
+inside the standalone firmware.
 
 ## What this is
 
 Port the Echoform voice loop from rusty-nail onto the RSVP Nano handheld
-(Waveshare ESP32-S3-Touch-LCD-3.49). Only the transcription pipeline moves:
-microphone capture, the ECHO1 link to the Mac relay (whisper STT -> Claude ->
-TTS), wake word flow, and the transcript text. None of rusty-nail's visuals
-come across. The interface is this device's own screensaver promoted to the
-whole UI: the starfield keeps running as the permanent backdrop, and the 216
-morphing bobs become the voice visualisation (they morph into the live
+(Waveshare ESP32-S3-Touch-LCD-3.49), as its own firmware image. Only the
+transcription pipeline moves: microphone capture, the ECHO1 link to the Mac
+relay (whisper STT -> Claude -> TTS), wake word flow, and the transcript text.
+None of rusty-nail's visuals come across. The interface is this device's
+screensaver/demo engine promoted to the entire device: the firmware boots
+straight into the starfield, which runs permanently as the backdrop, and the
+216 morphing bobs become the voice visualisation (they morph into the live
 waveform while Echoform listens or speaks, then return to the shape timeline).
+
+## Firmware split (the revised shape)
+
+Echoform is NOT a scene, menu item, or boot mode of the reader OS. It is a
+separate PlatformIO environment (`echoform`) in this repo with its own slim
+main loop, sharing subsystem code with the reader firmware as libraries:
+BoardConfig, DisplayManager + native-stripe renderer, Screensaver engine,
+AudioManager/Es7210, StorageManager (SD mount + config files only), and the
+network stack as needed from M1 on. Explicitly excluded: `src/app/` (App,
+scenes, menus), reader, book library, mod player UI, notifications, USB
+transfer UI, demos menu - the whole OS chrome.
+
+Build: `pio run -e echoform`. Flash over USB:
+`pio run -e echoform -t upload`. The GitHub-releases OTA channel stays owned
+by the reader firmware; do not publish echoform builds to it. (If Echoform
+later needs its own OTA lane it gets its own release asset name.)
+
+The main-loop rules from `App.cpp:1-62` carry over verbatim to the Echoform
+loop: coordinate only, workers + atomics for slow paths, [tick] SLOW guardrail
+at 33 ms.
 
 Music policy is a hard rule: nothing autoplays. The existing screensaver
 music autostart is disabled in this mode. The only music path is Spotify,
@@ -158,17 +183,15 @@ compile-time endpoint baking (that is a rusty-nail convention we drop).
 
 ## The interface: screensaver as the whole UI
 
-Today: idle timer (`App.cpp:868-890`) enters `ScreensaverScene`;
-`renderScreensaverFrame` draws 150 palette-tinted stars (7 motion modes,
-re-rolled each shape change) behind 216 depth-sorted 3-tone shaded balls
-morphing through 15 shapes (120 s cycle), no text, pure black background,
-retro effect chain per stripe. Any touch exits.
+The engine: `renderScreensaverFrame` draws 150 palette-tinted stars (7 motion
+modes, re-rolled each shape change) behind 216 depth-sorted 3-tone shaded
+balls morphing through 15 shapes (120 s cycle), no text, pure black
+background, retro effect chain per stripe.
 
 Port shape:
-- New `EchoformScene` built from `ScreensaverScene` + `Screensaver`. It is
-  the home state while Echoform mode is active, entered explicitly (menu
-  item or a dedicated boot mode), and touch does NOT exit it; touch is
-  input (tap = push-to-talk or menu, per milestone).
+- `EchoformApp` (its own main loop in `src/echoform/`) drives `Screensaver`
+  directly from boot. There is nothing to exit to; touch is input only
+  (tap = push-to-talk, per milestone).
 - **Waveform morph**: add one dynamic morph target beside the 15 static
   shapes: a 216-point ribbon spanning the logical 640 width whose Y
   displacement follows the live feature extractor (mic features while
@@ -189,17 +212,19 @@ Port shape:
   Keep it minimal; the bobs are the show.
 - Retro effect chain stays on (it is the device's look).
 
-Music policy implementation: `App::setState()` (`App.cpp:1250-1261`)
-autostarts a random tracker module on Screensaver/DemoPlaying entry when
-`demoMusicMode_ != 0` (default Shuffle, so it IS on out of the box).
-EchoformScene must not pass through that branch, and while Echoform mode is
-active `startRandomModule` must be unreachable regardless of the setting.
-ModPlayer also reconfigures I2S0 to 44.1 kHz stereo, which would fight the
-duplex 16 kHz capture; single audio owner while Echoform runs. Spotify
-playback happens on Spotify devices via the relay skill; this device only
-displays NowPlaying (0x47) and speaks confirmations.
+Music policy implementation: trivial under the firmware split - ModPlayer is
+simply not part of the echoform build, so nothing can autoplay and nothing
+can reclock I2S0 away from the duplex 16 kHz capture. Single audio owner by
+construction. Spotify playback happens on Spotify devices via the relay
+skill; this device only displays NowPlaying (0x47) and speaks confirmations.
 
 ## Milestones
+
+M-1 - Standalone firmware skeleton (added in the revision)
+  `echoform` env + `EchoformApp`: boots straight into the starfield/bobs
+  loop, SD mounted, audio up, REC serial harness carried over. No menus,
+  no reader, no chrome.
+  Accept: device boots into the screensaver and REC still records.
 
 M0 - Mic bring-up (hardware proof, no protocol)
   Add `PIN_AUDIO_DIN = 6`, reconfigure I2S0 duplex 16 kHz, minimal ES7210
@@ -208,12 +233,34 @@ M0 - Mic bring-up (hardware proof, no protocol)
   Accept: intelligible speech in the WAV at sane levels. (Rusty-nail's mic
   took two days over three stacked bugs; a WAV-first bring-up is the
   lesson.)
+  STATUS 7th Aug 2026: MICS WORKING, root cause found and fixed. The
+  ES7210 datasheet caps I2C data hold time at 900 ns after the clock edge;
+  the ESP32 hardware I2C holds for microseconds, so every register write
+  landed with bits dropped (and readbacks were garbage). All earlier
+  symptoms - "frozen register file", "reads lie", ADC stuck at fs/8 - were
+  this one violation. Fix: Es7210.cpp bit-bangs the chip's I2C with
+  sub-microsecond hold; writes now verify perfectly and capture is
+  continuous 16 kHz. Working config: ES7210 slave TDM I2S (0x12=0x02,
+  four ADCs, 16-bit, MCLK 256x fs, 0x02=0xC1, OSR 0x20, 0x08=0x10);
+  ESP32 legacy I2S duplex 32-bit slots stereo; live mics are TDM slots 0
+  and 2 (top halfword of each 32-bit word).
+  ACCEPTED 7th Aug 2026: user judged voice recordings "perfect" and music
+  capture hearable. Bench commands REC/PLAY/BEEP/DUMP/I2C/ESRW/OFF stay in
+  the echoform build for M1/M2 bring-up.
 
 M1 - Wire client
   C++ ECHO1 framing + parser + CRC (transcribed from proto.rs), net task,
   `/echoform.json` config, Hello/HelloAck/ConfigureSession, keepalive.
   Accept: relay logs the session; serial monitor shows stable Pong RTT;
   survives relay restart via reconnect backoff.
+  DONE 7th Aug 2026: src/echoform/Echo1.{h,cpp} (host golden test in
+  tools/echo1_host_test.cpp, ALL PASS incl. CRC vector 0x29B1),
+  EchoformNet worker task (WiFi via wifi.json + WifiConnector, endpoint
+  via /echoform.json or the SETRELAY serial command). All three acceptance
+  criteria verified on the bench: relay logged the session and configured
+  voice 'fable'; Pong RTT stable at 7-21 ms; relay kill/restart recovered
+  automatically through the 2 s backoff. Starfield held ~58 fps with the
+  session live.
 
 M2 - Push-to-talk loop end to end
   Hold BOOT (or hold touch) = capture -> BeginUtterance(flags 0) ->
@@ -221,11 +268,17 @@ M2 - Push-to-talk loop end to end
   enable, prime at ~180 ms); transcript + deltas to serial.
   Accept: ask a question aloud, hear the answer through the console
   speaker.
+  DONE 7th Aug 2026: EchoformAudio (mic TX ring + speech ring, worker
+  tasks), EchoformNet utterance commands + request tracker + mic pump,
+  BOOT hold PTT + TALK serial command. Three live rounds against the
+  relay; replies audible on the speaker. Tuning en route: mic PGA 36 dB +
+  2x digital gain (33 dB left whisper hallucinating Japanese on quiet
+  audio), speaker volume 90%. Relay recordings/transcript confirm the
+  full loop. Known nit: one benign "sequence gap (resynced)" per reply.
 
 M3 - The interface
-  EchoformScene: starfield + bobs + waveform morph target + transcript
-  strip + status chip; music autostart disabled in this mode; enter via
-  menu item.
+  Waveform morph target + transcript strip + status chip layered into the
+  EchoformApp render loop.
   Accept: user judges it on the device (bobs must visibly ride the voice
   both directions).
 
@@ -252,19 +305,14 @@ M7 - Future
 
 ## Rules and pitfalls for the build session
 
-- Read `App.cpp:1-62` before touching anything: the main loop never
-  performs slow work; workers + atomics + events; ticks over 33 ms log
-  `[tick] SLOW`.
-- New `AppState` values must be added to the `updateState()` allowlist at
-  `App.cpp:1345` or the state bounces to Paused after one frame
-  (documented bug 7.1 in `docs/SESSION_NOTES.md`).
-- Scene route: implement `Scene`, add a `SceneId`, register in
-  `App::begin()` (`App.cpp:591`). `SceneContext` carries only
-  DisplayManager/Screensaver/ModPlayer/EventBus; widen it deliberately if
-  the scene needs more.
+- Read `App.cpp:1-62` for the main-loop rules; they bind EchoformApp's loop
+  the same way: never perform slow work inline; workers + atomics; ticks
+  over 33 ms log `[tick] SLOW`.
+- Echoform code never touches `src/app/` - no AppState, no scenes, no
+  SceneContext. Those are reader-OS machinery.
 - Stop the serial monitor before `pio run -t upload` (port busy
-  otherwise). Build: `pio run`; the default env is
-  `waveshare_esp32s3_usb_msc`.
+  otherwise). Echoform build: `pio run -e echoform`; reader firmware
+  remains the repo default (`waveshare_esp32s3_usb_msc`).
 - Relay ops (from rusty-nail bench experience): long-lived relay processes
   accumulate half-open board connections after reflashes; restart the
   relay when utterances stop landing. Relay env lives in

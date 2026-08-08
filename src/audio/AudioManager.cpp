@@ -5,6 +5,7 @@
 #include <driver/i2s.h>
 #include <math.h>
 
+#include "audio/Es7210.h"
 #include "board/BoardConfig.h"
 
 namespace {
@@ -100,13 +101,25 @@ bool AudioManager::initCodec() {
   return true;
 }
 
-bool AudioManager::initI2sChannel() {
-  if (s_i2sInstalled) return true;
+bool AudioManager::installI2sDriver(bool duplex) {
+  if (s_i2sInstalled) {
+    i2s_driver_uninstall(kI2sPort);
+    s_i2sInstalled = false;
+  }
   i2s_config_t cfg = {};
-  cfg.mode = static_cast<i2s_mode_t>(I2S_MODE_MASTER | I2S_MODE_TX);
+  cfg.mode = static_cast<i2s_mode_t>(duplex ? (I2S_MODE_MASTER | I2S_MODE_TX | I2S_MODE_RX)
+                                            : (I2S_MODE_MASTER | I2S_MODE_TX));
   cfg.sample_rate = kSampleRateHz;
-  cfg.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT;
-  cfg.channel_format = I2S_CHANNEL_FMT_ONLY_LEFT;
+  // Duplex runs 32-bit slots: the ES7210's clock recovery mislocks at
+  // 32 BCLK/frame (16-bit stereo gave audio at fs/8 — 2 real samples then
+  // 14 zeros); 64 BCLK/frame matches the working Waveshare demo's clocking.
+  // The codec emits 16 data bits MSB-aligned per slot; readMicSamples()
+  // takes the top halfword. TX is idle during capture.
+  cfg.bits_per_sample =
+      duplex ? I2S_BITS_PER_SAMPLE_32BIT : I2S_BITS_PER_SAMPLE_16BIT;
+  // Capture BOTH slots (MIC1 left, MIC2 right).
+  cfg.channel_format =
+      duplex ? I2S_CHANNEL_FMT_RIGHT_LEFT : I2S_CHANNEL_FMT_ONLY_LEFT;
   cfg.communication_format = I2S_COMM_FORMAT_STAND_I2S;
   cfg.intr_alloc_flags = 0;
   cfg.dma_buf_count = 4;
@@ -125,7 +138,7 @@ bool AudioManager::initI2sChannel() {
   pins.bck_io_num = BoardConfig::PIN_AUDIO_BCLK;
   pins.ws_io_num = BoardConfig::PIN_AUDIO_LRCK;
   pins.data_out_num = BoardConfig::PIN_AUDIO_DOUT;
-  pins.data_in_num = I2S_PIN_NO_CHANGE;
+  pins.data_in_num = duplex ? BoardConfig::PIN_AUDIO_DIN : I2S_PIN_NO_CHANGE;
   if (i2s_set_pin(kI2sPort, &pins) != ESP_OK) {
     Serial.println("[audio] i2s_set_pin failed");
     i2s_driver_uninstall(kI2sPort);
@@ -133,8 +146,13 @@ bool AudioManager::initI2sChannel() {
   }
   i2s_zero_dma_buffer(kI2sPort);
   s_i2sInstalled = true;
-  Serial.println("[audio] I2S TX ready");
+  Serial.printf("[audio] I2S %s ready\n", duplex ? "duplex (TX+RX)" : "TX");
   return true;
+}
+
+bool AudioManager::initI2sChannel() {
+  if (s_i2sInstalled) return true;
+  return installI2sDriver(false);
 }
 
 bool AudioManager::begin() {
@@ -466,4 +484,80 @@ bool AudioManager::playWavFromSd(const String &path, uint32_t maxDurationMs) {
   // Restore the default sample rate so the next RTTTL playback uses our 16 kHz config.
   i2s_set_clk(kI2sPort, kSampleRateHz, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_MONO);
   return true;
+}
+
+bool AudioManager::beginMicCapture() {
+  if (micCaptureActive_) return true;
+  // Codec + amp path first: begin() also asserts the TCA9554 amp enable and
+  // runs the ES8311 sequence if this is the first audio use since boot.
+  if (!initialized_ && !begin()) return false;
+  if (!installI2sDriver(true)) {
+    return false;
+  }
+  if (!Es7210::startCapture()) {
+    // Fall back to the TX-only driver so playback keeps working.
+    installI2sDriver(false);
+    return false;
+  }
+  micCaptureActive_ = true;
+  return true;
+}
+
+size_t AudioManager::readMicSamples(int16_t *dst, size_t maxSamples, uint32_t timeoutMs) {
+  if (!micCaptureActive_ || dst == nullptr || maxSamples == 0) return 0;
+  // The duplex driver runs 32-bit slots; each sample arrives MSB-aligned in
+  // a 32-bit word. Read in chunks and fold down to int16.
+  int32_t raw[256];
+  size_t produced = 0;
+  while (produced < maxSamples) {
+    const size_t want = std::min<size_t>(maxSamples - produced,
+                                         sizeof(raw) / sizeof(raw[0]));
+    size_t bytesRead = 0;
+    if (i2s_read(kI2sPort, raw, want * sizeof(int32_t), &bytesRead,
+                 pdMS_TO_TICKS(timeoutMs)) != ESP_OK ||
+        bytesRead == 0) {
+      break;
+    }
+    const size_t got = bytesRead / sizeof(int32_t);
+    for (size_t i = 0; i < got; ++i) {
+      dst[produced + i] = static_cast<int16_t>(raw[i] >> 16);
+    }
+    produced += got;
+    if (got < want) break;
+  }
+  return produced;
+}
+
+size_t AudioManager::readMicRaw(int32_t *dst, size_t maxWords, uint32_t timeoutMs) {
+  if (!micCaptureActive_ || dst == nullptr || maxWords == 0) return 0;
+  size_t bytesRead = 0;
+  if (i2s_read(kI2sPort, dst, maxWords * sizeof(int32_t), &bytesRead,
+               pdMS_TO_TICKS(timeoutMs)) != ESP_OK) {
+    return 0;
+  }
+  return bytesRead / sizeof(int32_t);
+}
+
+void AudioManager::writeSpeech(const int16_t *samples, size_t count) {
+  if (!s_i2sInstalled || micCaptureActive_ || samples == nullptr) return;
+  const float volumeScale = static_cast<float>(volumePercent_) / 100.0f;
+  int16_t scaled[kSampleBatch];
+  size_t at = 0;
+  while (at < count) {
+    const size_t take = std::min(count - at, kSampleBatch);
+    for (size_t i = 0; i < take; ++i) {
+      scaled[i] = static_cast<int16_t>(samples[at + i] * volumeScale);
+    }
+    size_t written = 0;
+    i2s_write(kI2sPort, scaled, take * sizeof(int16_t), &written,
+              pdMS_TO_TICKS(500));
+    at += take;
+  }
+}
+
+void AudioManager::endMicCapture() {
+  if (!micCaptureActive_) return;
+  Es7210::stopCapture();
+  micCaptureActive_ = false;
+  installI2sDriver(false);
 }

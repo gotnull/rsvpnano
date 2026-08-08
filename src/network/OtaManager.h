@@ -39,6 +39,10 @@ class OtaManager {
   bool runUpdate();
   const String &lastError() const { return lastError_; }
   const Config &config() const { return config_; }
+  // Fetches the latest release's tag_name from the GitHub API (derived from
+  // firmwareUrl). Requires WiFi to be up already. Empty on any failure.
+  // Used by Echoform's boot-time update check; additive only.
+  String fetchLatestReleaseTag();
 
  private:
   void notifyStatus(const char *title, const char *line1 = "", const char *line2 = "",

@@ -3976,7 +3976,210 @@ void fillCircleSolid(uint16_t *buf, int bufW, int bufH, int cx, int cy, int r,
 //       nativeX = (kDisplayHeight - 1) - logicalY     // = 171 - logicalY
 //   We project the screensaver in logical space (sx in [0,640), sy in [0,172))
 //   so we apply that inverse once per primitive, then never transpose again.
-void DisplayManager::renderScreensaverFrame(Screensaver &saver) {
+namespace {
+
+// rusty-nail render.rs primitives (transcribed): the monochrome ramp in
+// PICO-8 indices and its rank ordering. 0 = black/transparent here.
+constexpr uint8_t kEchoRamp[4] = {0, 5, 6, 7};
+constexpr int kEchoWaveW = 128;
+constexpr int kEchoWaveH = 128;
+// face::base_y at coherence 0 (no face on this device).
+constexpr int kEchoBaseY = 64;
+constexpr int kEchoClipTop = 0;
+constexpr int kEchoClipBottom = 126;
+
+uint8_t echoShade(int brightness) {
+  if (brightness <= 39) return kEchoRamp[0];
+  if (brightness <= 109) return kEchoRamp[1];
+  if (brightness <= 189) return kEchoRamp[2];
+  return kEchoRamp[3];
+}
+
+uint8_t echoRampRank(uint8_t index) {
+  switch (index) {
+    case 5: return 1;
+    case 6: return 2;
+    case 7: return 3;
+    default: return 0;
+  }
+}
+
+void echoPutRanked(uint8_t *fb, int x, int y, uint8_t rankIndex, uint8_t out) {
+  if (x < 0 || x >= kEchoWaveW || y < 0 || y >= kEchoWaveH) return;
+  uint8_t &p = fb[y * kEchoWaveW + x];
+  if (echoRampRank(rankIndex) > echoRampRank(p)) {
+    p = out;
+  }
+}
+
+void echoRaise(uint8_t *col, int y, uint8_t index) {
+  if (y < 0 || y >= kEchoWaveH) return;
+  if (echoRampRank(index) > echoRampRank(col[y])) {
+    col[y] = index;
+  }
+}
+
+}  // namespace
+
+// Blit the pre-composed 128x128 field onto the stripe: each RN column is 5
+// logical px wide (full 640 width), RN rows map 1:1 onto logical Y centred
+// in the panel. The three ramp levels become presence-faded greys.
+void DisplayManager::blitEchoWaveStripe(const uint8_t *field, float presence,
+                                        int stripeStart, int stripeRows) {
+  if (field == nullptr) return;
+  constexpr int kColWidth = kDisplayWidth / kEchoWaveW;  // 5
+  constexpr int kYOffset = (kDisplayHeight - kEchoWaveH) / 2;  // 22
+  if (presence > 1.0f) presence = 1.0f;
+  // The dream reel's molten palette (dream.rs overlay_starfall remap):
+  // ramp 5 -> PICO-8 4 (ember brown), 6 -> 9 (orange), 7 -> 10 (yellow
+  // crest). "Colour is dreaming": this wave dreams full time.
+  uint16_t rampColor[4];
+  rampColor[0] = 0;
+  rampColor[1] = panelColor(0xAA86);  // #AB5236 ember
+  rampColor[2] = panelColor(0xFD00);  // #FFA300 orange
+  rampColor[3] = panelColor(0xFF64);  // #FFEC27 yellow
+  (void)presence;
+  const bool rotated = uiRotated_;
+  const int stripeEnd = stripeStart + stripeRows;
+  for (int x = 0; x < kEchoWaveW; ++x) {
+    const int lx0 = x * kColWidth;
+    // Native-Y extent of this 5-px logical column.
+    const int a = rotated ? lx0 : (kDisplayWidth - 1) - (lx0 + kColWidth - 1);
+    if (a + kColWidth - 1 < stripeStart || a >= stripeEnd) continue;
+    for (int y = 0; y < kEchoWaveH; ++y) {
+      const uint8_t idx = field[y * kEchoWaveW + x];
+      if (idx == 0) continue;
+      const uint8_t rank = echoRampRank(idx);
+      const uint16_t color = rampColor[rank];
+      const int ly = y + kYOffset;
+      const int nx = rotated ? (kDisplayHeight - 1) - ly : ly;
+      if (nx < 0 || nx >= kPanelNativeWidth) continue;
+      for (int dx = 0; dx < kColWidth; ++dx) {
+        const int lx = lx0 + dx;
+        const int ny = rotated ? lx : (kDisplayWidth - 1) - lx;
+        const int localY = ny - stripeStart;
+        if (localY < 0 || localY >= stripeRows) continue;
+        txBuffer_[localY * kPanelNativeWidth + nx] = color;
+      }
+    }
+  }
+}
+
+void DisplayManager::blitEchoFaceStripe(const uint8_t *field, int stripeStart,
+                                        int stripeRows) {
+  if (field == nullptr) return;
+  // Uniform scale: field height (128) -> panel height (172); the square
+  // window is kDisplayHeight wide, centred.
+  constexpr int kWin = kDisplayHeight;            // 172
+  constexpr int kWinX0 = (kDisplayWidth - kWin) / 2;  // 234
+  // Molten palette, same as the wave.
+  uint16_t rampColor[4];
+  rampColor[0] = 0;
+  rampColor[1] = panelColor(0xAA86);
+  rampColor[2] = panelColor(0xFD00);
+  rampColor[3] = panelColor(0xFF64);
+  const bool rotated = uiRotated_;
+  const int stripeEnd = stripeStart + stripeRows;
+  for (int wx = 0; wx < kWin; ++wx) {
+    const int lx = kWinX0 + wx;
+    const int ny = rotated ? lx : (kDisplayWidth - 1) - lx;
+    if (ny < stripeStart || ny >= stripeEnd) continue;
+    const int srcX = wx * kEchoWaveW / kWin;
+    const int localY = ny - stripeStart;
+    for (int wy = 0; wy < kWin; ++wy) {
+      const int srcY = wy * kEchoWaveH / kWin;
+      const uint8_t idx = field[srcY * kEchoWaveW + srcX];
+      if (idx == 0) continue;
+      const uint8_t rank = echoRampRank(idx);
+      const int ly = wy;
+      const int nx = rotated ? (kDisplayHeight - 1) - ly : ly;
+      if (nx < 0 || nx >= kPanelNativeWidth) continue;
+      txBuffer_[localY * kPanelNativeWidth + nx] = rampColor[rank];
+    }
+  }
+}
+
+void DisplayManager::fillRoundedRectNativeStripe(int x, int y, int w, int h,
+                                                 int radius, uint16_t panelEncoded,
+                                                 int stripeStart, int stripeRows) {
+  if (w <= 0 || h <= 0) return;
+  const bool rotated = uiRotated_;
+  const int stripeEnd = stripeStart + stripeRows;
+  for (int row = 0; row < h; ++row) {
+    // Corner inset for this row (quarter-circle approximation).
+    int inset = 0;
+    const int fromTop = row;
+    const int fromBottom = h - 1 - row;
+    const int edge = fromTop < fromBottom ? fromTop : fromBottom;
+    if (edge < radius) {
+      const int dy = radius - edge;
+      // inset = radius - sqrt(r^2 - dy^2), small ints — table-free.
+      int dx = 0;
+      while ((radius - dx) * (radius - dx) + dy * dy > radius * radius &&
+             dx < radius) {
+        ++dx;
+      }
+      inset = dx;
+    }
+    const int ly = y + row;
+    if (ly < 0 || ly >= kDisplayHeight) continue;
+    const int nx = rotated ? (kDisplayHeight - 1) - ly : ly;
+    if (nx < 0 || nx >= kPanelNativeWidth) continue;
+    const int lxStart = x + inset;
+    const int lxEnd = x + w - inset;
+    for (int lx = lxStart; lx < lxEnd; ++lx) {
+      if (lx < 0 || lx >= kDisplayWidth) continue;
+      const int ny = rotated ? lx : (kDisplayWidth - 1) - lx;
+      if (ny < stripeStart || ny >= stripeEnd) continue;
+      txBuffer_[(ny - stripeStart) * kPanelNativeWidth + nx] = panelEncoded;
+    }
+  }
+}
+
+void DisplayManager::drawChipNativeStripe(const char *text, int logicalX,
+                                          int logicalY, int maxWidth,
+                                          uint16_t textColor, uint16_t bgColor,
+                                          int stripeStart, int stripeRows,
+                                          bool rightAlign) {
+  if (text == nullptr || text[0] == '\0') return;
+  constexpr int kScale = 2;
+  constexpr int kPadX = 5;
+  constexpr int kPadY = 2;
+  // Whole-chip stripe cull: the chip's logical-X extent maps onto the
+  // native-Y (stripe) axis; most stripes never touch it. Without this the
+  // full glyph/rect loops ran for every stripe and a busy transcript
+  // dragged the frame rate to ~14 fps.
+  {
+    const int cx0 = rightAlign ? logicalX - maxWidth : logicalX;
+    const int cx1 = rightAlign ? logicalX : logicalX + maxWidth;
+    const int a = uiRotated_ ? cx0 : (kDisplayWidth - 1) - (cx1 - 1);
+    const int b = uiRotated_ ? cx1 : (kDisplayWidth - 1) - cx0 + 1;
+    if (b <= stripeStart || a >= stripeStart + stripeRows) return;
+  }
+  const String str(text);
+  const int textW = measureTinyTextWidth(str, kScale);
+  const int chipH = kTinyGlyphHeight * kScale + kPadY * 2;
+  const int contentMax = maxWidth - kPadX * 2;
+  const int contentW = textW < contentMax ? textW : contentMax;
+  const int chipW = contentW + kPadX * 2;
+  const int chipX = rightAlign ? logicalX - chipW : logicalX;
+  const int chipY = logicalY - kPadY;
+  fillRoundedRectNativeStripe(chipX, chipY, chipW, chipH,
+                              chipH / 2 < 6 ? chipH / 2 : 6, bgColor,
+                              stripeStart, stripeRows);
+  const int contentLeft = chipX + kPadX;
+  const int contentRight = chipX + kPadX + contentW;
+  int offset = 0;
+  if (textW > contentW) {
+    offset = marqueePingPongOffset(textW - contentW);
+  }
+  drawTinyTextNativeStripe(str, contentLeft - offset, logicalY, kScale,
+                           textColor, stripeStart, stripeRows, contentLeft,
+                           contentRight);
+}
+
+void DisplayManager::renderScreensaverFrame(Screensaver &saver,
+                                            const ScreensaverOverlay *overlay) {
   if (!initialized_) return;
   // Animation forces a full repaint each frame.
   lastRenderKey_ = "";
@@ -3985,6 +4188,7 @@ void DisplayManager::renderScreensaverFrame(Screensaver &saver) {
 #endif
   saver.tick();
   saver.sortPoints();
+
 #if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
   const uint32_t t1 = micros();
   uint32_t composeUs = 0;
@@ -4047,6 +4251,7 @@ void DisplayManager::renderScreensaverFrame(Screensaver &saver) {
   }
 
   // Dots back-to-front (drawOrder() is sorted descending by cz).
+  const bool skipDots = overlay != nullptr && overlay->hideBobs;
   const uint16_t *palette = Screensaver::palette();
   const uint16_t *order = saver.drawOrder();
   const auto *allPoints = saver.points();
@@ -4060,7 +4265,7 @@ void DisplayManager::renderScreensaverFrame(Screensaver &saver) {
   // screen gap at this size.
   constexpr float kRadiusScale = 16.0f;
   constexpr int kRadiusMax = 19;
-  for (size_t i = 0; i < saver.pointCount(); ++i) {
+  for (size_t i = 0; i < (skipDots ? 0 : saver.pointCount()); ++i) {
     const auto &p = allPoints[order[i]];
     if (p.cz <= 0.1f) continue;
     const float invCz = 1.0f / p.cz;
@@ -4141,6 +4346,34 @@ void DisplayManager::renderScreensaverFrame(Screensaver &saver) {
       }
     }
 
+    if (overlay != nullptr && overlay->waveField != nullptr &&
+        overlay->wavePresence > 0.02f) {
+      blitEchoWaveStripe(overlay->waveField, overlay->wavePresence,
+                         stripeStart, rows);
+    }
+    if (overlay != nullptr && overlay->faceField != nullptr) {
+      blitEchoFaceStripe(overlay->faceField, stripeStart, rows);
+    }
+    if (overlay != nullptr) {
+      // Echoform overlay: every string in a chip (bare text bleeds into the
+      // starfield). Shared chip widget; marquee handles overflow.
+      const uint16_t chipBg = panelColor(0x4A69);      // readable mid-grey
+      const uint16_t chipColor = panelColor(0x07FF);   // cyan
+      const uint16_t userColor = panelColor(0xFFE0);   // yellow
+      const uint16_t assistColor = panelColor(0xFFFF); // white
+      const uint16_t npColor = panelColor(0x87F0);     // soft green
+      drawChipNativeStripe(overlay->chip, 4, 6, 200, chipColor, chipBg,
+                           stripeStart, rows);
+      drawChipNativeStripe(overlay->nowPlaying, kDisplayWidth - 4, 6, 260,
+                           npColor, chipBg, stripeStart, rows,
+                           /*rightAlign=*/true);
+      drawChipNativeStripe(overlay->line1, 4, kDisplayHeight - 40,
+                           kDisplayWidth - 8, userColor, chipBg, stripeStart,
+                           rows);
+      drawChipNativeStripe(overlay->line2, 4, kDisplayHeight - 20,
+                           kDisplayWidth - 8, assistColor, chipBg, stripeStart,
+                           rows);
+    }
     applyEffectsToStripe(stripeStart, rows);
 #if defined(SCREENSAVER_PROFILING) && SCREENSAVER_PROFILING
     composeUs += micros() - cBegin;

@@ -13,6 +13,7 @@
 #include "app/scene/SceneManager.h"
 #include "app/scene/ScreensaverScene.h"
 #include "audio/AudioManager.h"
+#include "audio/MicRecorder.h"
 #include "audio/ModPlayer.h"
 #include "display/GifPlayer.h"
 #include "network/WifiSetupPortal.h"
@@ -221,6 +222,9 @@ class App {
   void enterUsbTransfer(uint32_t nowMs);
   void updateUsbTransfer(uint32_t nowMs);
   void exitUsbTransfer(uint32_t nowMs);
+  // TEMPORARY Echoform M0 harness (docs/ECHOFORM.md): "REC" over serial
+  // records 5 s from the mics to /rec.wav. Removed once M0 is proven.
+  void pollMicRecorderDebug(uint32_t nowMs);
   void runOtaUpdate(uint32_t nowMs);
   void toggleNotificationsEnabled(uint32_t nowMs);
   void openTonePicker();
@@ -443,6 +447,7 @@ class App {
   OtaManager ota_;
   NotificationsManager notifications_;
   AudioManager audio_;
+  MicRecorder micRecorder_;
   ModPlayer modPlayer_;
   GifPlayer gifPlayer_;
   std::vector<String> gifMenuItems_;

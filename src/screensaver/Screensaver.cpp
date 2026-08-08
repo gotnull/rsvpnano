@@ -152,6 +152,28 @@ void Screensaver::shapeAt(int i, float &x, float &y, float &z) const {
   z = out[2];
 }
 
+void Screensaver::setWaveform(const int16_t *samples, size_t count,
+                              bool active) {
+  waveActive_ = active;
+  if (!active || samples == nullptr || count == 0) return;
+  // 216 beads across one line is a ~3 px pitch — an illegible smear. Fold
+  // the points into 72 columns x 3 rows: one scope sample per column, the
+  // three rows stacked with a small offset so the wave reads as a single
+  // thick ribbon. ±1.1 model units project to roughly ±66 px.
+  constexpr float kWaveAmp = 1.1f;
+  constexpr float kRowOffset = 0.14f;
+  constexpr int kRows = 3;
+  const int columns = kPointCount / kRows;  // 72
+  for (int i = 0; i < kPointCount; ++i) {
+    const int column = i / kRows;
+    const int row = i % kRows;
+    const size_t s =
+        (static_cast<size_t>(column) * (count - 1)) / (columns - 1);
+    waveY_[i] = -(static_cast<float>(samples[s]) / 32768.0f) * kWaveAmp +
+                (row - 1) * kRowOffset;
+  }
+}
+
 void Screensaver::tick() {
   ++frameCounter_;
   // Detect shape transition; reroll star mode each time the held shape
@@ -186,6 +208,31 @@ void Screensaver::tick() {
     if (t > 1.0f) t = 1.0f;
     const int b = 255 - static_cast<int>(t * (255 - kMinBright));
     p.brightness = static_cast<uint8_t>(b);
+  }
+
+  // Echoform waveform morph: ease the projected points into (or out of) a
+  // flat ribbon spanning the screen. Runs AFTER rotation/projection so the
+  // ribbon is screen-aligned regardless of the rotation timeline, which
+  // keeps running underneath and takes over seamlessly on release.
+  waveMix_ += waveActive_ ? 0.08f : -0.045f;  // ~0.25 s in, ~0.4 s out
+  if (waveMix_ < 0.0f) waveMix_ = 0.0f;
+  if (waveMix_ > 1.0f) waveMix_ = 1.0f;
+  if (waveMix_ > 0.0f) {
+    // Ribbon X: ±5.0 model units at cz 3.0 project to ±300 px (kFocal 180).
+    constexpr float kRibbonHalfWidth = 5.0f;
+    constexpr float kRibbonZ = kCameraZ;
+    const float mix = waveMix_ * waveMix_ * (3.0f - 2.0f * waveMix_);  // smoothstep
+    for (int i = 0; i < kPointCount; ++i) {
+      Point &p = points_[i];
+      const float tx =
+          (static_cast<float>(i) / (kPointCount - 1) * 2.0f - 1.0f) *
+          kRibbonHalfWidth;
+      p.cx += (tx - p.cx) * mix;
+      p.cy += (waveY_[i] - p.cy) * mix;
+      p.cz += (kRibbonZ - p.cz) * mix;
+      const int b = p.brightness + static_cast<int>((255 - p.brightness) * mix);
+      p.brightness = static_cast<uint8_t>(b);
+    }
   }
 }
 

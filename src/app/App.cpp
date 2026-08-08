@@ -861,6 +861,12 @@ void App::update(uint32_t nowMs)
   {
     return;
   }
+  // Echoform M0 mic harness. UsbTransfer owns the serial stream for its own
+  // EXIT-MSC command, so stay off it in that state.
+  if (state_ != AppState::UsbTransfer)
+  {
+    pollMicRecorderDebug(nowMs);
+  }
 
   // Screensaver: enter the dots animation after the configured idle window.
   // Cheaper than auto-off and the user might just be staring at a single
@@ -3985,6 +3991,60 @@ void App::updateUsbTransfer(uint32_t nowMs)
   }
 
   exitUsbTransfer(nowMs);
+}
+
+// TEMPORARY Echoform M0 harness (docs/ECHOFORM.md, milestone M0).
+// Type "REC" into the serial monitor to record 5 s of mic audio to /rec.wav;
+// copy it off over USB MSC to judge levels/intelligibility. This polls a few
+// buffered UART bytes per tick — no blocking work; the recording itself runs
+// on MicRecorder's own task.
+void App::pollMicRecorderDebug(uint32_t nowMs)
+{
+  (void)nowMs;
+  if (micRecorder_.takeFinished())
+  {
+    Serial.printf("[app] mic recording %s\n",
+                  micRecorder_.lastSucceeded() ? "saved to /rec.wav" : "FAILED");
+  }
+
+  static String lineBuffer;
+  while (Serial.available() > 0)
+  {
+    const char c = static_cast<char>(Serial.read());
+    if (c == '\r')
+    {
+      continue;
+    }
+    if (c != '\n')
+    {
+      lineBuffer += c;
+      if (lineBuffer.length() > 64)
+      {
+        lineBuffer = "";
+      }
+      continue;
+    }
+    lineBuffer.trim();
+    const bool isRecCommand = lineBuffer.equalsIgnoreCase("REC");
+    lineBuffer = "";
+    if (!isRecCommand)
+    {
+      continue;
+    }
+    if (micRecorder_.recording())
+    {
+      Serial.println("[app] REC ignored: already recording");
+    }
+    else if (modPlayer_.isPlaying())
+    {
+      Serial.println("[app] REC ignored: mod player owns I2S0, stop it first");
+    }
+    else
+    {
+      constexpr uint32_t kMicRecordSeconds = 5;
+      micRecorder_.start(audio_, "/rec.wav", kMicRecordSeconds);
+    }
+  }
 }
 
 void App::exitUsbTransfer(uint32_t nowMs)

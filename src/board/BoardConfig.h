@@ -32,7 +32,13 @@ constexpr int PIN_AUDIO_MCLK = 7;
 constexpr int PIN_AUDIO_BCLK = 15;
 constexpr int PIN_AUDIO_LRCK = 46;
 constexpr int PIN_AUDIO_DOUT = 45;
+// ES7210 ADC -> ESP32 I2S data-in. The bus is full duplex on the PCB; the
+// firmware was TX-only until Echoform M0 (see docs/ECHOFORM.md).
+constexpr int PIN_AUDIO_DIN = 6;
 constexpr uint8_t ES8311_I2C_ADDR = 0x18;
+// ES7210 quad mic ADC, same shared I2C bus as the ES8311/TCA9554.
+// 0x40 7-bit (the datasheet's 0x80 is the 8-bit write address).
+constexpr uint8_t ES7210_I2C_ADDR = 0x40;
 constexpr int PIN_TOUCH_SDA = 17;
 constexpr int PIN_TOUCH_SCL = 18;
 

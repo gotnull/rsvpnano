@@ -87,6 +87,11 @@ class Screensaver {
   void begin(uint32_t seed = 0);
   // Advances one animation frame; call once per draw at ~60 fps.
   void tick();
+  // Echoform waveform morph (docs/ECHOFORM.md M3): while active, the 216
+  // points ease into a screen-spanning ribbon whose Y follows the supplied
+  // scope samples (one int16 per point); on idle they ease back into the
+  // shape timeline. Call before tick() each frame.
+  void setWaveform(const int16_t *samples, size_t count, bool active);
   // Builds drawOrder() back-to-front along cz (largest first) so painter's
   // algorithm in the renderer produces correct depth. Sorts indices, not
   // Point structs — points_ stays put so we don't move ~52 bytes per swap.
@@ -146,4 +151,9 @@ class Screensaver {
   // Stars state — mode is re-rolled each time the shape index advances.
   StarMode starMode_ = StarMode::Forward3D;
   uint8_t lastShapeIdx_ = 0xFF;
+
+  // Waveform morph state: per-point camera-space Y targets, mix 0..1.
+  float waveY_[kPointCount] = {0};
+  float waveMix_ = 0.0f;
+  bool waveActive_ = false;
 };
