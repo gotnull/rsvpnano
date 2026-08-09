@@ -1,0 +1,126 @@
+# Echoform self-modification (docs/ECHOFORM.md M4).
+#
+# The device's relay fires this via workflow_dispatch when the owner speaks
+# a code-change instruction ("change your code: ..."). A headless Claude
+# Code session applies the change to the firmware source; the workflow then
+# gates it deterministically - guardrail check, ECHO1 host golden test,
+# both firmware builds - and only a fully green run is committed to main
+# and published as a release. The device picks the release up through its
+# normal boot OTA on the next reset ("install your update"), protected by
+# the on-device crash-loop rollback in EchoformApp.
+name: echoform-selfmod
+
+on:
+  workflow_dispatch:
+    inputs:
+      instruction:
+        description: "Voice instruction from Echoform's owner"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+# One self-modification at a time; a second voice request queues.
+concurrency:
+  group: echoform-selfmod
+
+jobs:
+  selfmod:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install toolchain (PlatformIO + Claude Code)
+        run: |
+          pip install --upgrade platformio
+          npm install -g @anthropic-ai/claude-code
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+
+      - name: Apply the instruction (Claude Code, headless)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          INSTRUCTION: ${{ inputs.instruction }}
+        run: |
+          PROMPT=$(cat <<'EOF'
+          You are Echoform's self-modification agent, working on the rsvpnano
+          repository that builds Echoform's own firmware (PlatformIO env
+          "echoform", sources under src/, plan and architecture in
+          docs/ECHOFORM.md, reusable patterns in docs/PATTERNS.md if present).
+
+          The device owner's voice instruction is in the INSTRUCTION
+          environment variable. Apply it to the firmware source as a minimal,
+          well-crafted change in the style of the surrounding code.
+
+          Hard rules:
+          - Modify only files under src/ and docs/. Never touch .github/,
+            tools/, platformio.ini, or anything else.
+          - No new libraries or PlatformIO dependencies.
+          - Keep the main-loop rule: the render loop coordinates only; slow
+            work (SD, network, audio, delays) belongs on worker tasks.
+          - Animated rendering must use the native-stripe path, never a
+            full-frame transpose.
+          - Verify the change compiles by running: pio run -e echoform
+            and fix any errors you introduced.
+          - If the instruction is unclear, impossible, or would require
+            breaking these rules, change nothing and print an explanation
+            starting with "DECLINED:".
+          EOF
+          )
+          claude -p "$PROMPT" --permission-mode bypassPermissions --max-turns 100
+
+      - name: Guardrail - changes stay inside src/ and docs/
+        run: |
+          git status --porcelain
+          # Porcelain v1: two status chars + space, path from column 4.
+          # Applies to modified AND untracked entries, so a new file outside
+          # the allowed roots is caught too.
+          if git status --porcelain | cut -c4- | grep -vE '^(src/|docs/)'; then
+            echo "change escaped src/ or docs/ - refusing"
+            exit 1
+          fi
+          if [ -z "$(git status --porcelain -- src docs)" ]; then
+            echo "agent made no change (declined or failed) - nothing to ship"
+            exit 1
+          fi
+
+      - name: ECHO1 host golden test
+        run: |
+          g++ -std=c++17 -I src tools/echo1_host_test.cpp src/echoform/Echo1.cpp \
+            -o /tmp/echo1_test && /tmp/echo1_test
+
+      - name: Build both firmwares
+        run: |
+          TAG="ota-$(date -u +%Y%m%d%H%M%S)"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          RSVP_BUILD_TAG="$TAG" pio run -e waveshare_esp32s3_usb_msc
+          RSVP_BUILD_TAG="$TAG" pio run -e echoform
+
+      - name: Commit and push
+        env:
+          INSTRUCTION: ${{ inputs.instruction }}
+        run: |
+          git config user.name "Echoform"
+          git config user.email "echoform@users.noreply.github.com"
+          git add src docs
+          git commit -m "feat(echoform): self-modification via voice" \
+                     -m "Instruction: $INSTRUCTION" \
+                     -m "Applied by the echoform-selfmod workflow; gated by the ECHO1 host test and both firmware builds. Release: $TAG"
+          git push origin HEAD:main
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash tools/publish_release.sh --skip-build --tag "$TAG" \
+            --notes "Echoform self-modification: ${{ inputs.instruction }}"

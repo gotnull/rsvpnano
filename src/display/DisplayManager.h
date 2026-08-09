@@ -184,6 +184,7 @@ class DisplayManager {
   struct ScreensaverOverlay {
     char chip[24];         // status chip, top-left (e.g. "LISTENING")
     char nowPlaying[96];   // top-right
+    char version[20];      // build tag, top-right (drops below nowPlaying)
     char line1[192];       // transcript, second-from-bottom row
     char line2[256];       // transcript, bottom row
     // The rusty-nail pixel wave, pre-composed by the echoform module into

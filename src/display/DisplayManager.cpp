@@ -4428,6 +4428,13 @@ void DisplayManager::renderScreensaverFrame(Screensaver &saver,
       drawChipNativeStripe(overlay->nowPlaying, kDisplayWidth - 4, 6, 260,
                            npColor, chipBg, stripeStart, rows,
                            /*rightAlign=*/true);
+      // Build tag so an OTA update is visible at a glance; yields the
+      // corner to now-playing when music info is up.
+      const uint16_t versionColor = panelColor(0x8410);  // dim grey
+      drawChipNativeStripe(overlay->version, kDisplayWidth - 4,
+                           overlay->nowPlaying[0] != '\0' ? 26 : 6, 160,
+                           versionColor, chipBg, stripeStart, rows,
+                           /*rightAlign=*/true);
       drawChipNativeStripe(overlay->line1, 4, kDisplayHeight - 40,
                            kDisplayWidth - 8, userColor, chipBg, stripeStart,
                            rows);

@@ -19,10 +19,35 @@ constexpr uint32_t kSlowTickWarnUs = 33000;
 constexpr uint32_t kMicRecordSeconds = 5;
 constexpr char kRecWavPath[] = "/rec.wav";
 
+// M4 self-update safety net. A boot must survive this long, with the
+// render loop demonstrably alive and heap above the floor, before it is
+// recorded as last-known-good; kMaxBootTries boots without reaching that
+// bar reads as a crash loop and triggers the rollback flash.
+constexpr uint8_t kMaxBootTries = 3;
+constexpr uint32_t kSelfTestWindowMs = 30000;
+constexpr uint32_t kSelfTestHeapFloor = 32 * 1024;
+constexpr uint32_t kSelfTestMinFrames = 400;
+// Scheduled restarts (voice "install your update" / "roll back") wait for
+// the spoken reply to finish, capped by the deadline.
+constexpr uint32_t kRestartIdleMs = 3000;
+constexpr uint32_t kRestartDeadlineMs = 45000;
+
 }  // namespace
 
 void EchoformApp::begin() {
   Serial.println("[echoform] standalone firmware boot");
+
+  // Crash-loop watchdog, before any init that could crash: count this
+  // boot attempt in NVS. The counter clears only once the self-test
+  // window passes (markBootGoodIfDue); kMaxBootTries strikes hands the
+  // boot to maybeRecover() for a rollback.
+  prefs_.begin("echoform", false);
+  const uint8_t bootTries = prefs_.getUChar("tries", 0) + 1;
+  prefs_.putUChar("tries", bootTries);
+  if (bootTries > 1) {
+    Serial.printf("[echoform] boot attempt %u without a clean run\n",
+                  bootTries);
+  }
 
   // Text orientation for how the device is held (the bobs are agnostic,
   // the transcript strip is not). Fulvio holds Echoform speaker-on-top,
@@ -39,11 +64,13 @@ void EchoformApp::begin() {
   if (!sdReady_) {
     Serial.println("[echoform] SD mount failed; REC and config unavailable");
   }
+  // Rollback check as early as the SD allows (it needs wifi.json), before
+  // the audio bring-up and everything after it gets a chance to crash.
+  maybeRecover(bootTries);
   if (!audio_.begin()) {
     Serial.println("[echoform] audio init failed");
   }
   // Volume: default 100%, voice-adjustable ("set volume to 60"), persisted.
-  prefs_.begin("echoform", false);
   audio_.setVolumePercent(prefs_.getUChar("vol", 100));
 
   // Boot-time self-update (SD + network must be checked before workers
@@ -75,6 +102,10 @@ void EchoformApp::begin() {
 
   screensaver_.begin(millis());
   overlay_.hideBobs = true;  // the face replaces the dots; stars stay
+#ifdef RSVP_BUILD_TAG
+  // Top-right build tag: the on-glass proof of which version is running.
+  snprintf(overlay_.version, sizeof(overlay_.version), "%s", RSVP_BUILD_TAG);
+#endif
   Serial.println("[echoform] entering the starfield");
 }
 
@@ -105,6 +136,70 @@ void EchoformApp::otaStatusTrampoline(void *context, const char *title,
                                 progressPercent < 0
                                     ? 0
                                     : static_cast<uint8_t>(progressPercent));
+}
+
+void EchoformApp::maybeRecover(uint8_t bootTries) {
+#ifdef RSVP_BUILD_TAG
+  const bool forced = prefs_.getUChar("force", 0) != 0;
+  if (!forced && bootTries < kMaxBootTries) return;
+  prefs_.putUChar("force", 0);
+  prefs_.putUChar("tries", 0);
+  const String goodTag = prefs_.getString("good", "");
+  const String buildStamp = normalizeStamp(RSVP_BUILD_TAG);
+  if (goodTag.isEmpty()) {
+    Serial.println("[recover] no last-known-good release recorded; carrying on");
+    return;
+  }
+  if (!forced && normalizeStamp(goodTag) == buildStamp) {
+    // The good build itself is failing to complete boots; reflashing the
+    // same image fixes nothing (that smells like hardware, not firmware).
+    Serial.println("[recover] current build IS the last-known-good; not reflashing");
+    return;
+  }
+  Serial.printf("[recover] %s: rolling back to %s\n",
+                forced ? "rollback requested" : "crash loop detected",
+                goodTag.c_str());
+  // Remember the abandoned stamp so the boot OTA won't reinstall it. Only
+  // an explicit "install your update" (or serial UPDATE) clears the hold.
+  if (!buildStamp.isEmpty() && normalizeStamp(goodTag) != buildStamp) {
+    prefs_.putString("avoid", buildStamp);
+  }
+  if (flashReleaseTag(goodTag)) {
+    delay(500);
+    ESP.restart();
+  }
+  Serial.println("[recover] rollback flash failed; booting the current build");
+#endif
+}
+
+bool EchoformApp::flashReleaseTag(const String &tag) {
+  if (!sdReady_) return false;
+  OtaManager ota;
+  if (!ota.loadConfigFromSd()) {
+    Serial.println("[recover] no wifi.json; cannot fetch the release");
+    return false;
+  }
+  // Pin the echoform asset to the requested release; OtaManager resolves
+  // the /releases/download/<tag>/ form through the GitHub tags API.
+  OtaManager::Config cfg = ota.config();
+  const int idx = cfg.firmwareUrl.indexOf("/releases/");
+  if (idx < 0) return false;
+  cfg.firmwareUrl = cfg.firmwareUrl.substring(0, idx) + "/releases/download/" +
+                    tag + "/echoform.bin";
+  ota.setConfig(cfg);
+  ota.setStatusCallback(&EchoformApp::otaStatusTrampoline, this);
+  display_.renderProgress("ECHOFORM ROLLBACK", tag.c_str(), "Fetching", 5);
+  if (!WifiConnector::connect(cfg.networks, 15000, "echoform-ota")) {
+    Serial.println("[recover] wifi unavailable");
+    return false;
+  }
+  WiFi.setSleep(false);
+  if (ota.runUpdate()) {
+    display_.renderProgress("ECHOFORM ROLLBACK", "Complete", "Restarting", 100);
+    return true;
+  }
+  Serial.printf("[recover] OTA failed: %s\n", ota.lastError().c_str());
+  return false;
 }
 
 void EchoformApp::maybeBootOta() {
@@ -141,15 +236,70 @@ void EchoformApp::maybeBootOta() {
     Serial.println("[ota] up to date");
     return;
   }
+  // A release we rolled back from stays uninstalled until explicitly
+  // cleared ("install your update" / serial UPDATE). A release newer than
+  // the avoided one installs normally.
+  if (releaseStamp == prefs_.getString("avoid", "")) {
+    Serial.printf("[ota] %s was rolled back from; holding until told to install\n",
+                  releaseTag.c_str());
+    return;
+  }
   Serial.println("[ota] newer release available; updating");
   display_.renderProgress("ECHOFORM UPDATE", releaseTag, "Downloading", 10);
   if (ota.runUpdate()) {
     display_.renderProgress("ECHOFORM UPDATE", "Complete", "Restarting", 100);
+    // The outgoing build ran well enough to complete an OTA: give the new
+    // build the full strike budget.
+    prefs_.putUChar("tries", 0);
     delay(800);
     ESP.restart();
   }
   Serial.printf("[ota] update failed: %s\n", ota.lastError().c_str());
 #endif
+}
+
+void EchoformApp::markBootGoodIfDue(uint32_t nowMs) {
+  if (bootMarkedGood_ || nowMs < kSelfTestWindowMs) return;
+  if (waveFrame_ < kSelfTestMinFrames) return;  // render loop must be alive
+  if (ESP.getFreeHeap() < kSelfTestHeapFloor) return;
+  bootMarkedGood_ = true;
+  prefs_.putUChar("tries", 0);
+#ifdef RSVP_BUILD_TAG
+  if (!normalizeStamp(RSVP_BUILD_TAG).isEmpty() &&
+      prefs_.getString("good", "") != RSVP_BUILD_TAG) {
+    prefs_.putString("good", RSVP_BUILD_TAG);
+    Serial.printf("[echoform] self-test passed; %s is the last-known-good build\n",
+                  RSVP_BUILD_TAG);
+    return;
+  }
+#endif
+  Serial.println("[echoform] self-test passed; boot counter cleared");
+}
+
+void EchoformApp::scheduleRestart(const char *reason, bool rollback) {
+  if (rollback) prefs_.putUChar("force", 1);
+  if (restartDeadlineMs_ != 0) return;
+  restartDeadlineMs_ = millis() + kRestartDeadlineMs;
+  restartLastBusyMs_ = millis();
+  Serial.printf("[echoform] restart scheduled (%s)\n", reason);
+}
+
+void EchoformApp::updatePendingRestart(uint32_t nowMs) {
+  if (restartDeadlineMs_ == 0) return;
+  // Let the spoken reply finish: restart only once the pipeline has been
+  // idle for a few seconds, or at the deadline if it never goes quiet.
+  if (net_.requestActive() || echoAudio_.speechBusy() || pttActive_) {
+    restartLastBusyMs_ = nowMs;
+  }
+  if (nowMs - restartLastBusyMs_ < kRestartIdleMs &&
+      nowMs < restartDeadlineMs_) {
+    return;
+  }
+  Serial.println("[echoform] restarting");
+  Serial.flush();
+  prefs_.end();
+  delay(100);
+  ESP.restart();
 }
 
 void EchoformApp::handleVoiceIntents() {
@@ -158,6 +308,21 @@ void EchoformApp::handleVoiceIntents() {
   lastFinalHandled_ = counter;
   String text = net_.finalTranscript();
   text.toLowerCase();
+  // Self-update intents. "roll back" needs a firmware-ish word alongside
+  // so conversational "let's roll back to..." can't reflash the device.
+  const bool firmwareish =
+      text.indexOf("update") >= 0 || text.indexOf("firmware") >= 0 ||
+      text.indexOf("version") >= 0 || text.indexOf("yourself") >= 0;
+  if (text.indexOf("roll") >= 0 && text.indexOf("back") >= 0 && firmwareish) {
+    scheduleRestart("voice rollback", true);
+    return;
+  }
+  if (text.indexOf("update") >= 0 &&
+      (text.indexOf("install") >= 0 || text.indexOf("yourself") >= 0)) {
+    prefs_.remove("avoid");
+    scheduleRestart("voice update", false);
+    return;
+  }
   if (text.indexOf("volume") < 0) return;
   int level = -1;
   if (text.indexOf("mute") >= 0) {
@@ -352,6 +517,8 @@ void EchoformApp::update(uint32_t nowMs) {
   pollMicRecorderDebug(nowMs);
   updatePushToTalk(nowMs);
   updateOverlay(nowMs);
+  markBootGoodIfDue(nowMs);
+  updatePendingRestart(nowMs);
 
   if (nowMs - lastRenderMs_ >= kFrameIntervalMs) {
     lastRenderMs_ = nowMs;
@@ -582,6 +749,29 @@ void EchoformApp::pollMicRecorderDebug(uint32_t nowMs) {
     if (lineBuffer.equalsIgnoreCase("ESRW")) {
       lineBuffer = "";
       Es7210::probeRegisterReadback();
+      continue;
+    }
+    // M4 self-update controls: "UPDATE" restarts into the boot OTA check
+    // (clearing a rollback hold), "ROLLBACK" reflashes the last-known-good
+    // release, "BOOTINFO" dumps the safety-net state.
+    if (lineBuffer.equalsIgnoreCase("UPDATE")) {
+      lineBuffer = "";
+      prefs_.remove("avoid");
+      scheduleRestart("serial UPDATE", false);
+      continue;
+    }
+    if (lineBuffer.equalsIgnoreCase("ROLLBACK")) {
+      lineBuffer = "";
+      scheduleRestart("serial ROLLBACK", true);
+      continue;
+    }
+    if (lineBuffer.equalsIgnoreCase("BOOTINFO")) {
+      lineBuffer = "";
+      Serial.printf("[echoform] build=%s good=%s avoid=%s tries=%u marked=%d\n",
+                    RSVP_BUILD_TAG,
+                    prefs_.getString("good", "<none>").c_str(),
+                    prefs_.getString("avoid", "<none>").c_str(),
+                    prefs_.getUChar("tries", 0), bootMarkedGood_ ? 1 : 0);
       continue;
     }
     // "FACE": force full coherence for 15 s (bench: materialise the head).

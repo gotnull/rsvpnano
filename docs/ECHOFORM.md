@@ -282,24 +282,61 @@ M3 - The interface
   Accept: user judges it on the device (bobs must visibly ride the voice
   both directions).
 
-M4 - Wake word
+M4 - Self-update + self-modification
+  Three legs. (a) On-device safety net: an NVS boot counter counts every
+  boot attempt and clears only after a 30 s self-test window (render loop
+  alive, heap above floor); three strikes, or a voice/serial rollback
+  request, reflashes the last-known-good release (pinned tag resolved via
+  the GitHub tags API) and holds the abandoned release stamp so the boot
+  OTA will not reinstall it until told to. Voice intents: "install your
+  update" / "update yourself" (restart into the boot OTA check, clears the
+  hold), "roll back your update". Serial: UPDATE / ROLLBACK / BOOTINFO.
+  Restarts wait for the spoken reply to finish. (b) CI coding agent:
+  .github/workflows/echoform-selfmod.yml takes a voice instruction via
+  workflow_dispatch, runs headless Claude Code on the repo (edits confined
+  to src/ + docs/, mechanically enforced), gates with the ECHO1 host
+  golden test plus both firmware builds, then commits to main and
+  publishes the release. (c) Voice trigger: the relay's webhook skill
+  gained per-hook headers and {transcript} substitution (substituted
+  inside the parsed JSON tree, so quotes cannot break out); a hook on
+  "change your code" phrases POSTs the transcript to the workflow's
+  dispatch endpoint.
+  Accept: say "change your code: <something small>"; the workflow runs and
+  publishes; "install your update" installs it; a deliberately broken
+  build rolls itself back and holds.
+  STATUS 9th Aug 2026: implemented (firmware + workflow + relay skill).
+  Manual steps pending: ANTHROPIC_API_KEY secret on the repo, the
+  ECHOFORM_WEBHOOKS Railway var carrying the dispatch hook + GitHub token,
+  and a relay redeploy - the credential handling stays in the owner's
+  hands.
+
+M5 - Extraction to a private repo (directed 9th Aug 2026)
+  Everything Echoform - this firmware, the relay, the fcecho crate, the
+  Docker/Railway setup, the selfmod workflow - moves to a standalone
+  private repo at ~/development/echoform (gotnull/echoform) so firmware
+  releases stop being public on gotnull/rsvpnano. Private releases mean
+  the device OTA must authenticate (token on SD, asset fetched via the
+  assets API with a manual-redirect two-hop). Full plan and repo map:
+  HANDOFF.md in ~/development/echoform.
+
+M6 - Wake word
   VAD port, preroll ring, wake candidate flags, follow-up window, silent
   discards, in-flight guard, closing-prompt support if the relay tree has
   it.
   Accept: "Hey Rusty" from across the room answers in character; TV noise
   produces silent discards, never an error state.
 
-M5 - Spotify + now playing
+M7 - Spotify + now playing
   Nothing device-side beyond NowPlaying display and testing the voice
   path; relay Spotify auth is `--spotify-login` on the Mac.
   Accept: "play <song> on Spotify" works by voice; title and artist show
   on the strip.
 
-M6 - Optional polish
+M8 - Optional polish
   Voice picker via 0x40..0x45, settings rows (mic gain, captions),
   Echoform-on-boot option, state-driven starfield modes.
 
-M7 - Future
+M9 - Future
   On-device wake word (ESP-SR WakeNet) to kill whisper-per-candidate
   costs.
 

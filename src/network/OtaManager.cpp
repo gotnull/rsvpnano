@@ -234,18 +234,23 @@ String OtaManager::fetchLatestReleaseTag() {
   return body.substring(quoteOpen + 1, quoteClose);
 }
 
-String OtaManager::resolveGithubLatestAssetUrl(const String &assetName) {
-  // Derive api.github.com URL from the configured /releases/latest/download
+String OtaManager::resolveGithubAssetUrl(const String &assetName,
+                                         const String &tag) {
+  // Derive the api.github.com URL from the configured github.com download
   // URL. config_.firmwareUrl shape:
-  //   https://github.com/<owner>/<repo>/releases/latest/download/<asset>
+  //   https://github.com/<owner>/<repo>/releases/.../<asset>
   // We slice out <owner>/<repo> and build:
   //   https://api.github.com/repos/<owner>/<repo>/releases/latest
+  // or, for a pinned release (Echoform's rollback path):
+  //   https://api.github.com/repos/<owner>/<repo>/releases/tags/<tag>
   const String prefix = "https://github.com/";
   if (!config_.firmwareUrl.startsWith(prefix)) return "";
   const int repoEnd = config_.firmwareUrl.indexOf("/releases/", prefix.length());
   if (repoEnd < 0) return "";
   const String ownerRepo = config_.firmwareUrl.substring(prefix.length(), repoEnd);
-  const String apiUrl = String("https://api.github.com/repos/") + ownerRepo + "/releases/latest";
+  const String apiUrl = String("https://api.github.com/repos/") + ownerRepo +
+                        (tag.isEmpty() ? String("/releases/latest")
+                                       : String("/releases/tags/") + tag);
 
   WiFiClientSecure client;
   client.setInsecure();
@@ -320,15 +325,29 @@ bool OtaManager::runUpdate() {
   // single-response JSON we can parse for the artifact's signed
   // `browser_download_url` and fetch in one shot — no cross-host redirect.
   String fetchUrl = config_.firmwareUrl;
-  if (config_.firmwareUrl.startsWith("https://github.com/") &&
-      config_.firmwareUrl.indexOf("/releases/latest/download/") > 0) {
-    notifyStatus("OTA", "Resolving", "api.github.com", 10);
-    const String resolved = resolveGithubLatestAssetUrl(displayName);
-    if (!resolved.isEmpty()) {
-      Serial.printf("[ota] resolved asset URL via API: %s\n", resolved.c_str());
-      fetchUrl = resolved;
-    } else {
-      Serial.println("[ota] API resolve failed — falling back to /latest/download URL");
+  if (config_.firmwareUrl.startsWith("https://github.com/")) {
+    // Pinned-release URLs (/releases/download/<tag>/<asset>) resolve via
+    // the tags API; the rolling /releases/latest/download form via the
+    // latest API. Anything else fetches as-is.
+    String tag;
+    const int pinned = config_.firmwareUrl.indexOf("/releases/download/");
+    if (pinned > 0) {
+      const int tagStart = pinned + static_cast<int>(strlen("/releases/download/"));
+      const int tagEnd = config_.firmwareUrl.indexOf('/', tagStart);
+      if (tagEnd > tagStart) {
+        tag = config_.firmwareUrl.substring(tagStart, tagEnd);
+      }
+    }
+    if (!tag.isEmpty() ||
+        config_.firmwareUrl.indexOf("/releases/latest/download/") > 0) {
+      notifyStatus("OTA", "Resolving", "api.github.com", 10);
+      const String resolved = resolveGithubAssetUrl(displayName, tag);
+      if (!resolved.isEmpty()) {
+        Serial.printf("[ota] resolved asset URL via API: %s\n", resolved.c_str());
+        fetchUrl = resolved;
+      } else {
+        Serial.println("[ota] API resolve failed - falling back to github.com URL");
+      }
     }
   }
 

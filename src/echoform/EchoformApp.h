@@ -56,6 +56,18 @@ class EchoformApp {
   // Voice intent: "set volume to N" / "full volume" / "mute" applied
   // on-device from the final transcript.
   void handleVoiceIntents();
+  // M4 self-update safety net (docs/ECHOFORM.md): an NVS boot counter
+  // catches crash loops; a boot that survives the self-test window records
+  // its tag as last-known-good; a crash-looping or voice-rejected build is
+  // reflashed from that tag's release, and the broken release stamp is
+  // remembered so the boot OTA doesn't immediately reinstall it.
+  void maybeRecover(uint8_t bootTries);
+  bool flashReleaseTag(const String &tag);
+  void markBootGoodIfDue(uint32_t nowMs);
+  void updatePendingRestart(uint32_t nowMs);
+  // Restart once the current exchange finishes (reply spoken), or at the
+  // deadline. rollback additionally sets the NVS force-rollback flag.
+  void scheduleRestart(const char *reason, bool rollback);
   static void otaStatusTrampoline(void *context, const char *title,
                                   const char *line1, const char *line2,
                                   int progressPercent);
@@ -80,6 +92,9 @@ class EchoformApp {
   bool speechWasBusy_ = false;
   uint32_t lastFinalHandled_ = 0;
   uint32_t faceForceUntilMs_ = 0;
+  bool bootMarkedGood_ = false;
+  uint32_t restartDeadlineMs_ = 0;  // non-zero: a restart is scheduled
+  uint32_t restartLastBusyMs_ = 0;
   Preferences prefs_;
   uint8_t *waveFieldFb_ = nullptr;    // 16 KB, allocated in begin()
   uint8_t *waveFieldGlow_ = nullptr;  // 16 KB phosphor heat

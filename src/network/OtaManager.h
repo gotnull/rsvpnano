@@ -48,13 +48,15 @@ class OtaManager {
   void notifyStatus(const char *title, const char *line1 = "", const char *line2 = "",
                     int progressPercent = -1);
   bool connectWifi();
-  // Hits api.github.com/repos/<owner>/<repo>/releases/latest, parses the
-  // JSON for the named asset's signed `browser_download_url`, and
-  // returns it. The signed URL points directly at
-  // objects.githubusercontent.com so the firmware fetch is a single hop
-  // — no cross-host redirect chain. Returns empty on any failure; the
-  // caller falls back to the legacy /releases/latest/download/ URL.
-  String resolveGithubLatestAssetUrl(const String &assetName);
+  // Hits api.github.com/repos/<owner>/<repo>/releases/latest (or
+  // /releases/tags/<tag> when tag is non-empty), parses the JSON for the
+  // named asset's signed `browser_download_url`, and returns it. The
+  // signed URL points directly at objects.githubusercontent.com so the
+  // firmware fetch is a single hop — no cross-host redirect chain.
+  // Returns empty on any failure; the caller falls back to the plain
+  // github.com download URL.
+  String resolveGithubAssetUrl(const String &assetName,
+                               const String &tag = String());
 
   Config config_;
   StatusCallback statusCallback_ = nullptr;
