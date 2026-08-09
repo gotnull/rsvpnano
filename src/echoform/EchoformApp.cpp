@@ -554,7 +554,8 @@ void EchoformApp::pollMicRecorderDebug(uint32_t nowMs) {
     }
     if (c != '\n') {
       lineBuffer += c;
-      if (lineBuffer.length() > 64) {
+      // Must fit "SETRELAY <host>:<port> <32-char token>" (~75 chars).
+      if (lineBuffer.length() > 160) {
         lineBuffer = "";
       }
       continue;
@@ -761,16 +762,26 @@ void EchoformApp::pollMicRecorderDebug(uint32_t nowMs) {
     if (lineBuffer.startsWith("SETRELAY ") || lineBuffer.startsWith("setrelay ")) {
       const String arg = lineBuffer.substring(9);
       lineBuffer = "";
-      const int colon = arg.lastIndexOf(':');
+      // "SETRELAY host:port [token]" - token for public relays.
+      String endpoint = arg;
+      String token;
+      const int space = arg.indexOf(' ');
+      if (space > 0) {
+        endpoint = arg.substring(0, space);
+        token = arg.substring(space + 1);
+        token.trim();
+      }
+      const int colon = endpoint.lastIndexOf(':');
       if (colon <= 0) {
-        Serial.println("[echoform] SETRELAY usage: SETRELAY 192.168.1.10:8125");
+        Serial.println(
+            "[echoform] SETRELAY usage: SETRELAY host:port [token]");
       } else {
-        const String host = arg.substring(0, colon);
-        const long port = arg.substring(colon + 1).toInt();
+        const String host = endpoint.substring(0, colon);
+        const long port = endpoint.substring(colon + 1).toInt();
         if (port <= 0 || port > 65535) {
           Serial.println("[echoform] SETRELAY: bad port");
         } else {
-          net_.setRelayEndpoint(host, static_cast<uint16_t>(port));
+          net_.setRelayEndpoint(host, static_cast<uint16_t>(port), token);
         }
       }
       continue;

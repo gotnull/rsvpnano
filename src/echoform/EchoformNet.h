@@ -63,8 +63,10 @@ class EchoformNet {
   // Static string; safe to read cross-task.
   const char *lastDropReason() const { return lastDropReason_.load(); }
   bool relayConfigured() const { return relayConfigured_.load(); }
-  // Rewrites /echoform.json and asks the task to reconnect with it.
-  bool setRelayEndpoint(const String &host, uint16_t port);
+  // Rewrites /echoform.json and asks the task to reconnect with it. token
+  // (optional) is the shared secret for publicly reachable relays.
+  bool setRelayEndpoint(const String &host, uint16_t port,
+                        const String &token = String());
 
  private:
   static void taskTrampoline(void *arg);
@@ -128,6 +130,7 @@ class EchoformNet {
   std::vector<OtaManager::Network> networks_;
   String relayHost_;
   uint16_t relayPort_ = 0;
+  String relayToken_;
   static constexpr int kFailsBeforeWifiReset = 5;
   int relayConnectFails_ = 0;
   echo1::Parser parser_;

@@ -187,6 +187,10 @@ bool EchoformNet::loadConfigs() {
     f.close();
     relayHost_ = jsonString(json, "host");
     relayPort_ = static_cast<uint16_t>(jsonNumber(json, "port", 8125));
+    // Optional shared secret for publicly reachable relays (Railway): sent
+    // as raw bytes before the Hello frame; the relay's accept gate checks
+    // it. Empty = LAN relay, nothing sent.
+    relayToken_ = jsonString(json, "token");
   } else if (f) {
     f.close();
   }
@@ -198,16 +202,23 @@ bool EchoformNet::loadConfigs() {
   return relayConfigured_.load();
 }
 
-bool EchoformNet::setRelayEndpoint(const String &host, uint16_t port) {
+bool EchoformNet::setRelayEndpoint(const String &host, uint16_t port,
+                                   const String &token) {
   File f = SD_MMC.open(kConfigPath, FILE_WRITE);
   if (!f) {
     Serial.println("[net] echoform.json write failed");
     return false;
   }
-  f.printf("{\"host\": \"%s\", \"port\": %u}\n", host.c_str(), port);
+  if (token.isEmpty()) {
+    f.printf("{\"host\": \"%s\", \"port\": %u}\n", host.c_str(), port);
+  } else {
+    f.printf("{\"host\": \"%s\", \"port\": %u, \"token\": \"%s\"}\n",
+             host.c_str(), port, token.c_str());
+  }
   f.close();
   reloadRequested_.store(true);
-  Serial.printf("[net] relay endpoint set to %s:%u\n", host.c_str(), port);
+  Serial.printf("[net] relay endpoint set to %s:%u%s\n", host.c_str(), port,
+                token.isEmpty() ? "" : " (with auth token)");
   return true;
 }
 
@@ -369,6 +380,13 @@ bool EchoformNet::handleCmd(WiFiClient &client, const Cmd &cmd,
 }
 
 const char *EchoformNet::session(WiFiClient &client) {
+  // -- auth prefix (public relays only) --
+  if (!relayToken_.isEmpty()) {
+    if (client.write(reinterpret_cast<const uint8_t *>(relayToken_.c_str()),
+                     relayToken_.length()) != relayToken_.length()) {
+      return "auth token send failed";
+    }
+  }
   // -- handshake --
   uint8_t payload[8];
   echo1::Hello hello{echo1::kVersion,
